@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Write the largest mesh of each GLB as a ZMS1 fixture, in Blender's own order.
+"""Write the largest mesh of each GLB as a ZMS1 fixture plus NAME.surface.
 
 blender --background --factory-startup --python blender_to_zms.py -- OUT a.glb ...
 """
@@ -29,7 +29,22 @@ def write_fixture(mesh, path):
         stream.write(struct.pack("<I4I", 0x31534D5A, vertices, faces, corners, edges))
         for buffer in (positions, sizes, corner_ids, edge_ids):
             stream.write(buffer.tobytes())
+    write_surface(mesh, path.with_suffix(".surface"), corners)
     print(f"{path.name}: v={vertices} f={faces} c={corners} e={edges}", flush=True)
+
+
+def write_surface(mesh, path, corners):
+    """Write normals and UV layers, Float32 per corner, in source order."""
+    normals = array("f", [0.0]) * (corners * 3)
+    mesh.corner_normals.foreach_get("vector", normals)
+    with path.open("wb") as stream:
+        stream.write(struct.pack("<I?", len(mesh.uv_layers), mesh.has_custom_normals))
+        stream.write(normals.tobytes())
+        for layer in sorted(mesh.uv_layers, key=lambda item: item.name):
+            values = array("f", [0.0]) * (corners * 2)
+            layer.uv.foreach_get("vector", values)
+            name = layer.name.encode("utf-8")
+            stream.write(struct.pack("<I", len(name)) + name + values.tobytes())
 
 
 def main():

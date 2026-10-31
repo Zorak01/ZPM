@@ -12,6 +12,9 @@ bytes, with no decode step, no allocation and nothing else touched.
 
 The file holds the same shape, not always the same bytes as the source.
 
+- **Normals become 12-bit directions.** The largest error measured was about 0.06°.
+- **UVs snap to a grid of 1 / 2^20**, about 1/256 of a texel on a 4K texture. Non-finite values become 0.
+- **Creases become 16 bits.**
 - **Positions snap to a grid.** The step is a power of two, at most 1 / 2^20 of the model's largest
   size, so no point moves more than 1 / 2^21 of it: about 1 micron on a 2 m character. Equal
   positions stay equal, so shared points cannot crack apart. Snapping twice changes nothing. A mesh
@@ -31,8 +34,8 @@ Little-endian. Every byte belongs to exactly one named region, and `tools/zpm_ma
 | Region | Contents |
 | --- | --- |
 | File header | 12 bytes: magic `ZPM\0`, version (UInt16), section count (UInt16), file length (UInt32) |
-| Directory | 8 bytes per section: kind (UInt16), flags (UInt16), file offset (UInt32) |
-| Sections | Each padded with zeros to 4-byte alignment, contiguous, in rising kind order |
+| Directory | 8 bytes per section: kind (UInt16), flags (Byte), layer (Byte), file offset (UInt32) |
+| Sections | Each padded with zeros to 4-byte alignment, contiguous, in rising kind then layer order |
 | Tail | 32 zero bytes, so readers can load whole words past the last value |
 
 A section's length is the distance to the next offset. A section is present only if the mesh needs
@@ -44,12 +47,14 @@ Flag values: `1` the column stores slopes, `2` a palette index holds a sign in i
 
 | Kind | Name | Type | Holds |
 | ---: | --- | --- | --- |
-| 1 | `MESH_INFO` | 6 × UInt32 | Vertex, face, corner, edge and unique-position counts; shared face size or 0 |
+| 1 | `MESH_INFO` | 8 × 32-bit | Vertex, face, corner, edge and unique-position counts; shared face size or 0; position grid exponent; flags (1 = authored normals) |
 | 2 | `POSITION_REPEAT_MASK` | Rank mask | Marks vertices that repeat an earlier position |
 | 3 | `POSITION_REPEAT_IDS` | Column | Unique-position ID of each marked vertex |
-| 16–18 | `POSITION_BITS_X/Y/Z` | Column | Float bits, mapped so their order follows their value |
+| 12–14 | `POSITION_GRID_X/Y/Z` | Column | Position as a whole number of grid steps |
+| 15 | `VERTEX_CREASES` | Column | 16-bit crease per vertex |
+| 16–18 | `POSITION_BITS_X/Y/Z` | Column | Float bits, mapped so their order follows their value. Only for meshes with no grid |
 | 20–22 | `POSITION_CONSTANT_X/Y/Z` | UInt32 | The one value this axis holds |
-| 24–26 | `POSITION_PALETTE_X/Y/Z` | Column | Sorted values, without their sign |
+| 24–26 | `POSITION_PALETTE_X/Y/Z` | Column | Sorted grid values, without their sign |
 | 28–30 | `POSITION_INDICES_X/Y/Z` | Column | Palette index of each unique position |
 | 32 | `CORNER_IDS` | Column | Vertex ID of each corner |
 | 33 | `CORNER_FIRST` | Column | Vertex ID of each face's first corner |
@@ -57,6 +62,7 @@ Flag values: `1` the column stores slopes, `2` a palette index holds a sign in i
 | 37 | `CORNER_REPEAT_MASK` | Rank mask | Marks corners that reuse an earlier vertex. Unmarked ones use the next new vertex |
 | 38 | `CORNER_BACK_DISTANCES` | Column | How far each marked corner reaches back from the newest vertex |
 | 40 | `FACE_STARTS` | Select bits | Marks each face's first corner |
+| 41 | `FACE_FLAT` | Column | 1 where a face is shaded flat |
 | 48 | `EDGE_FIRST` | Column | First vertex ID of each edge |
 | 49 | `EDGE_SPAN` | Column | Second vertex ID, relative to the first |
 | 50 | `EDGE_LOOSE_MASK` | Rank mask | Marks edges on no face |
@@ -64,8 +70,14 @@ Flag values: `1` the column stores slopes, `2` a palette index holds a sign in i
 | 53 | `EDGE_CORNERS` | Column | A corner on this edge: its endpoints are that corner and the next |
 | 54 | `EDGE_FLIPS` | Column | 1 where the edge runs against that corner. Absent means lower ID first |
 | 55 | `EDGE_FIRST_USE` | Select bits | Marks the corner that first reaches each edge, in edge order |
+| 56–57 | `EDGE_SHARP`, `EDGE_SEAM` | Column | 1 where an edge is marked |
+| 58 | `EDGE_CREASES` | Column | 16-bit crease per edge |
+| 64–72 | `NORMAL_*` | Corner stream | Two 12-bit values per corner |
+| 79 | `UV_NAMES` | UInt32 count, then length + UTF-8 | Layer names; a name's position is its layer number |
+| 80–88 | `UV_*` | Corner stream, one per layer | Two grid integers per corner |
 
-Unknown kinds are refused. Each axis uses bits, a constant, or a palette with indices.
+Unknown kinds are refused. Each axis uses grid integers, a constant, a palette with indices, or bits.
+Sections for data a mesh lacks, or that is all zero, are absent.
 Corners use `CORNER_IDS`, `CORNER_FIRST` with offsets when all faces have 3 or 4 corners, or a repeat
 mask with back distances when vertices are numbered by first use.
 Edges use `EDGE_FIRST` with `EDGE_SPAN`, or `EDGE_CORNERS` or `EDGE_FIRST_USE` with any loose-edge sections.
@@ -82,6 +94,10 @@ which one 64-bit multiply sums.
 **Rank mask.** One UInt64 per 64 elements, then one UInt32 per word counting unmarked elements
 before it. A popcount gives any element's rank in constant time.
 
+**Corner stream.** Nine possible sections, in this order: repeat mask, distances, values A and B, vertex
+A and B, exception mask, exception A and B. The first form stores each distinct pair once, and corners
+reach back to it. The second stores one pair per vertex, plus the corners that disagree.
+
 **Select bits.** One bit per element, then one UInt32 per 64 set bits giving that bit's position, so
 the Nth set bit is found by reading a few words.
 
@@ -93,6 +109,8 @@ the Nth set bit is found by reading a few words.
 - **Edges can cost one bit per corner.** Stored in the order faces first reach them, an edge is the
   Nth marked corner.
 
+- **Positions are grid integers.** After snapping, a coordinate is a whole number of steps, so the
+  jump in float bits between -1 and +1 is gone. Reading is one multiply.
 - **Repeated positions** are stored once. An unmarked vertex's unique ID is its rank in the mask.
 - **Signed palettes** store magnitudes, with the sign in the index, so a mirrored model shares values.
 - **Edges** store one corner reference. A manifold edge has two such corners, and the encoder picks
@@ -114,6 +132,7 @@ them. The benchmark fuzzes this on every run.
 | `blender/zpm/format/optimize.py` | Position snapping, reordering, and the geometry check |
 | `blender/zpm/format/decoder.py` | Expands a whole file into a `Mesh`, for editing tools |
 | `blender/zpm/format/file_map.py` | Names every byte of a file |
+| `blender/zpm/format/surface_values.py` | Stored forms of normals, UVs and creases |
 | `runtime/csharp/Zpm/ZpmMeshView.cs` | Runtime reader: by index, no allocation |
 
 ## Limits

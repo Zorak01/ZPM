@@ -106,6 +106,14 @@ sealed unsafe class ReadBench<TReader> where TReader : struct, IMeshReader
         _sink += sum;
     }
 
+    void RandomNormals()
+    {
+        float sum = 0;
+        foreach (uint id in _cornerIds)
+            sum += _reader.GetCornerNormal(id).x;
+        _sink += (ulong)sum;
+    }
+
     void RandomFaces()
     {
         ulong sum = 0;
@@ -133,13 +141,14 @@ sealed unsafe class ReadBench<TReader> where TReader : struct, IMeshReader
         Timing mesh = Measure(ReadMeshOnce, RunsPerRound, 1);
         Timing randomVertex = Measure(RandomVertices, RandomRunsPerRound, Math.Max(_vertexIds.Length, 1));
         Timing randomCorner = Measure(RandomCorners, RandomRunsPerRound, Math.Max(_cornerIds.Length, 1));
+        Timing randomNormal = Measure(RandomNormals, RandomRunsPerRound, Math.Max(_cornerIds.Length, 1));
         Timing randomFace = Measure(RandomFaces, RandomRunsPerRound, Math.Max(_faceIds.Length, 1));
         Timing randomEdge = Measure(RandomEdges, RandomRunsPerRound, Math.Max(_edgeIds.Length, 1));
         long allocated = new[]
         {
             validate.allocatedBytes, vertices.allocatedBytes, corners.allocatedBytes, edges.allocatedBytes,
             mesh.allocatedBytes, randomVertex.allocatedBytes, randomCorner.allocatedBytes,
-            randomFace.allocatedBytes, randomEdge.allocatedBytes,
+            randomFace.allocatedBytes, randomEdge.allocatedBytes, randomNormal.allocatedBytes,
         }.Max();
         Console.WriteLine(JsonSerializer.Serialize(new
         {
@@ -154,6 +163,7 @@ sealed unsafe class ReadBench<TReader> where TReader : struct, IMeshReader
             random_vertex_ns = randomVertex.medianNs,
             random_corner_ns = randomCorner.medianNs,
             random_face_ns = randomFace.medianNs,
+            random_normal_ns = randomNormal.medianNs,
             random_edge_ns = randomEdge.medianNs,
             allocated_bytes = allocated,
             sink = _sink,

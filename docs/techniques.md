@@ -1,7 +1,7 @@
 # How ZPM gets small and fast
 
 Every technique ZPM uses, what problem it solves, and what it costs. Update this with every change.
-Numbers are from [run 20261031T063431Z](../benchmarks/mesh-read/README.md), using `samurai`, a real
+Numbers are from [the latest run](../benchmarks/mesh-read/README.md), using `samurai`, a real
 character with 3,682 vertices, unless noted.
 
 ## The big idea
@@ -12,12 +12,15 @@ and some arithmetic. Opening a file reads its directory, and reading never alloc
 
 | Samurai | Bytes | First face readable after | Full read |
 | --- | ---: | ---: | ---: |
-| Plain arrays with 16-bit IDs (Compact16) | 77,820 | 1.95 µs, copying the file | 1.95 µs |
-| Smallest earlier experiment | 56,903 | 586.70 µs, decoding everything | 586.70 µs |
-| **ZPM** | **14,928** | **0.18 µs** | 92.66 µs |
+| Plain arrays with 16-bit IDs (Compact16) | 77,820 | 1.34 µs, copying the file | 1.34 µs |
+| Smallest earlier experiment | 56,903 | 298.66 µs, decoding everything | 298.66 µs |
+| **ZPM** | **14,236** | **0.13 µs** | 49.52 µs |
 
-ZPM is 5.21x smaller than Compact16 and 3.81x smaller than the earlier experiment. The price: a plain
-array still wins a full read, and one vertex costs about 32 ns against about 1 ns.
+These compare geometry only, because the older layouts hold nothing else. With normals, samurai is
+24,916 bytes against 156,516 for plain arrays (6.28x).
+
+ZPM is 5.47x smaller than Compact16 and 4.00x smaller than the earlier experiment. The price: a plain
+array still wins a full read, and one vertex costs about 23 ns against about 1 ns.
 
 ## Storing numbers
 
@@ -69,6 +72,15 @@ ZPM skip elements yet still find the right slot instantly.
 walking all earlier faces in the old layout cost over 2,000 ns.
 
 ## Positions
+
+### Positions as grid integers
+
+**Problem:** Stored as float bits, -0.001 and +0.001 are about 2 billion apart, so any block crossing
+zero wastes nearly all its bits. Models are usually centered on zero.
+
+**Technique:** Once snapped, every coordinate is a whole number of grid steps, so store that number.
+Values near each other are numerically near. Reading is one multiply by a power of two, which is exact.
+Up to 1.44x smaller on positions, and up to 1.23x on whole files. Meshes without a grid keep float bits.
 
 ### Repeated positions stored once
 
@@ -135,11 +147,43 @@ mask, so any corner reads directly. **Result:** samurai's corners went from 9,46
 corner. Its two vertices are that corner and the next one around its face. **Result:** samurai's edges
 went from 20,456 bytes as 16-bit pairs to 1,144 bytes (17.9x). Edges on no face are stored separately.
 
+## Surface data
+
+### Normals in 12 bits per direction part
+
+**Technique:** Three floats cost 12 bytes. Folding the sphere onto a square (octahedral mapping) needs two
+numbers, and at 12 bits each the worst error measured was about 0.056°. Going to 14 bits barely
+improved it, because Blender's own values carry about 0.03° of error, so it costs size for nothing.
+
+**Prior art:** octahedral normals are common in engines and formats.
+
+### Two ways to store per-corner data
+
+**Problem:** A normal or UV exists per corner, which is far more than per vertex.
+
+**Technique:** The encoder tries both forms and keeps the smaller:
+- **Each distinct value once**, with corners reaching back using the same rank trick as corners. Wins
+  on flat shading: 2.8x smaller than per-corner storage on a flat-shaded test mesh.
+- **One value per vertex**, with a mask for corners that disagree. Wins on smooth surfaces: 3.1x
+  smaller than per-corner on a smooth test mesh, where only 36 of 31,488 corners disagreed.
+
+Either way any corner still reads directly.
+
+### UVs on a tiny grid
+
+**Technique:** UVs become whole numbers of 1 / 2^20 steps: about 1/256 of a texel on a 4K texture.
+Reading is one divide. Layers keep their names, and tiles beyond 0-1 work.
+
+### Flags and creases cost almost nothing when unused
+
+**Technique:** Sharp, seam and flat flags are ordinary columns, so an all-zero block stores no data at all,
+and a flag that is never set has no section. Creases are 16 bits.
+
 ## The file itself
 
 ### Labelled sections
 
-A short header, then a directory naming each section. There are no mode fields: if a section is
+A short header, then a directory naming each section, and its layer for things like UV sets. There are no mode fields: if a section is
 present, that's the layout. `python tools/zpm_map.py FILE` names every byte in a file, and a test proves
 each byte is named exactly once.
 
@@ -163,6 +207,8 @@ reads thousands of deliberately corrupted files: one early run caught a real cra
 | Walking faces newest first | No gain over widest first | Often worse on real meshes |
 | Reordering with the space-filling curve alone | 1.10x to 1.51x, 1.36x larger on one mesh | The walk beats it clearly |
 | 16-bit position grid | Under 1% over 20-bit | 16x larger error for almost nothing |
+| 14-bit normals | No real accuracy gain over 12-bit | Blender's values already carry 0.03° error |
+| Storing every normal per corner | 3x larger on smooth meshes | One value per vertex is far smaller |
 
 ## What we can and can't claim
 

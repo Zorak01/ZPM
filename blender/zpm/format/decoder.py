@@ -2,6 +2,7 @@
 
 """File bytes to Mesh, for editing tools. Runtime readers index the file instead."""
 
+import math
 import struct
 from array import array
 
@@ -14,17 +15,22 @@ from .layout import (
     MAGIC,
     MAX_RELATIVE_ARITY,
     MESH_INFO,
+    NO_GRID,
     TAIL_BYTES,
     UINT32_MAX,
     VERSION,
+    MeshFlags,
     SectionFlags,
     SectionKind,
+    StreamRole,
     align,
     ordered_to_bits,
+    to_signed,
 )
 from .model import FormatError, Mesh
 from .rank_mask import read_rank_mask
 from .select_bits import read_select_bits
+from .surface_values import decode_crease, decode_normal, decode_uv
 from .topology import next_corners
 
 _SHORT_ID_LIMIT = 65536
@@ -54,70 +60,93 @@ class _Sections:
             for index in range(count)
         ]
         self._sections = {}
-        previous_kind = 0
-        for index, (kind, flags, offset) in enumerate(entries):
-            if kind <= previous_kind or offset != expected:
+        previous = (0, 0)
+        for index, (kind, flags, layer, offset) in enumerate(entries):
+            if (kind, layer) <= previous or offset != expected:
                 raise FormatError("File directory is out of order")
-            end = entries[index + 1][2] if index + 1 < count else limit
+            end = entries[index + 1][3] if index + 1 < count else limit
             if end < offset or end > limit or end != align(end):
                 raise FormatError("File section is out of bounds")
             try:
                 known = SectionKind(kind)
-                self._sections[known] = (SectionFlags(flags), data[offset:end])
+                self._sections[known, layer] = (SectionFlags(flags), data[offset:end])
             except ValueError as error:
                 raise FormatError("File has an unknown section") from error
-            previous_kind = kind
+            previous = (kind, layer)
             expected = end
         if expected != limit:
             raise FormatError("File has bytes no section claims")
 
-    def has(self, kind: SectionKind) -> bool:
-        return kind in self._sections
+    def has(self, kind: SectionKind, layer: int = 0) -> bool:
+        return (kind, layer) in self._sections
 
-    def raw(self, kind: SectionKind) -> bytes:
-        if kind not in self._sections:
+    def raw(self, kind: SectionKind, layer: int = 0) -> bytes:
+        if (kind, layer) not in self._sections:
             raise FormatError(f"File is missing section {kind.name}")
-        return self._sections[kind][1]
+        return self._sections[kind, layer][1]
 
-    def column(self, kind: SectionKind, count: int) -> list:
-        if kind not in self._sections:
+    def column(self, kind: SectionKind, count: int, layer: int = 0) -> list:
+        if (kind, layer) not in self._sections:
             raise FormatError(f"File is missing section {kind.name}")
-        flags, section = self._sections[kind]
+        flags, section = self._sections[kind, layer]
         values = read_column(section, flags)
         if len(values) != count:
             raise FormatError(f"Section {kind.name} has the wrong element count")
         return values
 
-    def count_of(self, kind: SectionKind) -> int:
-        return struct.unpack_from("<I", self.raw(kind))[0]
+    def count_of(self, kind: SectionKind, layer: int = 0) -> int:
+        return struct.unpack_from("<I", self.raw(kind, layer))[0]
 
     def flags(self, kind: SectionKind) -> SectionFlags:
-        return self._sections[kind][0]
+        return self._sections[kind, 0][0]
 
 
-def _read_axis(sections: _Sections, axis: int, count: int) -> list:
+def _float_from_bits(bits: int) -> float:
+    return struct.unpack("<f", struct.pack("<I", bits))[0]
+
+
+def _read_axis(sections: _Sections, axis: int, count: int, exponent: int) -> list:
     constant = SectionKind(SectionKind.POSITION_CONSTANT_X + axis)
     bits = SectionKind(SectionKind.POSITION_BITS_X + axis)
+    grid = SectionKind(SectionKind.POSITION_GRID_X + axis)
     palette_kind = SectionKind(SectionKind.POSITION_PALETTE_X + axis)
     indices_kind = SectionKind(SectionKind.POSITION_INDICES_X + axis)
     if sections.has(constant):
-        return [struct.unpack("<I", sections.raw(constant))[0]] * count
+        stored = struct.unpack("<I", sections.raw(constant)[:4])[0]
+        return [_float_from_bits(stored)] * count
     if sections.has(bits):
-        return [ordered_to_bits(value) for value in sections.column(bits, count)]
-    palette = sections.column(palette_kind, sections.count_of(palette_kind))
-    indices = sections.column(indices_kind, count)
-    try:
-        if sections.flags(indices_kind) & SectionFlags.SIGNED_INDICES:
-            return [palette[i >> 1] | ((i & 1) << 31) for i in indices]
-        return [palette[i] for i in indices]
-    except IndexError as error:
-        raise FormatError("Position palette index is out of range") from error
+        return [
+            _float_from_bits(ordered_to_bits(value))
+            for value in sections.column(bits, count)
+        ]
+    if exponent == NO_GRID:
+        raise FormatError("Grid positions have no grid")
+    if sections.has(grid):
+        stored = [to_signed(value) for value in sections.column(grid, count)]
+    else:
+        palette = sections.column(palette_kind, sections.count_of(palette_kind))
+        indices = sections.column(indices_kind, count)
+        try:
+            if sections.flags(indices_kind) & SectionFlags.SIGNED_INDICES:
+                stored = [
+                    -palette[i >> 1] if i & 1 else palette[i >> 1] for i in indices
+                ]
+            else:
+                stored = [palette[i] for i in indices]
+        except IndexError as error:
+            raise FormatError("Position palette index is out of range") from error
+    return [math.ldexp(value, exponent) for value in stored]
 
 
-def _read_positions(sections: _Sections, vertex_count: int, unique_count: int) -> list:
+def _read_positions(
+    sections: _Sections, vertex_count: int, unique_count: int, exponent: int
+) -> list:
     if not vertex_count:
         return []
-    axes = [_read_axis(sections, axis, unique_count) for axis in range(AXIS_COUNT)]
+    axes = [
+        _read_axis(sections, axis, unique_count, exponent)
+        for axis in range(AXIS_COUNT)
+    ]
     rows = list(zip(*axes, strict=True))
     if not sections.has(SectionKind.POSITION_REPEAT_MASK):
         if unique_count != vertex_count:
@@ -129,38 +158,166 @@ def _read_positions(sections: _Sections, vertex_count: int, unique_count: int) -
     repeat_ids = iter(
         sections.column(SectionKind.POSITION_REPEAT_IDS, vertex_count - unique_count)
     )
-    bits = []
+    values = []
     next_unique = 0
     try:
         for marked in marks:
             if marked:
-                bits.extend(rows[next(repeat_ids)])
+                values.extend(rows[next(repeat_ids)])
             else:
-                bits.extend(rows[next_unique])
+                values.extend(rows[next_unique])
                 next_unique += 1
     except (IndexError, StopIteration) as error:
         raise FormatError("Repeated position ID is out of range") from error
-    return bits
+    return values
 
 
-def _read_back_distances(sections: _Sections, corner_count: int) -> list:
-    kind = SectionKind.CORNER_BACK_DISTANCES
-    distances = iter(sections.column(kind, sections.count_of(kind)))
-    marks = read_rank_mask(sections.raw(SectionKind.CORNER_REPEAT_MASK), corner_count)
-    corners = []
+def _resolve_back_references(marks: list, distances: list, limit_name: str) -> list:
+    """Turn a repeat mask and distances back into one ID per element."""
+    references = iter(distances)
+    resolved = []
     newest = 0
     try:
         for marked in marks:
             if marked:
-                corners.append(newest - 1 - next(distances))
+                resolved.append(newest - 1 - next(references))
             else:
-                corners.append(newest)
+                resolved.append(newest)
                 newest += 1
     except StopIteration as error:
-        raise FormatError("Corner distances do not match their mask") from error
-    if corners and min(corners) < 0:
-        raise FormatError("Corner reaches back before the first vertex")
-    return corners
+        raise FormatError(f"{limit_name} distances do not match their mask") from error
+    if resolved and min(resolved) < 0:
+        raise FormatError(f"{limit_name} reaches back before the first value")
+    return resolved
+
+
+def _read_back_distances(sections: _Sections, corner_count: int) -> list:
+    kind = SectionKind.CORNER_BACK_DISTANCES
+    marks = read_rank_mask(sections.raw(SectionKind.CORNER_REPEAT_MASK), corner_count)
+    distances = sections.column(kind, sections.count_of(kind))
+    return _resolve_back_references(marks, distances, "Corner")
+
+
+def _read_corner_stream(
+    sections: _Sections, first_kind: SectionKind, layer: int, corners: list
+) -> list:
+    """Return one stored pair per corner, from either stream form."""
+
+    def kind(role: StreamRole) -> SectionKind:
+        return SectionKind(first_kind + role)
+
+    if sections.has(kind(StreamRole.REPEAT_MASK), layer):
+        marks = read_rank_mask(
+            sections.raw(kind(StreamRole.REPEAT_MASK), layer), len(corners)
+        )
+        distances = sections.column(
+            kind(StreamRole.DISTANCES), sum(marks), layer
+        )
+        ids = _resolve_back_references(marks, distances, "Corner stream")
+        count = len(corners) - sum(marks)
+        values_a = sections.column(kind(StreamRole.VALUES_A), count, layer)
+        values_b = sections.column(kind(StreamRole.VALUES_B), count, layer)
+        return [(values_a[i], values_b[i]) for i in ids]
+    vertex_kind = kind(StreamRole.VERTEX_A)
+    vertex_a = sections.column(
+        vertex_kind, sections.count_of(vertex_kind, layer), layer
+    )
+    vertex_b = sections.column(kind(StreamRole.VERTEX_B), len(vertex_a), layer)
+    if corners and max(corners) >= len(vertex_a):
+        raise FormatError("Corner stream does not cover every vertex")
+    pairs = [(vertex_a[v], vertex_b[v]) for v in corners]
+    if sections.has(kind(StreamRole.EXCEPTION_MASK), layer):
+        marks = read_rank_mask(
+            sections.raw(kind(StreamRole.EXCEPTION_MASK), layer), len(corners)
+        )
+        count = sum(marks)
+        except_a = iter(sections.column(kind(StreamRole.EXCEPTION_A), count, layer))
+        except_b = iter(sections.column(kind(StreamRole.EXCEPTION_B), count, layer))
+        for corner, marked in enumerate(marks):
+            if marked:
+                pairs[corner] = (next(except_a), next(except_b))
+    return pairs
+
+
+def _read_uv_names(section: bytes) -> list:
+    try:
+        count = struct.unpack_from("<I", section)[0]
+        names = []
+        at = 4
+        for _ in range(count):
+            length = struct.unpack_from("<I", section, at)[0]
+            at += 4
+            if at + length > len(section):
+                raise FormatError("UV layer name is out of bounds")
+            names.append(section[at : at + length].decode("utf-8"))
+            at += length
+    except (struct.error, UnicodeDecodeError) as error:
+        raise FormatError("UV layer names are invalid") from error
+    if any(section[at:]) or align(at) != len(section):
+        raise FormatError("UV layer names have invalid padding")
+    return names
+
+
+def _read_flags(sections: _Sections, kind: SectionKind, count: int) -> array:
+    if not sections.has(kind):
+        return array("B")
+    values = sections.column(kind, count)
+    if values and max(values) > 1:
+        raise FormatError(f"Section {kind.name} holds a value other than 0 or 1")
+    return array("B", values)
+
+
+def _read_creases(sections: _Sections, kind: SectionKind, count: int) -> array:
+    if not sections.has(kind):
+        return array("f")
+    return array("f", [decode_crease(v) for v in sections.column(kind, count)])
+
+
+def _read_surface(
+    sections: _Sections,
+    corners: list,
+    edges: int,
+    faces: int,
+    vertices: int,
+    flags: MeshFlags,
+) -> dict:
+    surface = {
+        "has_custom_normals": bool(flags & MeshFlags.CUSTOM_NORMALS),
+        "sharp_edges": _read_flags(sections, SectionKind.EDGE_SHARP, edges),
+        "seam_edges": _read_flags(sections, SectionKind.EDGE_SEAM, edges),
+        "flat_faces": _read_flags(sections, SectionKind.FACE_FLAT, faces),
+        "edge_creases": _read_creases(sections, SectionKind.EDGE_CREASES, edges),
+        "vertex_creases": _read_creases(
+            sections, SectionKind.VERTEX_CREASES, vertices
+        ),
+    }
+    has_normals = sections.has(SectionKind.NORMAL_REPEAT_MASK) or sections.has(
+        SectionKind.NORMAL_VERTEX_A
+    )
+    if has_normals:
+        pairs = _read_corner_stream(
+            sections, SectionKind.NORMAL_REPEAT_MASK, 0, corners
+        )
+        surface["corner_normals"] = array(
+            "f", [part for a, b in pairs for part in decode_normal(a, b)]
+        )
+    layers = {}
+    if sections.has(SectionKind.UV_NAMES):
+        names = _read_uv_names(sections.raw(SectionKind.UV_NAMES))
+        for layer, name in enumerate(names):
+            pairs = _read_corner_stream(
+                sections, SectionKind.UV_REPEAT_MASK, layer, corners
+            )
+            layers[name] = array(
+                "f",
+                [
+                    decode_uv(to_signed(part))
+                    for pair in pairs
+                    for part in pair
+                ],
+            )
+    surface["uv_layers"] = layers
+    return surface
 
 
 def _read_corners(sections: _Sections, corner_count: int, face_count: int, arity: int):
@@ -266,9 +423,19 @@ def decode(data: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
     info = sections.raw(SectionKind.MESH_INFO)
     if len(info) != MESH_INFO.size:
         raise FormatError("Mesh info has the wrong size")
-    vertices, faces, corner_count, edge_count, unique, arity = MESH_INFO.unpack(info)
+    (
+        vertices,
+        faces,
+        corner_count,
+        edge_count,
+        unique,
+        arity,
+        exponent,
+        flags,
+    ) = MESH_INFO.unpack(info)
     width = 2 if vertices <= _SHORT_ID_LIMIT else 4
     expanded = vertices * 12 + (corner_count + edge_count * 2) * width + faces * 4
+    expanded += corner_count * 12 if sections.has(SectionKind.NORMAL_VERTEX_A) else 0
     if expanded > max_bytes:
         raise FormatError("Decoded mesh exceeds the configured size limit")
     if unique > vertices or (faces and not corner_count):
@@ -276,15 +443,14 @@ def decode(data: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
     if arity and arity * faces != corner_count:
         raise FormatError("Invalid uniform face layout")
 
-    bits = _read_positions(sections, vertices, unique)
+    position_values = _read_positions(sections, vertices, unique, exponent)
     corners = _read_corners(sections, corner_count, faces, arity)
     mixed = corner_count and not arity
     stored_sizes = _read_face_sizes(sections, corner_count, faces) if mixed else []
     sizes = [arity] * faces if arity else stored_sizes
     edges = _read_edges(sections, edge_count, corners, sizes)
 
-    positions = array("f")
-    positions.frombytes(array("I", bits).tobytes())
+    positions = array("f", position_values)
     code = "H" if width == 2 else "I"
     try:
         mesh = Mesh(
@@ -293,6 +459,9 @@ def decode(data: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
             array(code, corners),
             array(code, edges),
             arity=arity,
+            **_read_surface(
+                sections, corners, edge_count, faces, vertices, MeshFlags(flags)
+            ),
         )
     except OverflowError as error:
         raise FormatError("Topology references a missing vertex") from error

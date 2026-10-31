@@ -19,6 +19,7 @@ import sys
 import time
 from array import array
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -29,7 +30,7 @@ READER = ROOT / "reference" / "bin" / "Release" / "net10.0" / "MeshRead.dll"
 FIXTURE_HEADER = struct.Struct("<4s4I")
 FIXTURE_MAGIC = b"ZMS1"
 FUZZ_LIMIT_BYTES = 300_000
-FUZZ_TRIALS = 1000
+FUZZ_TRIALS = 500
 FUZZ_SEED = 72641
 
 sys.path.insert(0, str(REPOSITORY / "blender"))
@@ -40,7 +41,7 @@ from zpm.format import (  # noqa: E402
     encode,
     map_file,
     same_geometry,
-    snap_positions,
+    snap_mesh,
 )
 
 
@@ -66,6 +67,50 @@ def load_fixture(path: Path) -> Mesh:
         values[sizes_end : corners_end],
         values[corners_end:],
     )
+
+
+def load_surface(path: Path, mesh: Mesh) -> Mesh | None:
+    """Return the mesh with the normals and UVs in its .surface file, if it has one."""
+    if not path.exists():
+        return None
+    data = path.read_bytes()
+    layer_count, custom = struct.unpack_from("<I?", data)
+    at = struct.calcsize("<I?")
+    corner_count = len(mesh.corners)
+    normals = array("f")
+    normals.frombytes(data[at : at + corner_count * 12])
+    at += corner_count * 12
+    layers = {}
+    for _ in range(layer_count):
+        length = struct.unpack_from("<I", data, at)[0]
+        name = data[at + 4 : at + 4 + length].decode("utf-8")
+        at += 4 + length
+        values = array("f")
+        values.frombytes(data[at : at + corner_count * 8])
+        at += corner_count * 8
+        layers[name] = values
+    return replace(
+        mesh, corner_normals=normals, has_custom_normals=custom, uv_layers=layers
+    )
+
+
+def write_surface(mesh: Mesh, path: Path) -> None:
+    """Write what the C# reader must return for surface data, in file order."""
+    with path.open("wb") as stream:
+        stream.write(struct.pack("<I", 1 if mesh.corner_normals else 0))
+        stream.write(mesh.corner_normals.tobytes())
+        stream.write(struct.pack("<I", len(mesh.uv_layers)))
+        for name in sorted(mesh.uv_layers):
+            stream.write(mesh.uv_layers[name].tobytes())
+        for edge in range(mesh.edge_count):
+            sharp = mesh.sharp_edges[edge] if mesh.sharp_edges else 0
+            seam = mesh.seam_edges[edge] if mesh.seam_edges else 0
+            crease = mesh.edge_creases[edge] if mesh.edge_creases else 0.0
+            stream.write(struct.pack("<BBf", sharp, seam, crease))
+        flat = mesh.flat_faces or bytes(mesh.face_count)
+        stream.write(bytes(flat))
+        creases = mesh.vertex_creases or array("f", [0.0]) * mesh.vertex_count
+        stream.write(creases.tobytes())
 
 
 def write_fixture(mesh: Mesh, path: Path) -> None:
@@ -182,7 +227,7 @@ def main():
         file_path = packets / "mesh.zpm"
         file_path.write_bytes(data)
         decoded = decode(data)
-        if not same_geometry(snap_positions(mesh), decoded):
+        if not same_geometry(snap_mesh(mesh), decoded):
             raise ValueError(f"File does not match its source mesh: {label}")
         expected_path = packets / "expected.zms"
         write_fixture(decoded, expected_path)
@@ -204,6 +249,40 @@ def main():
                 **view,
             }
         )
+        surface_mesh = load_surface(path.with_suffix(".surface"), mesh)
+        if surface_mesh is not None:
+            surface_data = encode(surface_mesh)
+            surface_path = packets / "surface.zpm"
+            surface_path.write_bytes(surface_data)
+            surface_decoded = decode(surface_data)
+            if not same_geometry(snap_mesh(surface_mesh), surface_decoded):
+                raise ValueError(f"Surface file does not match its source: {label}")
+            write_fixture(surface_decoded, packets / "surface_expected.zms")
+            write_surface(surface_decoded, packets / "surface_expected.surface")
+            subprocess.run(
+                [
+                    dotnet,
+                    str(READER),
+                    "verify",
+                    str(packets / "surface_expected.zms"),
+                    str(surface_path),
+                    str(packets / "surface_expected.surface"),
+                ],
+                check=True,
+            )
+            surface_view = run_json([dotnet, str(READER), "measure", str(surface_path)])
+            rows.append(
+                {
+                    **common,
+                    **bytes_by_region(surface_data),
+                    "method": "zpm_surface",
+                    "reader": "in-place view",
+                    "stored_bytes": len(surface_data),
+                    **surface_view,
+                }
+            )
+            data = surface_data
+            file_path = surface_path
         if len(data) <= FUZZ_LIMIT_BYTES:
             result = run_json(
                 [

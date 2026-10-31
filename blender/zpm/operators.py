@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class IMPORT_MESH_OT_zpm(bpy.types.Operator, ImportHelper):
-    """Import exact mesh geometry; this version contains no scene attributes"""
+    """Import mesh geometry and surface data; this version holds no scene data"""
 
     bl_idname = "import_mesh.zpm"
     bl_label = "Import ZPM Mesh"
@@ -57,7 +57,7 @@ class IMPORT_MESH_OT_zpm(bpy.types.Operator, ImportHelper):
 
 
 class EXPORT_MESH_OT_zpm(bpy.types.Operator, ExportHelper):
-    """Export the active object's authored positions, faces and edges only"""
+    """Export the active object's base mesh and its surface data"""
 
     bl_idname = "export_mesh.zpm"
     bl_label = "Export ZPM Mesh"
@@ -74,8 +74,8 @@ class EXPORT_MESH_OT_zpm(bpy.types.Operator, ExportHelper):
         box = self.layout.box()
         box.label(text="Mesh core only", icon="MESH_DATA")
         box.label(text="Active object, local coordinates, base mesh.")
-        box.label(text="Positions, edges, triangles, quads and n-gons.")
-        box.label(text="UVs, colors, materials and rig data are not exported.")
+        box.label(text="Positions, faces, edges, normals, UVs, sharp, seams, creases.")
+        box.label(text="Colors, materials and rig data are not exported.")
 
     def execute(self, context):
         try:

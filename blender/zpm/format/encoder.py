@@ -2,9 +2,8 @@
 
 """Mesh to file bytes. Every stream takes whichever legal form is smallest."""
 
+import math
 import struct
-import sys
-from array import array
 from dataclasses import dataclass
 
 from .column import encode_column
@@ -14,23 +13,26 @@ from .layout import (
     DIRECTORY_ENTRY,
     FILE_HEADER,
     MAGIC,
-    MAGNITUDE_MASK,
     MAX_RELATIVE_ARITY,
     MAX_UNIFORM_ARITY,
+    MAX_UV_LAYERS,
     MESH_INFO,
-    SIGN_BIT,
+    NO_GRID,
     TAIL_BYTES,
     UINT32_MAX,
     VERSION,
+    MeshFlags,
     SectionFlags,
     SectionKind,
+    StreamRole,
     align,
     bits_to_ordered,
 )
 from .model import FormatError, Mesh
-from .optimize import reorder_mesh, snap_positions
+from .optimize import grid_exponent, reorder_mesh, snap_mesh
 from .rank_mask import encode_rank_mask
 from .select_bits import encode_select_bits
+from .surface_values import encode_crease, encode_normal, encode_uv
 from .topology import next_corners
 
 _REFERENCE_PASSES = 2
@@ -41,11 +43,14 @@ class _Section:
     kind: SectionKind
     data: bytes
     flags: SectionFlags = SectionFlags.NONE
+    layer: int = 0
 
 
-def _column(kind: SectionKind, values: list, extra=SectionFlags.NONE) -> _Section:
+def _column(
+    kind: SectionKind, values: list, extra=SectionFlags.NONE, layer: int = 0
+) -> _Section:
     data, flags = encode_column(values)
-    return _Section(kind, data, flags | extra)
+    return _Section(kind, data, flags | extra, layer)
 
 
 def _stored_bytes(sections: list) -> int:
@@ -54,22 +59,26 @@ def _stored_bytes(sections: list) -> int:
     )
 
 
-def _encode_axis(rows: list, axis: int, count: int) -> list:
-    bits_kind = SectionKind.POSITION_BITS_X + axis
+def _encode_axis(rows: list, axis: int, count: int, exponent: int) -> list:
+    """Return an axis's smallest form: one constant, grid integers, or a palette."""
     column = [rows[i * AXIS_COUNT + axis] for i in range(count)]
+    bits_kind = SectionKind(SectionKind.POSITION_BITS_X + axis)
     if len(set(column)) == 1:
         constant_kind = SectionKind(SectionKind.POSITION_CONSTANT_X + axis)
-        return [_Section(constant_kind, struct.pack("<I", column[0]))]
-    direct = [
-        _column(SectionKind(bits_kind), [bits_to_ordered(bits) for bits in column])
-    ]
-    negative = any(bits & SIGN_BIT for bits in column)
-    palette = sorted({bits & MAGNITUDE_MASK for bits in column})
+        packed = struct.pack("<I", _float_bits(column[0]))
+        return [_Section(constant_kind, packed)]
+    if exponent == NO_GRID:
+        ordered = [bits_to_ordered(_float_bits(value)) for value in column]
+        return [_column(bits_kind, ordered)]
+    grid = [round(math.ldexp(value, -exponent)) for value in column]
+    direct = [_column(SectionKind(SectionKind.POSITION_GRID_X + axis), grid)]
+    negative = any(value < 0 for value in grid)
+    palette = sorted({abs(value) for value in grid})
     lookup = {value: index for index, value in enumerate(palette)}
     if negative:
-        indices = [lookup[bits & MAGNITUDE_MASK] * 2 + (bits >> 31) for bits in column]
+        indices = [lookup[abs(value)] * 2 + (value < 0) for value in grid]
     else:
-        indices = [lookup[bits & MAGNITUDE_MASK] for bits in column]
+        indices = [lookup[value] for value in grid]
     index_flag = SectionFlags.SIGNED_INDICES if negative else SectionFlags.NONE
     palette_kind = SectionKind(SectionKind.POSITION_PALETTE_X + axis)
     indices_kind = SectionKind(SectionKind.POSITION_INDICES_X + axis)
@@ -80,27 +89,34 @@ def _encode_axis(rows: list, axis: int, count: int) -> list:
     return paletted if _stored_bytes(paletted) < _stored_bytes(direct) else direct
 
 
-def _encode_axes(rows: list, count: int) -> list:
+def _float_bits(value: float) -> int:
+    return struct.unpack("<I", struct.pack("<f", value))[0]
+
+
+def _encode_axes(rows: list, count: int, exponent: int) -> list:
     return [
         section
         for axis in range(AXIS_COUNT)
-        for section in _encode_axis(rows, axis, count)
+        for section in _encode_axis(rows, axis, count, exponent)
     ]
 
 
-def _encode_positions(bits: list, vertex_count: int) -> tuple:
+def _encode_positions(mesh: Mesh, exponent: int) -> tuple:
     """Return (sections, unique position count)."""
-    plain = _encode_axes(bits, vertex_count)
+    values = list(mesh.positions)
+    vertex_count = mesh.vertex_count
+    plain = _encode_axes(values, vertex_count, exponent)
     seen = {}
     rows = []
     marks = [False] * vertex_count
     repeat_ids = []
+    raw = mesh.positions.tobytes()
     for vertex in range(vertex_count):
-        key = tuple(bits[vertex * AXIS_COUNT : (vertex + 1) * AXIS_COUNT])
+        key = raw[vertex * 12 : (vertex + 1) * 12]
         known = seen.get(key)
         if known is None:
             seen[key] = len(seen)
-            rows.extend(key)
+            rows.extend(values[vertex * AXIS_COUNT : (vertex + 1) * AXIS_COUNT])
         else:
             marks[vertex] = True
             repeat_ids.append(known)
@@ -109,7 +125,7 @@ def _encode_positions(bits: list, vertex_count: int) -> tuple:
     layered = [
         _Section(SectionKind.POSITION_REPEAT_MASK, encode_rank_mask(marks)),
         _column(SectionKind.POSITION_REPEAT_IDS, repeat_ids),
-        *_encode_axes(rows, len(seen)),
+        *_encode_axes(rows, len(seen), exponent),
     ]
     if _stored_bytes(layered) < _stored_bytes(plain):
         return layered, len(seen)
@@ -266,22 +282,158 @@ def _encode_edges(edges: list, corners: list, sizes: list) -> list:
     return endpoints
 
 
-def _position_bits(mesh: Mesh) -> list:
-    bits = array("I")
-    bits.frombytes(mesh.positions.tobytes())
-    if sys.byteorder != "little":
-        bits.byteswap()
-    return bits.tolist()
+def _stream_kind(first_kind: SectionKind, role: StreamRole) -> SectionKind:
+    return SectionKind(first_kind + role)
+
+
+def _encode_shared_stream(pairs: list, first_kind: SectionKind, layer: int) -> list:
+    """Store each distinct pair once; corners reach back to it by distance."""
+    known = {}
+    marks = []
+    distances = []
+    values_a = []
+    values_b = []
+    for pair in pairs:
+        index = known.get(pair)
+        if index is None:
+            known[pair] = len(known)
+            values_a.append(pair[0])
+            values_b.append(pair[1])
+            marks.append(False)
+        else:
+            marks.append(True)
+            distances.append(len(known) - 1 - index)
+    return [
+        _Section(
+            _stream_kind(first_kind, StreamRole.REPEAT_MASK),
+            encode_rank_mask(marks),
+            layer=layer,
+        ),
+        _column(
+            _stream_kind(first_kind, StreamRole.DISTANCES), distances, layer=layer
+        ),
+        _column(_stream_kind(first_kind, StreamRole.VALUES_A), values_a, layer=layer),
+        _column(_stream_kind(first_kind, StreamRole.VALUES_B), values_b, layer=layer),
+    ]
+
+
+def _encode_vertex_stream(
+    pairs: list, corners: list, vertex_count: int, first_kind: SectionKind, layer: int
+) -> list:
+    """Store one pair per vertex, with the corners that disagree stored apart."""
+    by_vertex = [(0, 0)] * vertex_count
+    assigned = [False] * vertex_count
+    marks = []
+    exceptions = []
+    for pair, vertex in zip(pairs, corners, strict=True):
+        if not assigned[vertex]:
+            assigned[vertex] = True
+            by_vertex[vertex] = pair
+        marks.append(by_vertex[vertex] != pair)
+        if marks[-1]:
+            exceptions.append(pair)
+    sections = [
+        _column(
+            _stream_kind(first_kind, StreamRole.VERTEX_A),
+            [pair[0] for pair in by_vertex],
+            layer=layer,
+        ),
+        _column(
+            _stream_kind(first_kind, StreamRole.VERTEX_B),
+            [pair[1] for pair in by_vertex],
+            layer=layer,
+        ),
+    ]
+    if exceptions:
+        sections += [
+            _Section(
+                _stream_kind(first_kind, StreamRole.EXCEPTION_MASK),
+                encode_rank_mask(marks),
+                layer=layer,
+            ),
+            _column(
+                _stream_kind(first_kind, StreamRole.EXCEPTION_A),
+                [pair[0] for pair in exceptions],
+                layer=layer,
+            ),
+            _column(
+                _stream_kind(first_kind, StreamRole.EXCEPTION_B),
+                [pair[1] for pair in exceptions],
+                layer=layer,
+            ),
+        ]
+    return sections
+
+
+def _encode_corner_stream(
+    pairs: list, mesh: Mesh, first_kind: SectionKind, layer: int = 0
+) -> list:
+    corners = list(mesh.corners)
+    shared = _encode_shared_stream(pairs, first_kind, layer)
+    by_vertex = _encode_vertex_stream(
+        pairs, corners, mesh.vertex_count, first_kind, layer
+    )
+    return by_vertex if _stored_bytes(by_vertex) < _stored_bytes(shared) else shared
+
+
+def _encode_uv_names(names: list) -> _Section:
+    data = bytearray(struct.pack("<I", len(names)))
+    for name in names:
+        encoded = name.encode("utf-8")
+        data += struct.pack("<I", len(encoded)) + encoded
+    return _Section(SectionKind.UV_NAMES, bytes(data))
+
+
+def _encode_surface(mesh: Mesh) -> list:
+    sections = []
+    if mesh.corner_normals:
+        normals = mesh.corner_normals
+        pairs = [
+            encode_normal(normals[at], normals[at + 1], normals[at + 2])
+            for at in range(0, len(normals), AXIS_COUNT)
+        ]
+        sections += _encode_corner_stream(pairs, mesh, SectionKind.NORMAL_REPEAT_MASK)
+    names = sorted(mesh.uv_layers)
+    if len(names) > MAX_UV_LAYERS:
+        raise FormatError("Mesh has too many UV layers")
+    if names:
+        sections.append(_encode_uv_names(names))
+    for layer, name in enumerate(names):
+        values = mesh.uv_layers[name]
+        pairs = [
+            (encode_uv(values[at]), encode_uv(values[at + 1]))
+            for at in range(0, len(values), 2)
+        ]
+        sections += _encode_corner_stream(
+            pairs, mesh, SectionKind.UV_REPEAT_MASK, layer
+        )
+    for kind, flags in (
+        (SectionKind.EDGE_SHARP, mesh.sharp_edges),
+        (SectionKind.EDGE_SEAM, mesh.seam_edges),
+        (SectionKind.FACE_FLAT, mesh.flat_faces),
+    ):
+        if any(flags):
+            sections.append(_column(kind, [1 if flag else 0 for flag in flags]))
+    for kind, creases in (
+        (SectionKind.EDGE_CREASES, mesh.edge_creases),
+        (SectionKind.VERTEX_CREASES, mesh.vertex_creases),
+    ):
+        stored = [encode_crease(value) for value in creases]
+        if any(stored):
+            sections.append(_column(kind, stored))
+    return sections
 
 
 def _write_file(sections: list) -> bytes:
     """Join sections in rising kind order behind the directory that names them."""
-    sections = sorted(sections, key=lambda section: section.kind)
+    sections = sorted(sections, key=lambda section: (section.kind, section.layer))
     offset = FILE_HEADER.size + len(sections) * DIRECTORY_ENTRY.size
     directory = bytearray()
     body = bytearray()
     for section in sections:
-        directory += DIRECTORY_ENTRY.pack(section.kind, section.flags, offset)
+        directory += DIRECTORY_ENTRY.pack(
+            section.kind, section.flags, section.layer, offset
+        )
         padded = align(len(section.data))
         body += section.data + bytes(padded - len(section.data))
         offset += padded
@@ -292,12 +444,12 @@ def _write_file(sections: list) -> bytes:
 def encode(mesh: Mesh) -> bytes:
     """Return the smallest file bytes for a validated mesh.
 
-    Positions snap to a grid of at most 1 / 2^20 of the model's size. Faces, vertices
-    and edges are reordered only when that makes the file smaller. Costs seconds on
-    large meshes; reading the result costs nothing extra.
+    Values snap as snap_mesh describes. Faces, vertices and edges are reordered only
+    when that makes the file smaller. Costs seconds on large meshes; reading the
+    result costs nothing extra.
     """
     mesh.validate()
-    snapped = snap_positions(mesh)
+    snapped = snap_mesh(mesh)
     as_stored = _encode_mesh(snapped)
     reordered = _encode_mesh(reorder_mesh(snapped))
     return reordered if len(reordered) < len(as_stored) else as_stored
@@ -314,8 +466,9 @@ def _encode_mesh(mesh: Mesh) -> bytes:
 
     sections = []
     unique_count = 0
+    exponent = grid_exponent(mesh.positions)
     if vertex_count:
-        positions, unique_count = _encode_positions(_position_bits(mesh), vertex_count)
+        positions, unique_count = _encode_positions(mesh, exponent)
         sections += positions
     arity = 0
     if corners:
@@ -326,8 +479,17 @@ def _encode_mesh(mesh: Mesh) -> bytes:
             sections.append(_encode_face_starts(sizes, len(corners)))
     if edges:
         sections += _encode_edges(edges, corners, sizes)
+    sections += _encode_surface(mesh)
+    custom = MeshFlags.CUSTOM_NORMALS if mesh.has_custom_normals else MeshFlags.NONE
     info = MESH_INFO.pack(
-        vertex_count, face_count, len(corners), mesh.edge_count, unique_count, arity
+        vertex_count,
+        face_count,
+        len(corners),
+        mesh.edge_count,
+        unique_count,
+        arity,
+        exponent,
+        custom,
     )
     sections.append(_Section(SectionKind.MESH_INFO, info))
     return _write_file(sections)

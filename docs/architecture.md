@@ -12,6 +12,7 @@ reader, and nothing depends on benchmarks.
 | `blender/zpm/format/column.py`, `rank_mask.py`, `select_bits.py` | The three storage types |
 | `blender/zpm/format/encoder.py`, `decoder.py` | `Mesh` to bytes and back |
 | `blender/zpm/format/optimize.py` | Position snapping, reordering, and the geometry check |
+| `blender/zpm/format/surface_values.py` | Stored forms of normals, UVs and creases |
 | `blender/zpm/format/topology.py` | Face facts both directions share |
 | `blender/zpm/format/files.py` | Bounded reads and atomic writes |
 | `blender/zpm/format/file_map.py` | Names every byte of a file |

@@ -2,6 +2,7 @@
 
 """Format tests run in ordinary Python, without bpy or Blender installed."""
 
+import math
 import struct
 import sys
 import tempfile
@@ -20,9 +21,10 @@ from zpm.format import (
     map_file,
     same_geometry,
     save,
-    snap_positions,
+    snap_mesh,
 )
 from zpm.format.layout import DIRECTORY_ENTRY, FILE_HEADER, SectionKind
+from zpm.format.surface_values import decode_normal, encode_normal
 
 
 def triangle() -> Mesh:
@@ -77,6 +79,27 @@ def real_fixture() -> Mesh:
     )
 
 
+def surface_mesh() -> Mesh:
+    mesh = grid_mesh(12)
+    corners = len(mesh.corners)
+    normals = array("f")
+    for corner in range(corners):
+        angle = corner * 0.01
+        normals.extend((math.sin(angle), 0.0, math.cos(angle)))
+    mesh.corner_normals = normals
+    mesh.has_custom_normals = True
+    mesh.uv_layers = {
+        "UVMap": array("f", [corner * 0.125 % 1 for corner in range(corners * 2)]),
+        "Detail": array("f", [corner * 0.5 for corner in range(corners * 2)]),
+    }
+    mesh.sharp_edges = array("B", [i % 7 == 0 for i in range(mesh.edge_count)])
+    mesh.seam_edges = array("B", [i % 11 == 0 for i in range(mesh.edge_count)])
+    mesh.flat_faces = array("B", [i % 3 == 0 for i in range(mesh.face_count)])
+    mesh.edge_creases = array("f", [(i % 5) / 4 for i in range(mesh.edge_count)])
+    mesh.vertex_creases = array("f", [(i % 3) / 2 for i in range(mesh.vertex_count)])
+    return mesh
+
+
 def empty_mesh() -> Mesh:
     return Mesh(array("f"), array("I"), array("I"), array("I"))
 
@@ -84,7 +107,7 @@ def empty_mesh() -> Mesh:
 class CodecTests(unittest.TestCase):
     def assert_round_trip(self, source):
         decoded = decode(encode(source))
-        self.assertTrue(same_geometry(snap_positions(source), decoded))
+        self.assertTrue(same_geometry(snap_mesh(source), decoded))
 
     def test_triangle(self):
         self.assert_round_trip(triangle())
@@ -155,7 +178,7 @@ class CodecTests(unittest.TestCase):
 
     def test_snapping_moves_points_barely_and_only_once(self):
         source = real_fixture()
-        snapped = snap_positions(source)
+        snapped = snap_mesh(source)
         extent = max(
             max(source.positions[axis::3]) - min(source.positions[axis::3])
             for axis in range(3)
@@ -165,12 +188,12 @@ class CodecTests(unittest.TestCase):
         )
         self.assertLessEqual(moved, extent / 2**21)
         self.assertEqual(
-            snap_positions(snapped).positions.tobytes(), snapped.positions.tobytes()
+            snap_mesh(snapped).positions.tobytes(), snapped.positions.tobytes()
         )
 
     def test_shared_positions_stay_shared(self):
         source = real_fixture()
-        snapped = snap_positions(source)
+        snapped = snap_mesh(source)
         groups = {}
         for vertex in range(source.vertex_count):
             before = tuple(source.positions[vertex * 3 : vertex * 3 + 3])
@@ -188,8 +211,31 @@ class CodecTests(unittest.TestCase):
         self.assertIn("EDGE_FIRST_USE", names)
         self.assertNotIn("EDGE_CORNERS", names)
 
+    def test_surface_data_round_trip_and_follows_reordering(self):
+        source = surface_mesh()
+        decoded = decode(encode(source))
+        self.assertTrue(same_geometry(snap_mesh(source), decoded))
+        self.assertEqual(sorted(decoded.uv_layers), ["Detail", "UVMap"])
+        self.assertTrue(decoded.has_custom_normals)
+        self.assertEqual(sum(decoded.sharp_edges), sum(source.sharp_edges))
+
+    def test_normal_error_stays_tiny(self):
+        worst = 0.0
+        for i in range(2000):
+            a, b = i * 0.0031, i * 0.0177
+            n = (math.sin(a) * math.cos(b), math.sin(a) * math.sin(b), math.cos(a))
+            back = decode_normal(*encode_normal(*n))
+            dot = max(-1.0, min(1.0, sum(x * y for x, y in zip(n, back, strict=True))))
+            worst = max(worst, math.degrees(math.acos(dot)))
+        self.assertLess(worst, 0.1)
+
+    def test_snapping_surface_twice_changes_nothing(self):
+        once = snap_mesh(surface_mesh())
+        self.assertTrue(same_geometry(once, snap_mesh(once)))
+
     def test_every_byte_is_named_exactly_once(self):
-        for mesh in (triangle(), mixed_mesh(), grid_mesh(), empty_mesh()):
+        meshes = (triangle(), mixed_mesh(), grid_mesh(), empty_mesh(), surface_mesh())
+        for mesh in meshes:
             data = encode(mesh)
             at = 0
             for region in map_file(data):

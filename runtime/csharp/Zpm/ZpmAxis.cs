@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+using System;
 using System.Runtime.CompilerServices;
 
 namespace Zpm;
@@ -6,14 +7,16 @@ namespace Zpm;
 /// <summary>One position axis: stored bits, a palette with indices, or one constant value.</summary>
 public unsafe struct ZpmAxis
 {
-    enum Storage : byte { Missing, Bits, Palette, SignedPalette, Constant }
+    enum Storage : byte { Missing, Bits, Grid, Palette, SignedPalette, Constant }
 
     const uint SignBit = 0x80000000u;
     const int SignShift = 31;
     const int Stride = 3;
+    const int LowBit = 1;
 
     Storage _storage;
     uint _constant;
+    float _step;
     ZpmColumn _values;
     ZpmColumn _indices;
 
@@ -23,6 +26,13 @@ public unsafe struct ZpmAxis
     public void BindBits(byte* section, ZpmSectionFlags flags)
     {
         _storage = Storage.Bits;
+        _values = ZpmColumn.Bind(section, flags);
+    }
+
+    public void BindGrid(byte* section, ZpmSectionFlags flags, float step)
+    {
+        _storage = Storage.Grid;
+        _step = step;
         _values = ZpmColumn.Bind(section, flags);
     }
 
@@ -37,14 +47,18 @@ public unsafe struct ZpmAxis
         _values = ZpmColumn.Bind(section, flags);
     }
 
-    public void BindIndices(byte* section, ZpmSectionFlags flags)
+    public void BindIndices(byte* section, ZpmSectionFlags flags, float step)
     {
+        _step = step;
         _storage = (flags & ZpmSectionFlags.SignedIndices) != 0 ? Storage.SignedPalette : Storage.Palette;
         _indices = ZpmColumn.Bind(section, flags);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     static uint OrderedToBits(uint ordered) => ordered ^ ((uint)((int)~ordered >> SignShift) | SignBit);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    readonly uint GridToBits(int grid) => BitConverter.SingleToUInt32Bits(grid * _step);
 
     /// <summary>Returns one value's exact Float32 bits.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -55,10 +69,13 @@ public unsafe struct ZpmAxis
             case Storage.Bits:
                 return OrderedToBits(_values.Get(index));
             case Storage.Palette:
-                return _values.Get(_indices.Get(index));
+                return GridToBits((int)_values.Get(_indices.Get(index)));
             case Storage.SignedPalette:
                 uint signed = _indices.Get(index);
-                return _values.Get(signed >> 1) | (signed << SignShift);
+                int size = (int)_values.Get(signed >> LowBit);
+                return GridToBits((signed & LowBit) != 0 ? -size : size);
+            case Storage.Grid:
+                return GridToBits((int)_values.Get(index));
             default:
                 return _constant;
         }
@@ -77,14 +94,20 @@ public unsafe struct ZpmAxis
             case Storage.Palette:
                 _indices.CopyTo(first, length, destination, Stride);
                 for (uint i = 0; i < length; i++, destination += Stride)
-                    *destination = _values.Get(*destination);
+                    *destination = GridToBits((int)_values.Get(*destination));
+                break;
+            case Storage.Grid:
+                _values.CopyTo(first, length, destination, Stride);
+                for (uint i = 0; i < length; i++, destination += Stride)
+                    *destination = GridToBits((int)*destination);
                 break;
             case Storage.SignedPalette:
                 _indices.CopyTo(first, length, destination, Stride);
                 for (uint i = 0; i < length; i++, destination += Stride)
                 {
                     uint signed = *destination;
-                    *destination = _values.Get(signed >> 1) | (signed << SignShift);
+                    int size = (int)_values.Get(signed >> LowBit);
+                    *destination = GridToBits((signed & LowBit) != 0 ? -size : size);
                 }
                 break;
             default:
@@ -100,6 +123,7 @@ public unsafe struct ZpmAxis
         switch (_storage)
         {
             case Storage.Bits:
+            case Storage.Grid:
                 return _values.count == count && _values.ValidateLayout(limit);
             case Storage.Palette:
             case Storage.SignedPalette:

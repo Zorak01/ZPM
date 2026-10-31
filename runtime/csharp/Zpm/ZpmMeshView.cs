@@ -11,8 +11,12 @@ namespace Zpm;
 /// </summary>
 public unsafe struct ZpmMeshView
 {
-    uint _vertexCount, _faceCount, _cornerCount, _edgeCount, _uniqueCount, _arity;
+    uint _vertexCount, _faceCount, _cornerCount, _edgeCount, _uniqueCount, _arity, _sectionCount, _uvLayerCount;
+    float _gridStep;
+    bool _hasGrid, _hasCustomNormals;
+    byte* _data;
     byte* _limit;
+    byte* _uvNames;
 
     bool _hasRepeats;
     ZpmRankMask _repeats;
@@ -23,8 +27,7 @@ public unsafe struct ZpmMeshView
     ZpmColumn _corners, _offset1, _offset2, _offset3;
     bool _hasOffset1, _hasOffset2, _hasOffset3;
     bool _hasBackDistances, _hasFaceStarts;
-    ZpmRankMask _cornerRepeats;
-    ZpmColumn _backDistances;
+    ZpmBackReferences _cornerBack;
     ZpmSelectBits _faceStarts;
 
     bool _hasEndpoints, _hasCorners, _hasSpan, _hasLooseMask, _hasLooseFirst, _hasLooseSecond, _hasEdgeCorners, _hasFlips, _hasFirstUse;
@@ -34,6 +37,10 @@ public unsafe struct ZpmMeshView
     ZpmColumn _edgeCorners, _edgeFlips;
     ZpmSelectBits _edgeFirstUse;
 
+    ZpmCornerStream _normals;
+    bool _hasEdgeSharp, _hasEdgeSeam, _hasEdgeCreases, _hasFaceFlat, _hasVertexCreases;
+    ZpmColumn _edgeSharp, _edgeSeam, _edgeCreases, _faceFlat, _vertexCreases;
+
     public readonly uint vertexCount => _vertexCount;
     public readonly uint faceCount => _faceCount;
     public readonly uint cornerCount => _cornerCount;
@@ -41,6 +48,15 @@ public unsafe struct ZpmMeshView
 
     /// <summary>The corner count shared by every face, or 0 when faces differ.</summary>
     public readonly uint arity => _arity;
+
+    /// <summary>Whether the file holds a normal for every corner.</summary>
+    public readonly bool hasNormals => _normals.isBound;
+
+    /// <summary>Whether normals were authored, so an editor should keep them instead of recalculating.</summary>
+    public readonly bool hasCustomNormals => _hasCustomNormals;
+
+    /// <summary>How many named UV layers the file holds.</summary>
+    public readonly uint uvLayerCount => _uvLayerCount;
 
     /// <summary>
     /// Reads the header and directory and points the view at each section, without reading mesh
@@ -61,32 +77,68 @@ public unsafe struct ZpmMeshView
         if (directoryEnd > limit)
             return false;
         view._limit = data + limit;
+        view._data = data;
+        view._sectionCount = sections;
 
         // Mesh info is the lowest kind, so it is read first and every later section can use its counts.
-        int previousKind = 0;
+        int previous = 0;
         long previousOffset = directoryEnd;
         for (uint i = 0; i < sections; i++)
         {
             byte* entry = data + ZpmLayout.FileHeaderBytes + i * ZpmLayout.DirectoryEntryBytes;
             int kind = Unsafe.ReadUnaligned<ushort>(entry);
-            var flags = (ZpmSectionFlags)Unsafe.ReadUnaligned<ushort>(entry + 2);
+            var flags = (ZpmSectionFlags)entry[2];
+            int layer = entry[3];
             uint offset = Unsafe.ReadUnaligned<uint>(entry + 4);
-            if (kind <= previousKind || offset < previousOffset || (offset & 3) != 0 || offset + (long)ZpmLayout.ColumnCountBytes > limit)
+            int order = (kind << 8) | layer;
+            if (order <= previous || offset < previousOffset || (offset & 3) != 0 || offset + (long)ZpmLayout.ColumnCountBytes > limit)
                 return false;
             if (i == 0 && (ZpmSectionKind)kind != ZpmSectionKind.MeshInfo)
                 return false;
+            if (layer != 0 && !IsUvStreamKind((ZpmSectionKind)kind))
+                return false;
             if (!view.TryBindSection((ZpmSectionKind)kind, flags, data + offset, limit - offset))
                 return false;
-            previousKind = kind;
+            previous = order;
             previousOffset = offset;
         }
         return sections != 0 && view.HasEverySection();
     }
 
+    static bool IsUvStreamKind(ZpmSectionKind kind) => kind >= ZpmSectionKind.UvStream && kind <= ZpmSectionKind.UvStreamLast;
+
     bool TryBindSection(ZpmSectionKind kind, ZpmSectionFlags flags, byte* section, long available)
     {
+        if (IsUvStreamKind(kind))
+            return true;
+        if (kind >= ZpmSectionKind.NormalStream && kind <= ZpmSectionKind.NormalStreamLast)
+            return _normals.TryBindRole(kind - ZpmSectionKind.NormalStream, section, flags, _cornerCount);
         switch (kind)
         {
+            case ZpmSectionKind.UvNames:
+                _uvNames = section;
+                _uvLayerCount = Unsafe.ReadUnaligned<uint>(section);
+                return true;
+            case ZpmSectionKind.EdgeSharp:
+                _edgeSharp = ZpmColumn.Bind(section, flags);
+                _hasEdgeSharp = true;
+                return true;
+            case ZpmSectionKind.EdgeSeam:
+                _edgeSeam = ZpmColumn.Bind(section, flags);
+                _hasEdgeSeam = true;
+                return true;
+            case ZpmSectionKind.EdgeCreases:
+                _edgeCreases = ZpmColumn.Bind(section, flags);
+                _hasEdgeCreases = true;
+                return true;
+            case ZpmSectionKind.FaceFlat:
+                _faceFlat = ZpmColumn.Bind(section, flags);
+                _hasFaceFlat = true;
+                return true;
+            case ZpmSectionKind.VertexCreases:
+                _vertexCreases = ZpmColumn.Bind(section, flags);
+                _hasVertexCreases = true;
+                return true;
             case ZpmSectionKind.MeshInfo:
                 return available >= ZpmLayout.MeshInfoBytes && TryReadMeshInfo(section);
             case ZpmSectionKind.PositionRepeatMask:
@@ -122,11 +174,11 @@ public unsafe struct ZpmMeshView
                 _hasFaceStarts = true;
                 return true;
             case ZpmSectionKind.CornerRepeatMask:
-                _cornerRepeats = ZpmRankMask.Bind(section, _cornerCount);
+                _cornerBack.BindMask(section, _cornerCount);
                 _hasCorners = true;
                 return true;
             case ZpmSectionKind.CornerBackDistances:
-                _backDistances = ZpmColumn.Bind(section, flags);
+                _cornerBack.BindDistances(section, flags);
                 _hasBackDistances = true;
                 return true;
             case ZpmSectionKind.EdgeFirstUse:
@@ -175,6 +227,9 @@ public unsafe struct ZpmMeshView
         ref ZpmAxis axis = ref axisIndex == 0 ? ref _x : ref axisIndex == 1 ? ref _y : ref _z;
         switch ((ZpmSectionKind)(value & ~3))
         {
+            case ZpmSectionKind.PositionGridX:
+                axis.BindGrid(section, flags, _gridStep);
+                return _hasGrid;
             case ZpmSectionKind.PositionBitsX:
                 axis.BindBits(section, flags);
                 return true;
@@ -185,8 +240,8 @@ public unsafe struct ZpmMeshView
                 axis.BindPalette(section, flags);
                 return true;
             case ZpmSectionKind.PositionIndicesX:
-                axis.BindIndices(section, flags);
-                return true;
+                axis.BindIndices(section, flags, _gridStep);
+                return _hasGrid;
             default:
                 return false;
         }
@@ -200,6 +255,10 @@ public unsafe struct ZpmMeshView
         _edgeCount = Unsafe.ReadUnaligned<uint>(info + 12);
         _uniqueCount = Unsafe.ReadUnaligned<uint>(info + 16);
         _arity = Unsafe.ReadUnaligned<uint>(info + 20);
+        int exponent = Unsafe.ReadUnaligned<int>(info + 24);
+        _hasGrid = exponent != ZpmLayout.NoGrid;
+        _gridStep = _hasGrid ? MathF.ScaleB(1f, exponent) : 0f;
+        _hasCustomNormals = (Unsafe.ReadUnaligned<uint>(info + 28) & ZpmLayout.CustomNormalsFlag) != 0;
         if (_uniqueCount > _vertexCount)
             return false;
         return _arity == 0 ? _cornerCount != 0 || _faceCount == 0 : (ulong)_arity * _faceCount == _cornerCount;
@@ -236,7 +295,7 @@ public unsafe struct ZpmMeshView
     /// </summary>
     public readonly bool Validate()
     {
-        return ValidatePositions() && ValidateCorners() && ValidateEdges();
+        return ValidatePositions() && ValidateCorners() && ValidateEdges() && ValidateSurface();
     }
 
     readonly bool ValidatePositions()
@@ -257,7 +316,7 @@ public unsafe struct ZpmMeshView
             return true;
         if (_hasBackDistances)
         {
-            if (!ValidateBackDistances())
+            if (!_cornerBack.Validate(_limit, _vertexCount))
                 return false;
         }
         else if (_hasRelativeCorners)
@@ -273,25 +332,6 @@ public unsafe struct ZpmMeshView
 
     readonly bool ValidateOffsets(in ZpmColumn offsets) =>
         offsets.count == _faceCount && offsets.ValidateLayout(_limit) && offsets.ValidateSumBelow(_corners, _vertexCount);
-
-    /// <summary>Walks every distance: only a running count can prove none reaches before vertex 0.</summary>
-    readonly bool ValidateBackDistances()
-    {
-        uint repeated = _backDistances.count;
-        if (repeated > _cornerCount || _cornerCount - repeated > _vertexCount
-            || !_cornerRepeats.Validate(_limit, _cornerCount - repeated) || !_backDistances.ValidateLayout(_limit))
-            return false;
-        uint newest = 0;
-        uint next = 0;
-        for (uint corner = 0; corner < _cornerCount; corner++)
-        {
-            if (!_cornerRepeats.IsSet(corner))
-                newest++;
-            else if (_backDistances.Get(next++) >= newest)
-                return false;
-        }
-        return true;
-    }
 
     readonly bool ValidateFaceStarts() => _faceStarts.Validate(_limit, _faceCount) && _faceStarts.IsSet(0);
 
@@ -327,6 +367,101 @@ public unsafe struct ZpmMeshView
             return false;
         return !_hasFlips || (_edgeFlips.count == attached && _edgeFlips.ValidateLayout(_limit) && _edgeFlips.ValidateBelow(2));
     }
+
+    readonly bool ValidateSurface()
+    {
+        if (_normals.isBound && (_cornerCount == 0 || !_normals.Validate(_limit, _cornerCount, _vertexCount)))
+            return false;
+        return ValidateValues(_hasEdgeSharp, _edgeSharp, _edgeCount, 2)
+            && ValidateValues(_hasEdgeSeam, _edgeSeam, _edgeCount, 2)
+            && ValidateValues(_hasFaceFlat, _faceFlat, _faceCount, 2)
+            && ValidateValues(_hasEdgeCreases, _edgeCreases, _edgeCount, ZpmLayout.CreaseLimit)
+            && ValidateValues(_hasVertexCreases, _vertexCreases, _vertexCount, ZpmLayout.CreaseLimit)
+            && ValidateUvLayers();
+    }
+
+    readonly bool ValidateValues(bool isPresent, in ZpmColumn column, uint count, ulong limit) =>
+        !isPresent || (column.count == count && column.ValidateLayout(_limit) && column.ValidateBelow(limit));
+
+    readonly bool ValidateUvLayers()
+    {
+        if (_uvNames == null)
+            return true;
+        byte* name = _uvNames + ZpmLayout.ColumnCountBytes;
+        for (uint layer = 0; layer < _uvLayerCount; layer++)
+        {
+            if (name + ZpmLayout.ColumnCountBytes > _limit)
+                return false;
+            uint length = Unsafe.ReadUnaligned<uint>(name);
+            if (length > (ulong)(_limit - name) - ZpmLayout.ColumnCountBytes)
+                return false;
+            name += ZpmLayout.ColumnCountBytes + length;
+            if (!TryGetUvLayer(layer, out ZpmCornerStream stream) || !stream.Validate(_limit, _cornerCount, _vertexCount))
+                return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Finds one UV layer by walking the directory. Returns false when it does not exist.
+    /// Keep the result: GetCornerUv on it costs nothing extra.
+    /// </summary>
+    public readonly bool TryGetUvLayer(uint layer, out ZpmCornerStream stream)
+    {
+        stream = default;
+        for (uint i = 0; i < _sectionCount; i++)
+        {
+            byte* entry = _data + ZpmLayout.FileHeaderBytes + i * ZpmLayout.DirectoryEntryBytes;
+            var kind = (ZpmSectionKind)Unsafe.ReadUnaligned<ushort>(entry);
+            if (!IsUvStreamKind(kind) || entry[3] != layer)
+                continue;
+            uint offset = Unsafe.ReadUnaligned<uint>(entry + 4);
+            if (!stream.TryBindRole(kind - ZpmSectionKind.UvStream, _data + offset, (ZpmSectionFlags)entry[2], _cornerCount))
+                return false;
+        }
+        return stream.isBound;
+    }
+
+    /// <summary>Returns one corner's normal. The file must have normals.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public readonly ZpmNormal GetCornerNormal(uint corner)
+    {
+        _normals.GetPair(corner, GetCorner(corner), out uint a, out uint b);
+        float u = a / ZpmLayout.NormalMax * 2f - 1f;
+        float v = b / ZpmLayout.NormalMax * 2f - 1f;
+        float z = 1f - MathF.Abs(u) - MathF.Abs(v);
+        if (z < 0f)
+        {
+            float foldedU = (1f - MathF.Abs(v)) * (u >= 0f ? 1f : -1f);
+            v = (1f - MathF.Abs(u)) * (v >= 0f ? 1f : -1f);
+            u = foldedU;
+        }
+        float scale = 1f / MathF.Sqrt(u * u + v * v + z * z);
+        return new ZpmNormal(u * scale, v * scale, z * scale);
+    }
+
+    /// <summary>Returns one corner's UV from a layer got with TryGetUvLayer.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public readonly ZpmUv GetCornerUv(in ZpmCornerStream layer, uint corner)
+    {
+        layer.GetPair(corner, GetCorner(corner), out uint a, out uint b);
+        return new ZpmUv((int)a / ZpmLayout.UvGridScale, (int)b / ZpmLayout.UvGridScale);
+    }
+
+    /// <summary>Returns whether an edge is marked sharp.</summary>
+    public readonly bool IsEdgeSharp(uint edge) => _hasEdgeSharp && _edgeSharp.Get(edge) != 0;
+
+    /// <summary>Returns whether an edge is marked as a UV seam.</summary>
+    public readonly bool IsEdgeSeam(uint edge) => _hasEdgeSeam && _edgeSeam.Get(edge) != 0;
+
+    /// <summary>Returns whether a face is shaded flat.</summary>
+    public readonly bool IsFaceFlat(uint face) => _hasFaceFlat && _faceFlat.Get(face) != 0;
+
+    /// <summary>Returns an edge's crease from 0 to 1.</summary>
+    public readonly float GetEdgeCrease(uint edge) => _hasEdgeCreases ? _edgeCreases.Get(edge) / ZpmLayout.CreaseMax : 0f;
+
+    /// <summary>Returns a vertex's crease from 0 to 1.</summary>
+    public readonly float GetVertexCrease(uint vertex) => _hasVertexCreases ? _vertexCreases.Get(vertex) / ZpmLayout.CreaseMax : 0f;
 
     /// <summary>Returns one vertex position. Touches only the blocks that hold it.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -439,8 +574,7 @@ public unsafe struct ZpmMeshView
     {
         if (_hasBackDistances)
         {
-            uint newCount = _cornerRepeats.GetClearRank(index);
-            return _cornerRepeats.IsSet(index) ? newCount - 1 - _backDistances.Get(index - newCount) : newCount;
+            return _cornerBack.Get(index);
         }
         if (!_hasRelativeCorners)
             return _corners.Get(index);
@@ -492,24 +626,15 @@ public unsafe struct ZpmMeshView
         }
     }
 
-    /// <summary>
-    /// Whole-mesh reads unpack the distances at the end of the buffer and resolve them forward.
-    /// The read position never falls behind the write position, so no second buffer is needed.
-    /// </summary>
     readonly void GetBackDistanceCorners(uint first, uint length, uint* destination)
     {
-        if (first != 0 || length != _cornerCount)
+        if (first == 0 && length == _cornerCount)
         {
-            for (uint i = 0; i < length; i++)
-                destination[i] = GetCorner(first + i);
+            _cornerBack.CopyAllTo(destination);
             return;
         }
-        uint repeated = _backDistances.count;
-        uint* distance = destination + length - repeated;
-        _backDistances.CopyTo(0, repeated, distance, 1);
-        uint newest = 0;
         for (uint i = 0; i < length; i++)
-            destination[i] = _cornerRepeats.IsSet(i) ? newest - 1 - *distance++ : newest++;
+            destination[i] = GetCorner(first + i);
     }
 
     /// <summary>Returns the index of a face's first corner. Constant time for mixed faces too.</summary>

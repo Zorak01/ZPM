@@ -2,6 +2,7 @@
 
 """Names every byte of a ZPM file, so a file can be inspected and its layout proven."""
 
+import struct
 from dataclasses import dataclass
 
 from .column import column_length
@@ -29,6 +30,10 @@ _RAW_KINDS = {
     SectionKind.FACE_STARTS,
     SectionKind.CORNER_REPEAT_MASK,
     SectionKind.EDGE_FIRST_USE,
+    SectionKind.NORMAL_REPEAT_MASK,
+    SectionKind.NORMAL_EXCEPTION_MASK,
+    SectionKind.UV_REPEAT_MASK,
+    SectionKind.UV_EXCEPTION_MASK,
 }
 
 
@@ -42,9 +47,19 @@ class FileRegion:
     flags: SectionFlags = SectionFlags.NONE
 
 
+def _names_length(section: bytes) -> int:
+    count = struct.unpack_from("<I", section)[0]
+    at = 4
+    for _ in range(count):
+        at += 4 + struct.unpack_from("<I", section, at)[0]
+    return at
+
+
 def _used_length(kind: SectionKind, flags: SectionFlags, section: bytes) -> int:
     if kind in _RAW_KINDS:
         return len(section)
+    if kind is SectionKind.UV_NAMES:
+        return _names_length(section)
     if kind in _FIXED_LENGTHS:
         return _FIXED_LENGTHS[kind]
     return column_length(section, flags)
@@ -66,12 +81,13 @@ def map_file(data: bytes) -> list:
         DIRECTORY_ENTRY.unpack_from(data, FILE_HEADER.size + i * DIRECTORY_ENTRY.size)
         for i in range(count)
     ]
-    for index, (raw_kind, raw_flags, offset) in enumerate(entries):
-        end = entries[index + 1][2] if index + 1 < count else limit
+    for index, (raw_kind, raw_flags, layer, offset) in enumerate(entries):
+        end = entries[index + 1][3] if index + 1 < count else limit
         kind = SectionKind(raw_kind)
         flags = SectionFlags(raw_flags)
         used = _used_length(kind, flags, data[offset:end])
-        regions.append(FileRegion(kind.name, offset, used, flags))
+        name = f"{kind.name}[{layer}]" if layer else kind.name
+        regions.append(FileRegion(name, offset, used, flags))
         if align(used) != end - offset or any(data[offset + used : end]):
             raise FormatError(f"Section {kind.name} has invalid padding")
         if used != end - offset:

@@ -20,7 +20,10 @@ static unsafe class Program
         switch (arguments[0])
         {
             case "verify":
-                Verify(FixtureMesh.Load(arguments[1]), File.ReadAllBytes(arguments[2]));
+                byte[] file = File.ReadAllBytes(arguments[2]);
+                Verify(FixtureMesh.Load(arguments[1]), file);
+                if (arguments.Length > 3)
+                    VerifySurface(arguments[3], file);
                 return 0;
             case "measure":
                 return Measure(arguments[1]);
@@ -94,6 +97,46 @@ static unsafe class Program
                     Require(corners.AsSpan(0, 61).SequenceEqual(source.corners.AsSpan(37, 61)), "range corners");
                 }
             }
+        }
+    }
+
+    /// <summary>Compares normals, UVs, flags and creases with what the Python decoder read.</summary>
+    static void VerifySurface(string surfacePath, byte[] file)
+    {
+        const float Tolerance = 1e-5f;
+        using var reader = new BinaryReader(File.OpenRead(surfacePath));
+        fixed (byte* data = file)
+        {
+            if (!ZpmMeshView.TryOpen(data, file.Length, out ZpmMeshView view) || !view.Validate())
+                throw new InvalidDataException("File failed validation");
+            Require((reader.ReadUInt32() != 0) == view.hasNormals, "has normals");
+            for (uint c = 0; view.hasNormals && c < view.cornerCount; c++)
+            {
+                ZpmNormal normal = view.GetCornerNormal(c);
+                Require(MathF.Abs(normal.x - reader.ReadSingle()) < Tolerance && MathF.Abs(normal.y - reader.ReadSingle()) < Tolerance
+                    && MathF.Abs(normal.z - reader.ReadSingle()) < Tolerance, "normal");
+            }
+            uint layers = reader.ReadUInt32();
+            Require(layers == view.uvLayerCount, "UV layer count");
+            for (uint layer = 0; layer < layers; layer++)
+            {
+                Require(view.TryGetUvLayer(layer, out ZpmCornerStream stream), "UV layer");
+                for (uint c = 0; c < view.cornerCount; c++)
+                {
+                    ZpmUv uv = view.GetCornerUv(stream, c);
+                    Require(MathF.Abs(uv.u - reader.ReadSingle()) < Tolerance && MathF.Abs(uv.v - reader.ReadSingle()) < Tolerance, "UV");
+                }
+            }
+            for (uint e = 0; e < view.edgeCount; e++)
+            {
+                Require(view.IsEdgeSharp(e) == (reader.ReadByte() != 0), "sharp edge");
+                Require(view.IsEdgeSeam(e) == (reader.ReadByte() != 0), "seam edge");
+                Require(MathF.Abs(view.GetEdgeCrease(e) - reader.ReadSingle()) < Tolerance, "edge crease");
+            }
+            for (uint f = 0; f < view.faceCount; f++)
+                Require(view.IsFaceFlat(f) == (reader.ReadByte() != 0), "flat face");
+            for (uint v = 0; v < view.vertexCount; v++)
+                Require(MathF.Abs(view.GetVertexCrease(v) - reader.ReadSingle()) < Tolerance, "vertex crease");
         }
     }
 
@@ -190,6 +233,17 @@ static unsafe class Program
             ZpmEdge edge = view.GetEdge(i);
             if (edge.a >= view.vertexCount || edge.b >= view.vertexCount)
                 throw new InvalidDataException("Validated file read a bad edge ID");
+            view.IsEdgeSharp(i);
+            view.GetEdgeCrease(i);
+        }
+        for (uint c = 0; view.hasNormals && c < view.cornerCount; c++)
+            view.GetCornerNormal(c);
+        for (uint layer = 0; layer < view.uvLayerCount; layer++)
+        {
+            if (!view.TryGetUvLayer(layer, out ZpmCornerStream stream))
+                continue;
+            for (uint c = 0; c < view.cornerCount; c++)
+                view.GetCornerUv(stream, c);
         }
     }
 }

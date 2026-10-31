@@ -126,6 +126,8 @@ public unsafe struct Compact16View : IMeshReader
         GetEdges(0, _edgeCount, edges);
     }
 
+    public readonly ZpmNormal GetCornerNormal(uint corner) => default;
+
     public readonly void GetFaceSizes(uint first, uint length, uint* destination)
     {
         for (uint i = 0; i < length; i++)

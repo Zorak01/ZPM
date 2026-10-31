@@ -18,6 +18,7 @@ unsafe interface IMeshReader
     void GetCorners(uint first, uint length, uint* destination);
     void GetEdges(uint first, uint length, uint* destination);
     void GetMesh(uint* positions, uint* faceSizes, uint* corners, uint* edges);
+    ZpmNormal GetCornerNormal(uint corner);
 }
 
 /// <summary>Lets the benchmark call ZpmMeshView, which knows nothing about benchmarks.</summary>
@@ -40,4 +41,5 @@ readonly unsafe struct ZpmReader : IMeshReader
     public void GetCorners(uint first, uint length, uint* destination) => _view.GetCorners(first, length, destination);
     public void GetEdges(uint first, uint length, uint* destination) => _view.GetEdges(first, length, destination);
     public void GetMesh(uint* positions, uint* faceSizes, uint* corners, uint* edges) => _view.GetMesh(positions, faceSizes, corners, edges);
+    public ZpmNormal GetCornerNormal(uint corner) => _view.hasNormals ? _view.GetCornerNormal(corner) : default;
 }

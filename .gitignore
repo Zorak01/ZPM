@@ -1,0 +1,43 @@
+# Generated output and development environments
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.ruff_cache/
+.pytest_cache/
+/build/
+/dist/
+/test-results/
+**/bin/
+**/obj/
+**/.dotnet-home/
+**/.packets/
+**/runs/
+
+# Local agent instructions and skills
+.agents/
+.codex/
+.claude/
+.skills/
+AGENTS.md
+AGENT-RULES.md
+SKILL.md
+
+# Private planning and production media
+/local-work/
+/private/
+*.wav
+*.mp3
+*.flac
+*.aac
+*.mp4
+*.mov
+*.mkv
+*.blend
+*.blend1
+*.docx
+*.pdf
+.env
+.env.*
+*.key
+*.pem

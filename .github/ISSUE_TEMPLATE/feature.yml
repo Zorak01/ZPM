@@ -1,0 +1,19 @@
+name: Feature proposal
+description: Propose a concrete use case
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What task is currently difficult or impossible?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior and alternatives
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility, memory or performance considerations

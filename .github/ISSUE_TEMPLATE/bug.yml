@@ -1,0 +1,35 @@
+name: Bug report
+description: Report a reproducible codec or Blender problem
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: ZPM version or commit
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Operating system and Python or Blender version
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Minimal steps or code. Attach only files you are allowed to share.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant error output
+      description: Remove personal paths, tokens and private data.
+      render: text

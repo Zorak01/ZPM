@@ -1,2 +1,5 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+* text=auto eol=lf
+*.zms -text
+# Preserve the exact bytes used by the published source hashes.
+benchmarks/mesh-core/reference/Program.cs -text whitespace=cr-at-eol
+benchmarks/mesh-core/results/*.cs -text whitespace=cr-at-eol

@@ -1,0 +1,85 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  python:
+    name: Python ${{ matrix.python }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m ruff check .
+      - run: python -m ruff format --check .
+      - run: python -m unittest discover -s tests -v
+      - run: python tools/check_version.py
+      - run: python tools/verify_benchmarks.py
+      - run: python tools/audit_public.py
+      - run: python -m build
+  reference:
+    name: Reference codec exactness
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '9.0.306'
+      - run: python benchmarks/mesh-core/run.py --verify-only
+  blender:
+    name: Blender 4.5.1 LTS
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Blender runtime libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libxxf86vm1 libxi6 libxkbcommon0 libsm6 libxrender1 libgl1
+      - name: Download and verify Blender
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          base=https://download.blender.org/release/Blender4.5
+          archive=blender-4.5.1-linux-x64.tar.xz
+          curl --fail --location --retry 3 "$base/$archive" -o "$archive"
+          curl --fail --location --retry 3 "$base/blender-4.5.1.sha256" -o checksums.txt
+          grep " $archive$" checksums.txt | sha256sum --check --strict
+          tar -xf "$archive"
+          echo "$RUNNER_TEMP/blender-4.5.1-linux-x64" >> "$GITHUB_PATH"
+      - run: blender --background --factory-startup --python-exit-code 1 --python tests/blender_roundtrip.py
+      - run: blender --factory-startup --command extension validate blender/zpm
+      - run: mkdir -p dist
+      - run: blender --factory-startup --command extension build --source-dir blender/zpm --output-dir dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: zpm-blender
+          path: dist/*.zip
+          if-no-files-found: error

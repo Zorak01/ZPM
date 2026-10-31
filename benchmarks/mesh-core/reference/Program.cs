@@ -1,0 +1,65 @@
+using System.Diagnostics;
+using System.Text.Json;
+using System.Buffers.Binary;
+
+record Source(uint V,uint F,uint C,uint E,byte[] Positions,uint[] Counts,uint[] Faces,uint[] Edges);
+sealed class Mesh {
+ public uint V,F,C,E,Arity; public int Width; public byte[] Positions=Array.Empty<byte>(),Faces=Array.Empty<byte>(),Edges=Array.Empty<byte>(); public uint[] Counts=Array.Empty<uint>();
+ public long Payload=>Positions.LongLength+Faces.LongLength+Edges.LongLength+Counts.LongLength*4;
+}
+static class Codec {
+ public static uint ReadU(BinaryReader r)=>r.ReadUInt32();
+ public static Source ReadSource(string path){using var r=new BinaryReader(File.OpenRead(path)); if(r.ReadUInt32()!=0x31534D5A)throw new Exception("source magic");uint v=ReadU(r),f=ReadU(r),c=ReadU(r),e=ReadU(r);byte[] p=r.ReadBytes(checked((int)v*12));uint[] counts=new uint[f],faces=new uint[c],edges=new uint[e*2];for(int i=0;i<counts.Length;i++)counts[i]=ReadU(r);for(int i=0;i<faces.Length;i++)faces[i]=ReadU(r);for(int i=0;i<edges.Length;i++)edges[i]=ReadU(r);return new(v,f,c,e,p,counts,faces,edges);}
+ public static void Vu(BinaryWriter w,uint x){while(x>=128){w.Write((byte)((x&127)|128));x>>=7;}w.Write((byte)x);}
+ public static uint Uv(BinaryReader r){uint x=0;int s=0;while(true){byte b=r.ReadByte();x|=(uint)(b&127)<<s;if(b<128)return x;s+=7;if(s>28)throw new Exception("varint overflow");}}
+ public static uint Z(int x)=>unchecked((uint)((x<<1)^(x>>31)));
+ public static int Uz(uint x)=>(int)(x>>1)^-((int)x&1);
+ public static int Bits(uint x){int n=0;while(x>0){n++;x>>=1;}return n;}
+ public static byte[] Bytes(Action<BinaryWriter> action){using var m=new MemoryStream();using var w=new BinaryWriter(m);action(w);w.Flush();return m.ToArray();}
+ public static byte[] Packed(uint[] a,int bits)=>Bytes(w=>{ulong acc=0;int have=0;foreach(uint x in a){acc|=(ulong)x<<have;have+=bits;while(have>=8){w.Write((byte)acc);acc>>=8;have-=8;}}if(have>0)w.Write((byte)acc);});
+ struct BitReader {readonly BinaryReader r;readonly int b;ulong acc;int have;public BitReader(BinaryReader rr,int bb){r=rr;b=bb;acc=0;have=0;}public uint Next(){if(b==0)return 0;while(have<b){acc|=(ulong)r.ReadByte()<<have;have+=8;}uint x=(uint)(acc&((1UL<<b)-1));acc>>=b;have-=b;return x;}}
+ public static uint Get(byte[] a,int index,int width)=>width==2?BinaryPrimitives.ReadUInt16LittleEndian(a.AsSpan(index*2,2)):BinaryPrimitives.ReadUInt32LittleEndian(a.AsSpan(index*4,4));
+ public static void Put(byte[] a,int index,uint value,int width){if(width==2)BinaryPrimitives.WriteUInt16LittleEndian(a.AsSpan(index*2,2),(ushort)value);else BinaryPrimitives.WriteUInt32LittleEndian(a.AsSpan(index*4,4),value);}
+ public static byte[] PositionEncode(Source s,int mode,int block){if(mode==0)return s.Positions;return Bytes(w=>{for(int start=0;start<s.V;start+=block){int n=Math.Min(block,(int)s.V-start);for(int lane=0;lane<12;lane++){bool[] seen=new bool[256];int k=0;for(int i=0;i<n;i++){byte x=s.Positions[(start+i)*12+lane];if(!seen[x]){seen[x]=true;k++;}}if(k==1){w.Write((byte)0);w.Write(s.Positions[start*12+lane]);continue;}int b=Bits((uint)k-1),packed=(n*b+7)/8;if(3+k+packed<n+1){w.Write((byte)2);w.Write((byte)k);w.Write((byte)b);byte[] map=new byte[256];int id=0;for(int j=0;j<256;j++)if(seen[j]){w.Write((byte)j);map[j]=(byte)id++;}uint[] ix=new uint[n];for(int i=0;i<n;i++)ix[i]=map[s.Positions[(start+i)*12+lane]];w.Write(Packed(ix,b));}else{w.Write((byte)1);for(int i=0;i<n;i++)w.Write(s.Positions[(start+i)*12+lane]);}}}});}
+ public static byte[] CountsEncode(Source s,uint arity){if(arity!=0)return Array.Empty<byte>();return Bytes(w=>{foreach(uint n in s.Counts)Vu(w,n);});}
+ public static byte[] FaceEncode(Source s,int mode){
+  if(mode==0)return Bytes(w=>{foreach(uint x in s.Faces)w.Write(x);});
+  if(mode==1)return Packed(s.Faces,Bits(s.V-1));
+  if(mode==4)return Bytes(w=>{foreach(uint x in s.Faces){if(s.V<=65536)w.Write((ushort)x);else w.Write(x);}});
+  if(mode==2)return Bytes(w=>{int p=0;uint previous=0;foreach(uint count in s.Counts){uint first=s.Faces[p],last=previous;for(int j=0;j<count;j++){uint x=s.Faces[p++];Vu(w,Z(unchecked((int)(x-last))));last=x;}previous=first;}});
+  var dict=new Dictionary<string,int>();var templates=new List<int[]>();var maps=new uint[s.F];var bases=new int[s.F];int cursor=0;uint prev=0;
+  for(int f=0;f<s.F;f++){int n=(int)s.Counts[f];uint first=s.Faces[cursor];var t=new int[n-1];for(int j=1;j<n;j++)t[j-1]=unchecked((int)(s.Faces[cursor+j]-first));string key=string.Join(',',t);if(!dict.TryGetValue(key,out int id)){id=templates.Count;templates.Add(t);dict[key]=id;}maps[f]=(uint)id;bases[f]=unchecked((int)(first-prev));prev=first;cursor+=n;}
+  return Bytes(w=>{Vu(w,(uint)templates.Count);foreach(var t in templates){Vu(w,(uint)t.Length);foreach(int x in t)Vu(w,Z(x));}int b=Bits((uint)templates.Count-1);w.Write((byte)b);byte[] mapping=Packed(maps,b);w.Write(mapping.Length);w.Write(mapping);
+   var run=Bytes(rw=>{int at=0;while(at<bases.Length){int end=at+1;while(end<bases.Length&&bases[end]==bases[at])end++;Vu(rw,Z(bases[at]));Vu(rw,(uint)(end-at));at=end;}});
+   var direct=Bytes(rw=>{foreach(int x in bases)Vu(rw,Z(x));});bool use=run.Length<direct.Length;w.Write(use);w.Write(use?run:direct);
+  });
+ }
+ public static byte[] EdgeEncode(Source s,int mode){if(mode==3)return Bytes(w=>{foreach(uint x in s.Edges){if(s.V<=65536)w.Write((ushort)x);else w.Write(x);}});if(mode==0)return Bytes(w=>{foreach(uint x in s.Edges)w.Write(x);});if(mode==1)return Packed(s.Edges,Bits(s.V-1));return Bytes(w=>{uint prev=0;for(int i=0;i<s.Edges.Length;i+=2){uint a=s.Edges[i],b=s.Edges[i+1];Vu(w,Z(unchecked((int)(a-prev))));Vu(w,Z(unchecked((int)(b-a))));prev=a;}});}
+ public static byte[] Encode(Source s,int pm,int block,int fm,int em,bool raw){uint arity=raw||s.F==0?0:s.Counts.All(x=>x==s.Counts[0])?s.Counts[0]:0;byte[] p=PositionEncode(s,pm,block),c=arity!=0?Array.Empty<byte>():raw||fm==4?Bytes(w=>{foreach(uint n in s.Counts)w.Write(n);}):fm==3?Array.Empty<byte>():CountsEncode(s,arity),f=FaceEncode(s,fm),e=EdgeEncode(s,em);return Bytes(w=>{w.Write(0x31434D5Au);foreach(uint x in new uint[]{1,s.V,s.F,s.C,s.E,(uint)pm,(uint)block,(uint)fm,(uint)em,arity,(uint)p.Length,(uint)c.Length,(uint)f.Length,(uint)e.Length,raw?1u:0u})w.Write(x);w.Write(p);w.Write(c);w.Write(f);w.Write(e);});}
+ public static Mesh Decode(byte[] data,Mesh? reuse=null){using var r=new BinaryReader(new MemoryStream(data,false));if(r.ReadUInt32()!=0x31434D5A||r.ReadUInt32()!=1)throw new Exception("packet header");uint v=r.ReadUInt32(),fc=r.ReadUInt32(),corners=r.ReadUInt32(),edges=r.ReadUInt32();int pm=r.ReadInt32(),block=r.ReadInt32(),fm=r.ReadInt32(),em=r.ReadInt32();uint arity=r.ReadUInt32();int plen=r.ReadInt32(),clen=r.ReadInt32(),flen=r.ReadInt32(),elen=r.ReadInt32();bool raw=r.ReadUInt32()==1;
+  if((long)64+plen+clen+flen+elen!=data.Length)throw new Exception("length");var m=reuse??new Mesh();m.V=v;m.F=fc;m.C=corners;m.E=edges;m.Arity=arity;m.Width=raw?4:v<=65536?2:4;int width=m.Width;int pn=checked((int)v*12),fn=checked((int)corners*width),en=checked((int)edges*2*width);if(m.Positions.Length!=pn)m.Positions=new byte[pn];if(m.Faces.Length!=fn)m.Faces=new byte[fn];if(m.Edges.Length!=en)m.Edges=new byte[en];if(arity==0){if(m.Counts.Length!=fc)m.Counts=new uint[fc];}else m.Counts=Array.Empty<uint>();
+  long pend=r.BaseStream.Position+plen;if(pm==0)r.BaseStream.ReadExactly(m.Positions);else{Span<byte> palette=stackalloc byte[256];for(int start=0;start<v;start+=block){int n=Math.Min(block,(int)v-start);for(int lane=0;lane<12;lane++){byte tag=r.ReadByte();if(tag==0){byte x=r.ReadByte();for(int i=0;i<n;i++)m.Positions[(start+i)*12+lane]=x;}else if(tag==1){for(int i=0;i<n;i++)m.Positions[(start+i)*12+lane]=r.ReadByte();}else if(tag==2){int k=r.ReadByte(),b=r.ReadByte();r.BaseStream.ReadExactly(palette[..k]);var br=new BitReader(r,b);for(int i=0;i<n;i++)m.Positions[(start+i)*12+lane]=palette[(int)br.Next()];}else throw new Exception("position tag");}}}if(r.BaseStream.Position!=pend)throw new Exception("positions length");
+  if(arity==0&&clen>0){if(raw||fm==4)r.BaseStream.ReadExactly(System.Runtime.InteropServices.MemoryMarshal.AsBytes(m.Counts.AsSpan()));else for(int i=0;i<fc;i++)m.Counts[i]=Uv(r);}
+  long fend=r.BaseStream.Position+flen;
+  if(fm==0||fm==4){if(width==4||fm==4)r.BaseStream.ReadExactly(m.Faces);else for(int i=0;i<corners;i++)Put(m.Faces,i,r.ReadUInt32(),width);}else if(fm==1){var br=new BitReader(r,Bits(v-1));for(int i=0;i<corners;i++)Put(m.Faces,i,br.Next(),width);}else if(fm==2){int at=0;uint previous=0;for(int face=0;face<fc;face++){uint first=0,last=previous,n=arity!=0?arity:m.Counts[face];for(int j=0;j<n;j++){uint x=unchecked(last+(uint)Uz(Uv(r)));if(j==0)first=x;Put(m.Faces,at++,x,width);last=x;}previous=first;}}
+  else{int k=(int)Uv(r);int[][] templates=new int[k][];for(int i=0;i<k;i++){int n=(int)Uv(r);templates[i]=new int[n];for(int j=0;j<n;j++)templates[i][j]=Uz(Uv(r));}int b=r.ReadByte(),maplen=r.ReadInt32();long mapstart=r.BaseStream.Position,basestart=mapstart+maplen;using var mapReader=new BinaryReader(new MemoryStream(data,false));mapReader.BaseStream.Position=mapstart;var br=new BitReader(mapReader,b);r.BaseStream.Position=basestart;bool run=r.ReadBoolean();uint baseId=0;int at=0,left=0,delta=0;for(int face=0;face<fc;face++){if(run){if(left==0){delta=Uz(Uv(r));left=(int)Uv(r);}left--;}else delta=Uz(Uv(r));baseId=unchecked(baseId+(uint)delta);var t=templates[(int)br.Next()];uint n=(uint)t.Length+1;if(arity==0)m.Counts[face]=n;else if(n!=arity)throw new Exception("template arity");Put(m.Faces,at++,baseId,width);foreach(int x in t)Put(m.Faces,at++,unchecked(baseId+(uint)x),width);}if(at!=corners)throw new Exception("corner count");}
+  if(r.BaseStream.Position!=fend)throw new Exception("face length");
+  if(em==0||em==3){if(width==4||em==3)r.BaseStream.ReadExactly(m.Edges);else for(int i=0;i<edges*2;i++)Put(m.Edges,i,r.ReadUInt32(),width);}else if(em==1){var br=new BitReader(r,Bits(v-1));for(int i=0;i<edges*2;i++)Put(m.Edges,i,br.Next(),width);}else{uint previous=0;for(int i=0;i<edges*2;i+=2){uint a=unchecked(previous+(uint)Uz(Uv(r))),b=unchecked(a+(uint)Uz(Uv(r)));Put(m.Edges,i,a,width);Put(m.Edges,i+1,b,width);previous=a;}}
+  if(r.BaseStream.Position!=data.Length)throw new Exception("edge length");return m;
+ }
+ public static void Validate(Source s,Mesh m){if(!s.Positions.AsSpan().SequenceEqual(m.Positions))throw new Exception("position bits");for(int i=0;i<s.F;i++)if(s.Counts[i]!=(m.Arity!=0?m.Arity:m.Counts[i]))throw new Exception("counts");for(int i=0;i<s.C;i++)if(s.Faces[i]!=Get(m.Faces,i,m.Width))throw new Exception("face order");for(int i=0;i<s.E*2;i++)if(s.Edges[i]!=Get(m.Edges,i,m.Width))throw new Exception("edge order");}
+}
+class Program {
+ static void Main(string[] args){
+  if(args[0]=="measure"){
+   byte[] packet=File.ReadAllBytes(args[1]);Mesh m=Codec.Decode(packet);for(int i=0;i<25;i++)m=Codec.Decode(packet);GC.Collect();GC.WaitForPendingFinalizers();GC.Collect();
+   var timings=new List<double>();var allocs=new List<long>();long payload=0;const int batch=25;
+   for(int round=0;round<9;round++){long before=GC.GetAllocatedBytesForCurrentThread();var sw=Stopwatch.StartNew();for(int i=0;i<batch;i++)m=Codec.Decode(packet);sw.Stop();allocs.Add((GC.GetAllocatedBytesForCurrentThread()-before)/batch);timings.Add(sw.Elapsed.TotalMilliseconds/batch);payload=m.Payload;}
+   timings.Sort();allocs.Sort();var reuseTimes=new List<double>();var reuseAllocs=new List<long>();for(int round=0;round<9;round++){long before=GC.GetAllocatedBytesForCurrentThread();var sw=Stopwatch.StartNew();for(int i=0;i<batch;i++)m=Codec.Decode(packet,m);sw.Stop();reuseAllocs.Add((GC.GetAllocatedBytesForCurrentThread()-before)/batch);reuseTimes.Add(sw.Elapsed.TotalMilliseconds/batch);}reuseTimes.Sort();reuseAllocs.Sort();Console.WriteLine(JsonSerializer.Serialize(new{decode_ms=timings[4],decode_min_ms=timings[0],decode_max_ms=timings[^1],allocated_bytes=allocs[4],reuse_decode_ms=reuseTimes[4],reuse_allocated_bytes=reuseAllocs[4],retained_payload_bytes=payload,index_width=m.Width}));return;
+  }
+  Source s=Codec.ReadSource(args[1]);string folder=args[2];Directory.CreateDirectory(folder);var variants=new List<(string name,int pm,int block,int fm,int em,bool raw)>{("raw32",0,1024,0,0,true),("compact16",0,1024,4,3,false),("packed",0,1024,1,1,false),("lanes256",1,256,1,1,false),("lanes1024",1,1024,1,1,false),("lanes4096",1,4096,1,1,false),("lanes16384",1,16384,1,1,false),("face_delta",1,1024,2,2,false),("face_templates",1,1024,3,2,false),("edge_delta",1,1024,1,2,false)};
+  var output=new List<object>();
+  foreach(var x in variants){var sw=Stopwatch.StartNew();byte[] b=Codec.Encode(s,x.pm,x.block,x.fm,x.em,x.raw);sw.Stop();var decoded=Codec.Decode(b);Codec.Validate(s,decoded);Codec.Validate(s,Codec.Decode(b,decoded));string file=Path.Combine(folder,x.name+".zmc");File.WriteAllBytes(file,b);output.Add(new{name=x.name,bytes=b.Length,encode_ms=sw.Elapsed.TotalMilliseconds,packet=file,exact=true});}
+  Console.WriteLine(JsonSerializer.Serialize(new{points=s.V,faces=s.F,corners=s.C,edges=s.E,variants=output}));
+ }
+}

@@ -1,0 +1,71 @@
+{
+  "asset_sha256": "324169758b4fedd10c14b53d242b883a174a8ccd18fa82b4f13f5f3a241f0141",
+  "fixtures": [
+    {
+      "label": "quad_grid",
+      "file": "quad_grid.zms",
+      "kind": "synthetic",
+      "sha256": "195eefa76e899c7c153ee28beb5e00f553f0aa9800c788431408153c033afa82"
+    },
+    {
+      "label": "triangle_grid",
+      "file": "triangle_grid.zms",
+      "kind": "synthetic",
+      "sha256": "42b68213f69624ffb5dde78783b1e588388625acca16049f98088f46aded79ae"
+    },
+    {
+      "label": "shuffled_quad_ids",
+      "file": "shuffled_quad_ids.zms",
+      "kind": "synthetic",
+      "sha256": "57456d2255a23c55fb1746c7f16157d487c8879186bd3e3b5a4e53d944d112ae"
+    },
+    {
+      "label": "mixed_tri_quad_ngon",
+      "file": "mixed_tri_quad_ngon.zms",
+      "kind": "synthetic",
+      "sha256": "556e0d8c2ef05290b6a17173d06346ae9ba21c94d70d8fecb4d8cbb39736a17f"
+    },
+    {
+      "label": "disjoint_ngons",
+      "file": "disjoint_ngons.zms",
+      "kind": "synthetic",
+      "sha256": "5c02e9d24d888e380b65b56bced267b9d3d1a4c5bc78c3b6c950e7fcbea5843d"
+    },
+    {
+      "label": "random_triangle_indices",
+      "file": "random_triangle_indices.zms",
+      "kind": "synthetic",
+      "sha256": "7191454bc027e0cfcccf4b8713ac49ac3ea680299fbdc4eda43c071ecedc1cc2"
+    },
+    {
+      "label": "repository_obj418",
+      "file": "repository_obj418.zms",
+      "kind": "repository asset core; edge list derived",
+      "sha256": "1d32b2cee20d118b4e147db5e5606d110d5a8f40b50179e5974535d6783e46fa"
+    },
+    {
+      "label": "loose_nonmanifold",
+      "file": "loose_nonmanifold.zms",
+      "kind": "exactness stress; explicit loose edge order",
+      "sha256": "e84ef520ad7534bfd24f4ed3b27bc040153bfa975b58176b54e8763ff84500c4"
+    },
+    {
+      "label": "float_bit_patterns",
+      "file": "float_bit_patterns.zms",
+      "kind": "bit preservation stress; not a renderable asset",
+      "sha256": "ccf5b5881a44260d77397c886cbac86511572e39afb32295c510c7504506a79b"
+    },
+    {
+      "label": "wire_only",
+      "file": "wire_only.zms",
+      "kind": "exactness stress; no faces",
+      "sha256": "548ad2f07d20ece515147c1553793ab0734e833eca2f11df0aadbb88eac74870"
+    },
+    {
+      "label": "empty_mesh",
+      "file": "empty_mesh.zms",
+      "kind": "exactness stress; no faces",
+      "sha256": "fadde2f0118f6bdc2c6e757b180adb29f4c10eed2f02b6089c20e1eb4a06a4a1"
+    }
+  ]
+}

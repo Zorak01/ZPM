@@ -6,12 +6,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "blender"))
 
-from zpm.format import decode, map_file
+from zpm.format import decode_scene, map_file
 
 
 def main():
     data = Path(sys.argv[1]).read_bytes()
-    decode(data)
+    decode_scene(data)
     regions = map_file(data)
     print(f"{'Offset':>10} {'Bytes':>10} {'Share':>7}  Region")
     for region in regions:

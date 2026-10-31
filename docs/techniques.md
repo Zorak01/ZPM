@@ -273,10 +273,89 @@ few bits. Any domain, 8 to 32-bit types, up to 255 components, and a declared me
 **Numbers:** a smooth Float32 attribute took 52,784 of 66,776 raw bytes on `04263` (1.27x), and 8,560 of 8,760
 on `minotaur` (1.02x). Ordered bits barely help noisy low digits, so this is a clear place to improve.
 
+## Scenes
+
+### Meshes kept whole inside the scene file
+
+**Problem:** A file holding many meshes usually needs an owner on every section, or a decode step per mesh.
+
+**Technique:** Each mesh is a complete mesh file inside one section. Opening a mesh is its own directory read, with
+the same reader, no copy and no allocation, so an engine can open only the meshes it needs. The cost per mesh is a
+directory entry per section and the 32-byte tail.
+
+### Tables read in place
+
+**Technique:** Objects, materials, lights and bones are arrays of fixed records whose layout matches a C# struct, so
+reading one is a pointer add, with no parsing. Validation walks them once to prove each link is in range and no
+parent chain loops.
+
+**Cost:** records store every field, so a default material costs its whole 64 bytes. This is tiny beside a mesh but
+not the smallest it could be: a table of 100,000 objects takes 14.8 MB uncompressed.
+
+### Objects share data
+
+**Technique:** Objects using one mesh point at it, each with its own placement, so 1,000 copies cost 1,000 records
+and one mesh. A mesh is only shared when its vertex groups match too, because groups live with the mesh.
+
+### Images stored once, untouched
+
+**Technique:** Embedded images keep their original encoded bytes, so nothing is lost and a GPU loader can read them
+straight from the file. Identical files, compared whole, are stored once. By default images are links, and **Embed
+Textures** is the one setting on export.
+
+### Materials any application can read
+
+**Problem:** A format shaped like one application's material system is useless to the others.
+
+**Technique:** A material has the fields renderers share, plus a model name, named parameters, and texture slots
+whose role is a name, not a fixed list. A reader uses what it understands and can skip the rest. Blender's other
+Principled inputs go in as parameters, stored only when they differ from the default. A node graph those fields
+can't describe also goes into an optional extension, so Blender can rebuild it exactly while others ignore it.
+
+### One value tree for everything open-ended
+
+**Problem:** Custom properties, modifiers, constraints, drivers and application settings have no fixed shape, and a
+table for each would mean endless layouts.
+
+**Technique:** One table of fixed 16-byte nodes, with shared strings and one array column. Children always sit later
+in the table, so a corrupt file can't make a reader loop. Any resource can carry a tree, found by binary search,
+read in place with no allocation. Links to objects are typed, so validation proves them.
+
+**Cost and limit:** a key costs at least 16 bytes, and string keys are slower than a typed field, so this is for
+data read rarely, not per frame. Modifiers, constraints and drivers are kept for their source application: ZPM does
+not promise other readers can evaluate them.
+
+### Animation that addresses anything
+
+**Technique:** A track names an owner, a field path and an array index, so any stored field can animate, including
+ones that don't exist yet. Tracks with the same key times share one list, values sit in one column, and every key
+reads by index. A held value takes one key. Reference keys are checked against what they name when the file is
+validated, including resources that vary over time.
+
+**Numbers:** made-up smooth rotation curves on 50 objects, 200 tracks of 250 keys: 187,108 bytes against 400,000 for plain time and value floats (2.14x smaller). Key times are stored once, in 796 bytes. Values take 28.1 bits each, because exact float bits keep their noisy low digits.
+
+**Can improve:** exact bits are expensive. A tiny quantization grid like positions use would shrink values a lot.
+
+### Curves and lattices in exact columns
+
+**Technique:** Control points sit in one column per field, shared across splines, so like values compress and any
+point reads by index. Handles exist only if some spline uses them.
+
+### Optional sections and required extensions
+
+**Technique:** Section kinds from `0x8000` up can be skipped by readers that don't know them, so files can grow
+without breaking old readers. An extension can say it is required, and then a reader lacking it refuses the file
+with its name, rather than showing something wrong.
+
+### Identical meshes stored once
+
+**Technique:** Meshes of equal size are compared by their stored bytes, and objects then share one. Animated meshes
+keep their own copy. This costs an extra encode only when two meshes could match.
+
 ### Units and axes only when they differ
 
-**Technique:** 8 bytes, absent for 1 m with +Z up and -Y forward. Blender places an imported object to match, so a
-file in other units or axes looks right without changing its vertices.
+**Technique:** 8 bytes, absent for 1 m with +Z up and -Y forward. Blender places imported root objects to match, so
+a file in other units or axes looks right without changing its vertices.
 
 ## The file itself
 

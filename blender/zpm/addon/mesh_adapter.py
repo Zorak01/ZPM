@@ -7,8 +7,6 @@ from array import array
 from typing import NamedTuple
 
 import bpy
-from bpy_extras.io_utils import axis_conversion
-from mathutils import Matrix
 
 from ..format import (
     Attribute,
@@ -18,10 +16,8 @@ from ..format import (
     ColorLayer,
     FormatError,
     Mesh,
-    MeshSpace,
     ShapeInterpolation,
     ShapeTarget,
-    SpaceAxis,
 )
 from ..format.container.layout import NO_SHAPE_TARGET
 from ..format.mesh import ATTRIBUTE_TYPECODES
@@ -52,14 +48,6 @@ _DOMAINS = {
     "EDGE": AttributeDomain.EDGE,
     "FACE": AttributeDomain.FACE,
     "CORNER": AttributeDomain.CORNER,
-}
-_AXIS_NAMES = {
-    SpaceAxis.X: "X",
-    SpaceAxis.Y: "Y",
-    SpaceAxis.Z: "Z",
-    SpaceAxis.NEG_X: "-X",
-    SpaceAxis.NEG_Y: "-Y",
-    SpaceAxis.NEG_Z: "-Z",
 }
 _SHAPE_INTERPOLATIONS = {
     "KEY_LINEAR": ShapeInterpolation.LINEAR,
@@ -117,15 +105,9 @@ _ATTRIBUTE_TYPES = {
 _TANGENT_METHOD = "MikkTSpace, Blender {version}"
 
 
-def _scene_meters_per_unit(scene: bpy.types.Scene) -> float:
-    settings = scene.unit_settings
-    return 1.0 if settings.system == "NONE" else settings.scale_length
-
-
-def capture_object(obj: bpy.types.Object, scene: bpy.types.Scene) -> Mesh:
-    """Copy an object's base mesh with its groups, weights and the scene's units."""
+def capture_object(obj: bpy.types.Object) -> Mesh:
+    """Copy an object's base mesh with its vertex groups and weights."""
     result = capture_mesh(obj.data)
-    result.space = MeshSpace(meters_per_unit=_scene_meters_per_unit(scene))
     result.vertex_groups = [group.name for group in obj.vertex_groups]
     if result.vertex_groups:
         offsets = array("I", [0])
@@ -388,7 +370,7 @@ def _apply_authored_marks(mesh: Mesh, result: bpy.types.Mesh) -> None:
 
 
 def _apply_materials(mesh: Mesh, result: bpy.types.Mesh) -> None:
-    """Fill slots, reusing a material of the same name. Materials hold no data yet."""
+    """Fill slots with materials of those names, making any that are missing."""
     if mesh.face_materials:
         indices = array("i", mesh.face_materials)
         result.polygons.foreach_set("material_index", indices)
@@ -449,18 +431,6 @@ def apply_shape_keys(mesh: Mesh, obj: bpy.types.Object) -> None:
                 target.in_between_of,
                 target.in_between_weight,
             ]
-
-
-def apply_space(mesh: Mesh, obj: bpy.types.Object, scene: bpy.types.Scene) -> None:
-    """Place an object so a file with other units or axes looks right in this scene."""
-    default = MeshSpace(meters_per_unit=_scene_meters_per_unit(scene))
-    if mesh.space == default:
-        return
-    scale = mesh.space.meters_per_unit / default.meters_per_unit
-    axes = axis_conversion(
-        from_forward=_AXIS_NAMES[mesh.space.forward], from_up=_AXIS_NAMES[mesh.space.up]
-    ).to_4x4()
-    obj.matrix_world = axes @ Matrix.Scale(scale, 4)
 
 
 def _apply_crease(result: bpy.types.Mesh, name: str, domain: str, values: array):

@@ -9,12 +9,276 @@ from pathlib import Path
 
 import bpy
 import mathutils
+from bpy_extras import anim_utils
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "blender"))
 
 import zpm
 from zpm.addon import mesh_adapter
-from zpm.format import FormatError, Mesh, load, same_geometry, snap_mesh
+from zpm.format import (
+    FormatError,
+    Material,
+    Mesh,
+    Scene,
+    load,
+    same_geometry,
+    save,
+    snap_mesh,
+)
+
+
+def export_alone(obj, path):
+    """Export one object, the way a person does: select it, then export."""
+    bpy.ops.object.select_all(action="DESELECT")
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    assert bpy.ops.export_mesh.zpm(filepath=path) == {"FINISHED"}
+
+
+def check_whole_scene(directory):
+    """Parents, bones, skins, poses, lights, materials and collections survive."""
+    bpy.ops.object.select_all(action="DESELECT")
+    armature = bpy.data.armatures.new("RigData")
+    rig = bpy.data.objects.new("Rig", armature)
+    group = bpy.data.collections.new("Characters")
+    bpy.context.scene.collection.children.link(group)
+    group.objects.link(rig)
+    bpy.context.view_layer.objects.active = rig
+    bpy.ops.object.mode_set(mode="EDIT")
+    hip = armature.edit_bones.new("Hip")
+    hip.tail = (0, 0, 1)
+    spine = armature.edit_bones.new("Spine")
+    spine.head = (0, 0, 1)
+    spine.tail = (0, 0, 2)
+    spine.parent = hip
+    spine.use_connect = True
+    spine.roll = 0.5
+    bpy.ops.object.mode_set(mode="OBJECT")
+    rig.pose.bones["Spine"].location = (0.5, 0, 0)
+
+    bpy.ops.mesh.primitive_cube_add()
+    body = bpy.context.active_object
+    body.name = "Body"
+    bpy.context.collection.objects.unlink(body)
+    group.objects.link(body)
+    body.parent = rig
+    body.location = (1, 2, 3)
+    body.vertex_groups.new(name="Spine")
+    modifier = body.modifiers.new("Armature", "ARMATURE")
+    modifier.object = rig
+
+    image = bpy.data.images.new("Paint", 4, 4)
+    image.pack()
+    material = bpy.data.materials.new("Skin")
+    material.use_nodes = True
+    shader = next(
+        node for node in material.node_tree.nodes if node.type == "BSDF_PRINCIPLED"
+    )
+    shader.inputs["Metallic"].default_value = 0.25
+    texture = material.node_tree.nodes.new("ShaderNodeTexImage")
+    texture.image = image
+    material.node_tree.links.new(texture.outputs["Color"], shader.inputs["Base Color"])
+    body.data.materials.append(material)
+
+    copy = bpy.data.objects.new("Copy", body.data)
+    bpy.context.collection.objects.link(copy)
+    light_data = bpy.data.lights.new("Key", "SPOT")
+    light_data.energy = 50
+    light = bpy.data.objects.new("Lamp", light_data)
+    bpy.context.collection.objects.link(light)
+    empty = bpy.data.objects.new("Marker", None)
+    bpy.context.collection.objects.link(empty)
+    tiled = bpy.data.images.new("Tiles", 4, 4, tiled=True)
+    tiled.tiles.new(tile_number=1002)
+
+    curve_data = bpy.data.curves.new("Road", "CURVE")
+    bezier = curve_data.splines.new("BEZIER")
+    bezier.bezier_points.add(1)
+    bezier.bezier_points[1].co = (2, 0, 0)
+    bezier.bezier_points[1].radius = 0.5
+    nurbs = curve_data.splines.new("NURBS")
+    nurbs.points.add(3)
+    nurbs.points[1].co = (0, 1, 0, 2)
+    nurbs.use_endpoint_u = True
+    curve_data.bevel_depth = 0.25
+    road = bpy.data.objects.new("RoadCurve", curve_data)
+    bpy.context.collection.objects.link(road)
+    cage_data = bpy.data.lattices.new("Cage")
+    cage_data.points_u = 3
+    cage_data.points[1].co_deform.z = 0.5
+    cage = bpy.data.objects.new("CageObject", cage_data)
+    bpy.context.collection.objects.link(cage)
+    cage.vertex_groups.new(name="Top").add([1], 0.5, "REPLACE")
+    lens = bpy.data.cameras.new("Lens")
+    lens.lens = 35
+    eye = bpy.data.objects.new("Eye", lens)
+    bpy.context.collection.objects.link(eye)
+
+    body["note"] = "keep me"
+    body["levels"] = [1, 2, 3]
+    bevel = body.modifiers.new("Soften", "BEVEL")
+    bevel.width = 0.25
+    follow = body.constraints.new("COPY_LOCATION")
+    follow.name = "Follow"
+    follow.target = empty
+    follow.influence = 0.5
+    shape = bpy.data.objects.new("Shape", None)
+    bpy.context.collection.objects.link(shape)
+    spine_pose = rig.pose.bones["Spine"]
+    spine_pose.custom_shape = shape
+    spine_pose.custom_shape_scale_xyz = (2, 2, 2)
+    track = spine_pose.constraints.new("TRACK_TO")
+    track.target = empty
+    driver = body.driver_add("scale", 2).driver
+    driver.expression = "var * 2"
+    variable = driver.variables.new()
+    variable.name = "var"
+    variable.targets[0].id = empty
+    variable.targets[0].data_path = "location.x"
+    empty.keyframe_insert("location", index=0, frame=1)
+    empty.location.x = 4
+    empty.keyframe_insert("location", index=0, frame=10)
+    empty.animation_data.action.name = "Slide"
+    shader.inputs["IOR"].default_value = 1.25
+    noise = material.node_tree.nodes.new("ShaderNodeTexNoise")
+    material.node_tree.links.new(noise.outputs[0], shader.inputs["Roughness"])
+
+    bpy.ops.object.select_all(action="DESELECT")
+    for obj in (rig, body, copy, light, empty, road, cage, eye, shape):
+        obj.select_set(True)
+    path = str(Path(directory) / "scene.zpm")
+    assert bpy.ops.export_mesh.zpm(filepath=path, embed_textures=True) == {"FINISHED"}
+    stored = load(path)
+    assert len(stored.meshes) == 1, "Copy must share its mesh"
+    assert {item.name for item in stored.objects} == {
+        "Rig",
+        "Body",
+        "Copy",
+        "Lamp",
+        "Marker",
+        "RoadCurve",
+        "CageObject",
+        "Eye",
+        "Shape",
+    }
+    assert stored.materials[0].metallic == 0.25
+    assert stored.images[0].name == "Paint"
+    assert stored.lights[0].power == 50
+    assert stored.materials[0].parameters["IOR"] == 1.25
+    assert stored.extensions[0].name == "blender.node_graphs"
+    assert stored.clips[0].name == "Slide"
+
+    before = set(bpy.data.objects.keys())
+    assert bpy.ops.import_mesh.zpm(filepath=path) == {"FINISHED"}
+    made = {
+        name.split(".")[0]: bpy.data.objects[name]
+        for name in set(bpy.data.objects.keys()) - before
+    }
+    assert set(made) == {
+        "Rig",
+        "Body",
+        "Copy",
+        "Lamp",
+        "Marker",
+        "RoadCurve",
+        "CageObject",
+        "Eye",
+        "Shape",
+    }
+    assert made["Body"].parent == made["Rig"]
+    assert tuple(made["Body"].location) == (1, 2, 3)
+    assert made["Body"].data == made["Copy"].data
+    assert made["Body"].modifiers["Armature"].object == made["Rig"]
+    assert made["Rig"].data.bones["Spine"].parent.name == "Hip"
+    assert abs(stored.armatures[0].bones[1].roll - 0.5) < 1e-5
+    edit_roll = bpy.types.Bone.AxisRollFromMatrix(
+        made["Rig"].data.bones["Spine"].matrix_local.to_3x3()
+    )[1]
+    assert abs(edit_roll - 0.5) < 1e-5
+    assert tuple(made["Rig"].pose.bones["Spine"].location) == (0.5, 0, 0)
+    assert made["Lamp"].data.type == "SPOT"
+    assert made["Lamp"].data.energy == 50
+    assert made["Marker"].type == "EMPTY"
+    skin = made["Body"].data.materials[0]
+    node = next(n for n in skin.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+    assert node.inputs["Metallic"].default_value == 0.25
+    assert node.inputs["Base Color"].links
+    assert node.inputs["IOR"].default_value == 1.25
+    assert any(
+        c.name.startswith("Characters") and made["Body"].name in c.objects
+        for c in bpy.data.collections
+    )
+    new_road = made["RoadCurve"].data
+    assert new_road.bevel_depth == 0.25
+    assert new_road.splines[0].bezier_points[1].radius == 0.5
+    assert tuple(new_road.splines[1].points[1].co) == (0, 1, 0, 2)
+    assert new_road.splines[1].use_endpoint_u
+    new_cage = made["CageObject"]
+    assert new_cage.data.points_u == 3
+    assert new_cage.data.points[1].co_deform.z == 0.5
+    assert new_cage.vertex_groups[0].name == "Top"
+    assert made["Eye"].data.lens == 35
+    assert made["Body"]["note"] == "keep me"
+    assert list(made["Body"]["levels"]) == [1, 2, 3]
+    assert [m.name for m in made["Body"].modifiers] == ["Armature", "Soften"]
+    assert made["Body"].modifiers["Soften"].width == 0.25
+    copied = made["Body"].constraints["Follow"]
+    assert copied.target == made["Marker"] and copied.influence == 0.5
+    posed = made["Rig"].pose.bones["Spine"]
+    assert posed.custom_shape == made["Shape"]
+    assert tuple(posed.custom_shape_scale_xyz) == (2, 2, 2)
+    assert posed.constraints[0].target == made["Marker"]
+    driven = made["Body"].animation_data.drivers[0]
+    assert driven.driver.expression == "var * 2"
+    assert driven.driver.variables[0].targets[0].id == made["Marker"]
+    assert driven.driver.variables[0].targets[0].data_path == "location.x"
+    action = made["Marker"].animation_data.action
+    assert action.name.startswith("Slide")
+    curve = anim_utils.action_get_channelbag_for_slot(
+        action, made["Marker"].animation_data.action_slot
+    ).fcurves[0]
+    assert curve.data_path == "location"
+    assert [tuple(p.co) for p in curve.keyframe_points] == [(1, 0), (10, 4)]
+    graph_nodes = {node.bl_idname for node in skin.node_tree.nodes}
+    assert "ShaderNodeTexNoise" in graph_nodes
+    print("PASS: whole scene")
+
+
+def check_failed_import_leaves_nothing(directory):
+    """A file that fails partway through leaves no data blocks behind."""
+    scene = Scene(
+        meshes=[
+            Mesh(
+                array("f", [0, 0, 0, 1, 0, 0, 0, 1, 0]),
+                array("I", [3]),
+                array("I", [0, 1, 2]),
+                array("I", [0, 1, 1, 2, 0, 2]),
+                hole_starts=array("I"),
+            ),
+            Mesh(
+                array(
+                    "f", [0, 0, 0, 4, 0, 0, 4, 4, 0, 0, 4, 0, 1, 1, 0, 1, 3, 0, 3, 3, 0]
+                ),
+                array("I", [7]),
+                array("I", range(7)),
+                array("I", [0, 1, 1, 2, 2, 3, 0, 3, 4, 5, 5, 6, 4, 6]),
+                hole_starts=array("I", [4]),
+            ),
+        ],
+        materials=[Material("OnlyHereBeforeFailure")],
+    )
+    path = str(Path(directory) / "fails.zpm")
+    save(path, scene)
+    meshes, materials = len(bpy.data.meshes), len(bpy.data.materials)
+    try:
+        bpy.ops.import_mesh.zpm(filepath=path)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("A scene Blender cannot hold was accepted")
+    assert len(bpy.data.meshes) == meshes
+    assert len(bpy.data.materials) == materials
+    print("PASS: failed import leaves nothing")
 
 
 def check_colors_tangents_and_weights(directory):
@@ -35,8 +299,8 @@ def check_colors_tangents_and_weights(directory):
     arm.add(list(range(20, 60)), 0.25, "REPLACE")
     bpy.context.view_layer.objects.active = obj
     path = str(Path(directory) / "colors.zpm")
-    assert bpy.ops.export_mesh.zpm(filepath=path) == {"FINISHED"}
-    geometry = load(path)
+    export_alone(bpy.context.active_object, path)
+    geometry = load(path).meshes[0]
     assert sorted(geometry.tangent_layers) == sorted(mesh.uv_layers.keys())
     assert sorted(geometry.color_layers) == ["Heat", "Paint"]
     assert geometry.vertex_groups == ["Head", "Arm"]
@@ -48,9 +312,8 @@ def check_colors_tangents_and_weights(directory):
     total = sum(len(vertex.groups) for vertex in imported.data.vertices)
     assert total == 80, total
     assert sorted(imported.data.color_attributes.keys()) == ["Heat", "Paint"]
-    scene = bpy.context.scene
-    expected = snap_mesh(mesh_adapter.capture_object(obj, scene))
-    actual = snap_mesh(mesh_adapter.capture_object(imported, scene))
+    expected = snap_mesh(mesh_adapter.capture_object(obj))
+    actual = snap_mesh(mesh_adapter.capture_object(imported))
     assert same_geometry(actual, expected, compare_normals=False)
     print("PASS: colors, tangents, vertex groups and weights")
 
@@ -72,8 +335,8 @@ def check_surface_data(directory):
     vertex_creases.data[9].value = 0.25
     expected = snap_mesh(mesh_adapter.capture_mesh(mesh))
     path = str(Path(directory) / "surface.zpm")
-    assert bpy.ops.export_mesh.zpm(filepath=path) == {"FINISHED"}
-    result = mesh_adapter.create_mesh(load(path), name="surface-result")
+    export_alone(bpy.context.active_object, path)
+    result = mesh_adapter.create_mesh(load(path).meshes[0], name="surface-result")
     actual = snap_mesh(mesh_adapter.capture_mesh(result))
     assert same_geometry(actual, expected, compare_normals=False)
     assert sorted(result.uv_layers.keys()) == sorted(mesh.uv_layers.keys())
@@ -82,8 +345,8 @@ def check_surface_data(directory):
     normals = [(0.0, 0.6, 0.8)] * len(mesh.loops)
     mesh.normals_split_custom_set(normals)
     assert mesh.has_custom_normals
-    assert bpy.ops.export_mesh.zpm(filepath=path) == {"FINISHED"}
-    result = mesh_adapter.create_mesh(load(path), name="custom-result")
+    export_alone(bpy.context.active_object, path)
+    result = mesh_adapter.create_mesh(load(path).meshes[0], name="custom-result")
     assert result.has_custom_normals
     # Blender's own custom normal storage is off by about 0.0105 before ZPM is involved.
     for corner in result.corner_normals:
@@ -117,8 +380,8 @@ def check_materials_and_authored_marks(directory):
     mesh.color_attributes.new("Paint", "BYTE_COLOR", "POINT")
     expected = snap_mesh(mesh_adapter.capture_mesh(mesh))
     path = str(Path(directory) / "materials.zpm")
-    assert bpy.ops.export_mesh.zpm(filepath=path) == {"FINISHED"}
-    geometry = load(path)
+    export_alone(bpy.context.active_object, path)
+    geometry = load(path).meshes[0]
     assert geometry.material_slots == ["Skin", "", "Metal"]
     assert sorted(geometry.tangent_layers) == sorted(mesh.uv_layers.keys())
     assert list(geometry.uv_seams) == ["Second"]
@@ -167,9 +430,9 @@ def check_attributes_and_shape_keys(directory):
     bpy.context.scene.unit_settings.scale_length = 0.5
     expected = snap_mesh(mesh_adapter.capture_mesh(mesh))
     path = str(Path(directory) / "attributes.zpm")
-    assert bpy.ops.export_mesh.zpm(filepath=path) == {"FINISHED"}
-    geometry = load(path)
-    assert geometry.space.meters_per_unit == 0.5
+    export_alone(bpy.context.active_object, path)
+    geometry = load(path).meshes[0]
+    assert load(path).space.meters_per_unit == 0.5
     assert geometry.tangent_method.startswith("MikkTSpace")
     assert sorted(geometry.attributes) == sorted(row[0] for row in types)
     before = set(bpy.data.objects.keys())
@@ -238,8 +501,8 @@ def run():
             obj.location = (10, 20, 30)
             expected = snap_mesh(mesh_adapter.capture_mesh(source))
             path = str(Path(directory) / f"{name}.zpm")
-            assert bpy.ops.export_mesh.zpm(filepath=path) == {"FINISHED"}
-            geometry = load(path)
+            export_alone(obj, path)
+            geometry = load(path).meshes[0]
             result = mesh_adapter.create_mesh(geometry, name="api-result")
             assert same_geometry(
                 mesh_adapter.capture_mesh(result), expected, compare_normals=False
@@ -254,7 +517,7 @@ def run():
                 expected,
                 compare_normals=False,
             ), name
-            assert tuple(imported_obj.location) == (0, 0, 0)
+            assert tuple(imported_obj.location) == (10, 20, 30)
             assert tuple(obj.location) == (10, 20, 30)
             print(f"PASS: {name}, API and file operators")
         check_surface_data(directory)
@@ -262,6 +525,8 @@ def run():
         check_materials_and_authored_marks(directory)
         check_attributes_and_shape_keys(directory)
         check_holes_are_refused()
+        check_whole_scene(directory)
+        check_failed_import_leaves_nothing(directory)
         geometry = mesh_adapter.capture_mesh(source)
         geometry.corners[0] = geometry.vertex_count + 1
         before = len(bpy.data.meshes)

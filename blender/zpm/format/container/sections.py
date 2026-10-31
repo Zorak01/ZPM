@@ -11,6 +11,7 @@ from .layout import (
     DIRECTORY_ENTRY,
     FILE_HEADER,
     MAGIC,
+    OPTIONAL_KIND_START,
     TAIL_BYTES,
     VERSION,
     SectionFlags,
@@ -93,13 +94,15 @@ class SectionReader:
             end = entries[index + 1][3] if index + 1 < count else limit
             if end < offset or end > limit or end != align(end):
                 raise FormatError("File section is out of bounds")
+            previous = (kind, layer)
+            expected = end
+            if kind >= OPTIONAL_KIND_START:
+                continue
             try:
                 known = SectionKind(kind)
                 self._sections[known, layer] = (SectionFlags(flags), data[offset:end])
             except ValueError as error:
                 raise FormatError("File has an unknown section") from error
-            previous = (kind, layer)
-            expected = end
         if expected != limit:
             raise FormatError("File has bytes no section claims")
 

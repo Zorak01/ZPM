@@ -3,20 +3,19 @@
 """File operators and menus; format and mesh logic live in separate modules."""
 
 import logging
-from pathlib import Path
 
 import bpy
-from bpy.props import StringProperty
+from bpy.props import BoolProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 from ..format import FormatError, load, save
-from . import mesh_adapter
+from . import scene_adapter
 
 logger = logging.getLogger(__name__)
 
 
 class IMPORT_MESH_OT_zpm(bpy.types.Operator, ImportHelper):
-    """Import mesh geometry and surface data; this version holds no scene data"""
+    """Import objects, meshes, materials, lights and armatures"""
 
     bl_idname = "import_mesh.zpm"
     bl_label = "Import ZPM Mesh"
@@ -30,62 +29,52 @@ class IMPORT_MESH_OT_zpm(bpy.types.Operator, ImportHelper):
         return context.mode == "OBJECT" and context.collection is not None
 
     def execute(self, context):
-        mesh = None
-        obj = None
         try:
-            geometry = load(self.filepath)
-            mesh = mesh_adapter.create_mesh(geometry, name=Path(self.filepath).stem)
-            obj = bpy.data.objects.new(mesh.name, mesh)
-            mesh_adapter.apply_vertex_groups(geometry, obj)
-            mesh_adapter.apply_shape_keys(geometry, obj)
-            mesh_adapter.apply_space(geometry, obj, context.scene)
-            context.collection.objects.link(obj)
+            objects = scene_adapter.build_scene(load(self.filepath), context)
         except (OSError, FormatError, RuntimeError) as error:
-            if obj is not None:
-                bpy.data.objects.remove(obj, do_unlink=True)
-            if mesh is not None:
-                bpy.data.meshes.remove(mesh)
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
         except Exception:
-            if obj is not None:
-                bpy.data.objects.remove(obj, do_unlink=True)
-            if mesh is not None:
-                bpy.data.meshes.remove(mesh)
             logger.exception("ZPM import failed")
             self.report({"ERROR"}, "ZPM import failed; see Blender's console")
             return {"CANCELLED"}
-        self.report({"INFO"}, f"Imported {geometry.vertex_count:,} vertices")
+        self.report({"INFO"}, f"Imported {len(objects):,} objects")
         return {"FINISHED"}
 
 
 class EXPORT_MESH_OT_zpm(bpy.types.Operator, ExportHelper):
-    """Export the active object's base mesh and its surface data"""
+    """Export the selected objects, or the whole scene when none is selected"""
 
     bl_idname = "export_mesh.zpm"
     bl_label = "Export ZPM Mesh"
 
     filename_ext = ".zpm"
     filter_glob: StringProperty(default="*.zpm", options={"HIDDEN"})
+    embed_textures: BoolProperty(
+        name="Embed Textures",
+        description="Store image files inside the .zpm instead of linking to them",
+        default=False,
+    )
 
     @classmethod
     def poll(cls, context):
-        obj = context.active_object
-        return context.mode == "OBJECT" and obj is not None and obj.type == "MESH"
+        return context.mode == "OBJECT"
 
     def draw(self, context):
+        self.layout.prop(self, "embed_textures")
         box = self.layout.box()
-        box.label(text="Mesh data only", icon="MESH_DATA")
-        box.label(text="Active object, local coordinates, base mesh.")
-        box.label(text="Positions, faces, edges, normals, UVs, sharp, seams, creases.")
-        box.label(text="Colors, tangents, vertex groups, weights, shape keys too.")
-        box.label(text="Custom attributes and the scene's units.")
-        box.label(text="Material slots per face; material settings not exported yet.")
+        box.label(text="Selected objects, or all if none selected.", icon="SCENE_DATA")
+        box.label(text="Base meshes with all surface data, materials, images.")
+        box.label(text="Lights, armatures, poses, collections, parenting, units.")
+        box.label(text="Curves and lattices export as placement only for now.")
 
     def execute(self, context):
         try:
-            geometry = mesh_adapter.capture_object(context.active_object, context.scene)
-            save(self.filepath, geometry)
+            objects = context.selected_objects or list(context.scene.objects)
+            scene = scene_adapter.capture_scene(
+                context.scene, objects, embed_textures=self.embed_textures
+            )
+            save(self.filepath, scene)
         except (OSError, FormatError, RuntimeError) as error:
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
@@ -93,18 +82,16 @@ class EXPORT_MESH_OT_zpm(bpy.types.Operator, ExportHelper):
             logger.exception("ZPM export failed")
             self.report({"ERROR"}, "ZPM export failed; see Blender's console")
             return {"CANCELLED"}
-        self.report(
-            {"INFO"}, f"Exported {geometry.vertex_count:,} vertices (mesh core)"
-        )
+        self.report({"INFO"}, f"Exported {len(objects):,} objects")
         return {"FINISHED"}
 
 
 def _import_menu(self, context):
-    self.layout.operator(IMPORT_MESH_OT_zpm.bl_idname, text="ZPM Mesh Core (.zpm)")
+    self.layout.operator(IMPORT_MESH_OT_zpm.bl_idname, text="ZPM (.zpm)")
 
 
 def _export_menu(self, context):
-    self.layout.operator(EXPORT_MESH_OT_zpm.bl_idname, text="ZPM Mesh Core (.zpm)")
+    self.layout.operator(EXPORT_MESH_OT_zpm.bl_idname, text="ZPM (.zpm)")
 
 
 CLASSES = (IMPORT_MESH_OT_zpm, EXPORT_MESH_OT_zpm)

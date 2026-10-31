@@ -33,6 +33,10 @@ static unsafe class Program
                 return MeasureView(arguments[1]);
             case "measure-surface":
                 return MeasureSurface(arguments[1]);
+            case "dump-scene":
+                return DumpScene(arguments[1]);
+            case "fuzz-scene":
+                return FuzzScene(arguments[1], int.Parse(arguments[2]), int.Parse(arguments[3]));
             case "fuzz":
                 return Fuzz(arguments[1], int.Parse(arguments[2]), int.Parse(arguments[3]));
             default:
@@ -236,8 +240,6 @@ static unsafe class Program
             }
         }
         Require(seen == holes, "hole count");
-        Require(MathF.Abs(view.metersPerUnit - reader.ReadSingle()) == 0f, "meters per unit");
-        Require((uint)view.upAxis == reader.ReadUInt32() && (uint)view.forwardAxis == reader.ReadUInt32(), "axes");
         VerifyAttributes(view, reader);
         VerifyShapeTargets(view, reader);
     }
@@ -488,6 +490,280 @@ static unsafe class Program
         }
         Console.WriteLine(JsonSerializer.Serialize(new { trials = count, accepted, rejected }));
         return 0;
+    }
+
+    /// <summary>Prints what the scene reader sees as JSON, so Python can compare it with the source.</summary>
+    static int DumpScene(string path)
+    {
+        byte[] bytes = File.ReadAllBytes(path);
+        fixed (byte* data = bytes)
+        {
+            if (!ZpmSceneView.TryOpen(data, bytes.Length, out ZpmSceneView scene) || !scene.Validate())
+                throw new InvalidDataException("Scene failed validation");
+            var objects = new List<object>();
+            for (uint i = 0; i < scene.objectCount; i++)
+            {
+                ref readonly ZpmObject item = ref scene.GetObject(i);
+                scene.TryGetObjectName(i, out byte* name, out uint length);
+                objects.Add(new
+                {
+                    name = Text(name, length),
+                    type = (uint)item.type,
+                    item.data,
+                    item.parent,
+                    item.parentBone,
+                    location = new[] { item.location.x, item.location.y, item.location.z },
+                    poseChannels = item.poseChannelCount,
+                    skinArmature = item.skinArmature,
+                    skinBones = scene.GetSkinBoneCount(i),
+                });
+            }
+            var meshes = new List<uint>();
+            for (uint i = 0; i < scene.meshCount; i++)
+            {
+                Require(scene.TryGetMesh(i, out ZpmMeshView mesh), "scene mesh");
+                meshes.Add(mesh.vertexCount);
+            }
+            var materials = new List<object>();
+            for (uint i = 0; i < scene.materialCount; i++)
+            {
+                ref readonly ZpmMaterial material = ref scene.GetMaterial(i);
+                scene.TryGetMaterialName(i, out byte* name, out uint length);
+                materials.Add(new { name = Text(name, length), material.metallic, material.roughness, slots = material.slotCount });
+            }
+            var tiles = new List<object>();
+            for (uint i = 0; i < scene.imageCount; i++)
+            {
+                ref readonly ZpmImage image = ref scene.GetImage(i);
+                for (uint t = 0; t < image.tileCount; t++)
+                {
+                    uint tile = image.firstTile + t;
+                    scene.TryGetTilePath(tile, out byte* name, out uint length);
+                    uint bytesLength = scene.TryGetTilePayload(tile, out byte* _, out uint size) ? size : 0;
+                    tiles.Add(new { number = scene.GetImageTile(tile).number, path = Text(name, length), bytes = bytesLength });
+                }
+            }
+            var bones = new List<object>();
+            for (uint a = 0; a < scene.armatureCount; a++)
+            {
+                for (uint b = 0; b < scene.GetBoneCount(a); b++)
+                {
+                    uint bone = scene.GetFirstBone(a) + b;
+                    scene.TryGetBoneName(bone, out byte* name, out uint length);
+                    bones.Add(new { name = Text(name, length), scene.GetBone(bone).parent, flags = (uint)scene.GetBone(bone).flags, roll = scene.GetBone(bone).roll });
+                }
+            }
+            var lights = new List<float>();
+            for (uint i = 0; i < scene.lightCount; i++)
+                lights.Add(scene.GetLight(i).power);
+            var splinePoints = new List<float>();
+            ZpmCurves curves = scene.curves;
+            for (uint c = 0; c < curves.curveCount; c++)
+            {
+                ref readonly ZpmCurveInfo curve = ref curves.GetCurve(c);
+                for (uint s = 0; s < curve.splineCount; s++)
+                {
+                    ref readonly ZpmSpline spline = ref curves.GetSpline(curve.firstSpline + s);
+                    for (uint p = 0; p < spline.pointCount; p++)
+                    {
+                        ZpmCurvePoint point = curves.GetPoint(spline.firstPoint + p);
+                        splinePoints.Add(point.position.r + point.position.g + point.position.a + point.radius);
+                    }
+                }
+            }
+            var latticePoints = new List<float>();
+            ZpmLattices lattices = scene.lattices;
+            for (uint l = 0; l < lattices.latticeCount; l++)
+            {
+                ref readonly ZpmLatticeInfo lattice = ref lattices.GetLattice(l);
+                for (uint p = 0; p < lattice.pointCount; p++)
+                    latticePoints.Add(lattices.GetDeformedPoint(lattice.firstPoint + p).y + lattices.GetWeight(lattice.firstPoint + p));
+            }
+            var keys = new List<float>();
+            ZpmAnimation animation = scene.animation;
+            for (uint c = 0; c < animation.clipCount; c++)
+            {
+                ref readonly ZpmClip clip = ref animation.GetClip(c);
+                for (uint t = 0; t < clip.trackCount; t++)
+                {
+                    ref readonly ZpmTrack track = ref animation.GetTrack(clip.firstTrack + t);
+                    for (uint k = 0; k < track.keyCount; k++)
+                    {
+                        keys.Add(animation.GetKeyTime(track, k));
+                        if (track.valueType == ZpmTrackValue.Float)
+                            keys.Add(animation.GetKeyFloat(track, k));
+                    }
+                }
+            }
+            ZpmValueTree values = scene.values;
+            Require(values.TryGetRoot(ZpmResourceKind.Scene, 0, out ZpmValueNode root), "scene properties");
+            Require(values.TryFindChild(root, System.Text.Encoding.UTF8.GetBytes("properties"), out ZpmValueNode properties), "scene property group");
+            Require(values.TryFindChild(properties, System.Text.Encoding.UTF8.GetBytes("author"), out ZpmValueNode author), "scene property");
+            Require(values.TryGetString(author, out byte* authorText, out uint authorLength), "string property");
+            var members = new List<uint>();
+            for (uint c = 0; c < scene.collectionCount; c++)
+            {
+                for (uint m = 0; m < scene.GetCollectionMemberCount(c); m++)
+                    members.Add(scene.GetCollectionMember(c, m));
+            }
+            Console.WriteLine(JsonSerializer.Serialize(new
+            {
+                meters = scene.metersPerUnit,
+                up = (uint)scene.upAxis,
+                forward = (uint)scene.forwardAxis,
+                meshes,
+                objects,
+                materials,
+                tiles,
+                bones,
+                lights,
+                members,
+                splinePoints,
+                latticePoints,
+                keys,
+                author = Text(authorText, authorLength),
+                cameras = scene.cameraCount,
+                extensions = scene.extensionCount,
+            }));
+        }
+        return 0;
+    }
+
+    static string Text(byte* utf8, uint length) => System.Text.Encoding.UTF8.GetString(utf8, (int)length);
+
+    static int FuzzScene(string path, int seed, int count)
+    {
+        byte[] original = File.ReadAllBytes(path);
+        var random = new Random(seed);
+        int accepted = 0, rejected = 0;
+        fixed (byte* data = original)
+        {
+            for (int trial = 0; trial < count; trial++)
+            {
+                int flips = random.Next(1, MaxFlips + 1);
+                var saved = new (int at, byte value)[flips];
+                for (int i = 0; i < flips; i++)
+                {
+                    int at = random.Next(original.Length);
+                    saved[i] = (at, data[at]);
+                    data[at] = (byte)random.Next(256);
+                }
+                if (ZpmSceneView.TryOpen(data, original.Length, out ZpmSceneView scene) && scene.Validate())
+                {
+                    accepted++;
+                    ReadScene(scene);
+                }
+                else
+                    rejected++;
+                for (int i = flips - 1; i >= 0; i--)
+                    data[saved[i].at] = saved[i].value;
+            }
+        }
+        Console.WriteLine(JsonSerializer.Serialize(new { trials = count, accepted, rejected }));
+        return 0;
+    }
+
+    /// <summary>Touches every link a validated scene holds. Going out of range would crash the run.</summary>
+    static void ReadScene(in ZpmSceneView scene)
+    {
+        for (uint i = 0; i < scene.objectCount; i++)
+        {
+            ref readonly ZpmObject item = ref scene.GetObject(i);
+            if (item.parent != ZpmLayout.NoIndex)
+                scene.GetObject(item.parent);
+            for (uint p = 0; p < item.poseChannelCount; p++)
+                scene.GetPoseChannel(item.firstPoseChannel + p);
+            for (uint g = 0; g < scene.GetSkinBoneCount(i); g++)
+                scene.GetSkinBone(i, g);
+        }
+        for (uint i = 0; i < scene.materialCount; i++)
+        {
+            ref readonly ZpmMaterial material = ref scene.GetMaterial(i);
+            for (uint s = 0; s < material.slotCount; s++)
+            {
+                ref readonly ZpmTextureSlot slot = ref scene.GetTextureSlot(material.firstSlot + s);
+                scene.GetImage(slot.image);
+                scene.GetSampler(slot.sampler);
+            }
+        }
+        for (uint i = 0; i < scene.imageCount; i++)
+        {
+            ref readonly ZpmImage image = ref scene.GetImage(i);
+            for (uint t = 0; t < image.tileCount; t++)
+            {
+                if (scene.TryGetTilePayload(image.firstTile + t, out byte* bytes, out uint length) && length != 0)
+                    Require(bytes[length - 1] == bytes[length - 1], "payload read");
+            }
+        }
+        for (uint a = 0; a < scene.armatureCount; a++)
+        {
+            for (uint b = 0; b < scene.GetBoneCount(a); b++)
+                scene.GetBone(scene.GetFirstBone(a) + b);
+        }
+        ZpmCurves curves = scene.curves;
+        for (uint c = 0; c < curves.curveCount; c++)
+        {
+            ref readonly ZpmCurveInfo curve = ref curves.GetCurve(c);
+            for (uint s = 0; s < curve.splineCount; s++)
+            {
+                ref readonly ZpmSpline spline = ref curves.GetSpline(curve.firstSpline + s);
+                for (uint p = 0; p < spline.pointCount; p++)
+                {
+                    curves.GetPoint(spline.firstPoint + p);
+                    if (curves.hasHandles)
+                        curves.GetLeftHandle(spline.firstPoint + p);
+                }
+                for (uint k = 0; k < spline.knotCount && spline.firstKnot != ZpmLayout.NoIndex; k++)
+                    curves.GetKnot(spline.firstKnot + k);
+            }
+        }
+        ZpmLattices lattices = scene.lattices;
+        for (uint l = 0; l < lattices.latticeCount; l++)
+        {
+            ref readonly ZpmLatticeInfo lattice = ref lattices.GetLattice(l);
+            for (uint p = 0; p < lattice.pointCount; p++)
+                lattices.GetRestPoint(lattice.firstPoint + p);
+        }
+        ZpmAnimation animation = scene.animation;
+        for (uint c = 0; c < animation.clipCount; c++)
+        {
+            ref readonly ZpmClip clip = ref animation.GetClip(c);
+            for (uint t = 0; t < clip.trackCount; t++)
+            {
+                ref readonly ZpmTrack track = ref animation.GetTrack(clip.firstTrack + t);
+                for (uint k = 0; k < track.keyCount; k++)
+                {
+                    animation.GetKeyTime(track, k);
+                    animation.GetKeyStored(track, k);
+                    animation.GetKeyMode(track, k);
+                    if (track.firstHandle != ZpmLayout.NoIndex)
+                        animation.GetKeyHandle(track, k, 3);
+                }
+            }
+        }
+        ZpmValueTree values = scene.values;
+        for (uint e = 0; e < scene.extensionCount; e++)
+        {
+            scene.GetExtensionPayload(e, out byte* payload, out uint size);
+            if (size != 0)
+                Require(payload[size - 1] == payload[size - 1], "extension read");
+        }
+        if (values.TryGetRoot(ZpmResourceKind.Scene, 0, out ZpmValueNode root))
+            WalkValues(values, root, 0);
+        for (uint c = 0; c < scene.collectionCount; c++)
+        {
+            for (uint m = 0; m < scene.GetCollectionMemberCount(c); m++)
+                scene.GetObject(scene.GetCollectionMember(c, m));
+            scene.GetCollectionParent(c);
+        }
+    }
+
+    static void WalkValues(in ZpmValueTree values, in ZpmValueNode node, int depth)
+    {
+        if (depth > 64 || (node.type != ZpmValueType.Dictionary && node.type != ZpmValueType.List))
+            return;
+        for (uint i = 0; i < node.b; i++)
+            WalkValues(values, values.GetChild(node, i), depth + 1);
     }
 
     static void ReadEverything(in ZpmMeshView view, uint* output)

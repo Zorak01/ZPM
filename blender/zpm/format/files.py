@@ -6,23 +6,23 @@ import os
 import tempfile
 from pathlib import Path
 
-from .codec.mesh_codec import decode, encode
+from .codec.scene_codec import decode_scene, encode_scene
 from .container.layout import DEFAULT_MAX_BYTES
 from .errors import FormatError
-from .mesh import Mesh
+from .scene import Scene
 
 
-def load(path: str | Path, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
+def load(path: str | Path, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Scene:
     """Read a bounded file. Reject oversized files before allocating them."""
     with Path(path).open("rb") as stream:
         if os.fstat(stream.fileno()).st_size > max_bytes:
             raise FormatError("File exceeds the configured size limit")
-        return decode(stream.read(max_bytes + 1), max_bytes=max_bytes)
+        return decode_scene(stream.read(max_bytes + 1), max_bytes=max_bytes)
 
 
-def save(path: str | Path, mesh: Mesh) -> None:
+def save(path: str | Path, scene: Scene) -> None:
     """Replace a file atomically after successful encoding, in the same directory."""
-    data = encode(mesh)
+    data = encode_scene(scene)
     destination = Path(path)
     temporary = None
     try:

@@ -6,8 +6,8 @@ materials, rigs, and animation between Blender, engines, and other tools.
 The goal is simple: **smaller files, faster loading, lower memory use, and more
 of your work preserved when you export.**
 
-ZPM is in early development. Mesh import and export work today, with units and axes. The wider
-feature set below is planned, not implemented yet.
+ZPM is in early development. Scenes import and export today, with everything in the table below,
+but the layout can still change, and it does not yet beat Draco or meshoptimizer on size.
 
 **Reading a ZPM mesh means no decode step.** A mesh is read by index
 straight from the file bytes, with no allocation: one face on a real 3,682-vertex
@@ -24,19 +24,18 @@ smallest earlier experiment, which had to decode all of it first.
 | Tangents | Stored per corner with their sign, for each UV layer | Working |
 | UVs | Multiple named UV sets and coordinates spanning UDIM tiles | Working |
 | Vertex colors | Multiple named RGBA layers, stored per vertex or face corner; 8-bit or float values; linear or sRGB | Working |
-| Custom attributes | Named exact data on vertices, face corners, edges, faces, or the whole mesh | Working |
-| Materials and textures | Material slots per face work. Planned: material properties, texture references, and textures embedded in the file when asked for | Partly |
-| Objects and hierarchy | Mesh objects, empty objects, names, transforms, parenting, collections, and instances | Planned |
-| Bones and rigs | Bone head, tail, length, roll, parenting, rest transforms, pose data, and control shapes | Planned |
-| Skinning | Named vertex groups and painted weights; bone influences come with bones | Working |
+| Custom attributes | Named exact data on vertices, face corners, edges, faces, or the whole mesh; named values on any resource | Working |
+| Materials and textures | Application-neutral materials: shared fields, any shading model, named parameters, texture slots with named roles, samplers, UV transforms, UDIM tiles, image links or embedded images. Blender node graphs are kept too | Working |
+| Objects and hierarchy | Mesh, empty, armature, light, curve, lattice and camera objects, names, transforms, parenting, bone parenting, collections, shared meshes, and collection instances | Working |
+| Bones and rigs | Bone head, tail, roll, parenting, envelopes, flags, display settings, pose data and control shapes | Working |
+| Skinning | Named vertex groups and painted weights, the armature each mesh object follows, and each group's bone | Working |
 | Blendshapes | Named shape targets, changed vertices, values, ranges, relative and absolute targets, in-betweens, and normal and tangent changes | Working |
-| Rig behavior | Constraints, drivers, and their referenced objects, bones, and properties | Planned |
-| Other objects | Lights, curves, and lattices, with their associated properties | Planned |
-| Animation | Tracks that can target any stored property, including custom attributes | Planned |
+| Rig behavior | Modifiers, constraints and drivers, with their links, kept for the application that made them; not a portable evaluator | Working |
+| Other objects | Point, spot, sun and area lights, poly, Bezier and NURBS curves, lattices, and cameras | Working |
+| Animation | Clips of tracks addressing any field by owner and path, with float, integer, boolean, string and reference keys | Working |
 
-Animation is intended to apply throughout the format: object transforms, bone
-poses, light settings, material values, blendshape values, and other stored
-properties should all be animatable.
+Tracks can address any stored field. Blender export today writes object and shape key
+animation; material and light animation are not captured yet.
 
 ## What better means
 
@@ -64,11 +63,12 @@ blender --factory-startup --command extension build --source-dir blender/zpm --o
 In Preferences > Get Extensions > Install from Disk, select `dist/zpm-0.1.0.zip`.
 Enable **ZPM Mesh**. In Object Mode, use File > Import / Export > **ZPM Mesh Core**.
 
-Exports contain the active object's base mesh in local coordinates; modifiers
-are not evaluated. Imports create a new object at the origin. Keep the source
-`.blend` for data outside the supported mesh-core scope.
+Exports hold the selected objects, or the whole scene when none is selected, with base meshes in
+local coordinates; modifiers are not evaluated, apart from the armature link. Imports recreate
+them. Keep the source `.blend` for data outside what ZPM stores yet.
 
-There is nothing to choose on export: the file picks its smallest form by itself.
+The one setting is **Embed Textures**, which stores image files inside the `.zpm`. Everything else
+the file picks by itself.
 
 ## Python API
 
@@ -81,13 +81,15 @@ python -m pip install .
 ```python
 from zpm.format import load, save
 
-mesh = load("model.zpm")
-print(mesh.vertex_count, mesh.face_count, mesh.buffer_bytes)
-save("copy.zpm", mesh)
+scene = load("model.zpm")
+mesh = scene.meshes[0]
+print(len(scene.objects), mesh.vertex_count, mesh.face_count)
+save("copy.zpm", scene)
 ```
 
 The Python API expands a whole file into arrays for editing. By-index reading is
-in the [C# reference reader](runtime/csharp/Zpm/ZpmMeshView.cs).
+in the C# reference reader: [ZpmSceneView](runtime/csharp/Zpm/ZpmSceneView.cs) and
+[ZpmMeshView](runtime/csharp/Zpm/ZpmMeshView.cs).
 
 See the [file contract](docs/mesh-core.md), [architecture](docs/architecture.md) and
 [how each technique works](docs/techniques.md).

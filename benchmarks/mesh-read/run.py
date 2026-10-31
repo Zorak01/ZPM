@@ -148,11 +148,6 @@ def write_surface(mesh: Mesh, path: Path) -> None:
         stream.write(array("I", mesh.crease_chain_vertices).tobytes())
         stream.write(struct.pack("<I", len(mesh.hole_starts)))
         stream.write(array("I", mesh.hole_starts).tobytes())
-        stream.write(
-            struct.pack(
-                "<fII", mesh.space.meters_per_unit, mesh.space.up, mesh.space.forward
-            )
-        )
         write_attributes(mesh, stream)
         write_shape_targets(mesh, stream)
 

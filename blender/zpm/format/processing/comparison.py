@@ -169,7 +169,6 @@ def _key(mesh: Mesh, compare_normals: bool) -> tuple:
         sorted((name, c.is_srgb) for name, c in mesh.color_layers.items()),
         sorted(chains),
         mesh.material_slots,
-        mesh.space,
         mesh.tangent_method,
         _attribute_formats(mesh),
         _attribute_rows(mesh, AttributeDomain.MESH),

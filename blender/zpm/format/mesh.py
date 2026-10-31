@@ -12,7 +12,6 @@ from .container.layout import (
     AttributeMeaning,
     AttributeType,
     ShapeInterpolation,
-    SpaceAxis,
 )
 from .errors import FormatError
 
@@ -56,15 +55,6 @@ class ColorLayer:
     @property
     def is_float(self) -> bool:
         return self.values.typecode == "f"
-
-
-@dataclass(frozen=True, slots=True)
-class MeshSpace:
-    """What a mesh's coordinates mean. The default is what Blender uses."""
-
-    meters_per_unit: float = 1.0
-    up: SpaceAxis = SpaceAxis.Z
-    forward: SpaceAxis = SpaceAxis.NEG_Y
 
 
 @dataclass(slots=True)
@@ -149,10 +139,10 @@ class Mesh:
     weight_offsets: where each vertex's weights start, plus one final total.
     weight_groups, weight_values: one group index and one Float32 per weight.
 
-    space: units and axes of the coordinates.
     tangent_method: what made the tangents and its version, or empty if unknown.
     attributes: name to custom Attribute.
     shape_targets: blendshapes, in the order they evaluate.
+    properties: named values for tools; see the value tree in codec/scene_values.py.
 
     Arrays remain mutable and are owned by the caller. Call validate after edits.
     """
@@ -179,10 +169,10 @@ class Mesh:
     material_slots: list = field(default_factory=list)
     face_materials: array = field(default_factory=_empty_indices)
     hole_starts: array = field(default_factory=_empty_indices)
-    space: MeshSpace = field(default_factory=MeshSpace)
     tangent_method: str = ""
     attributes: dict = field(default_factory=dict)
     shape_targets: list = field(default_factory=list)
+    properties: dict = field(default_factory=dict)
     color_layers: dict = field(default_factory=dict)
     vertex_groups: list = field(default_factory=list)
     weight_offsets: array = field(default_factory=_empty_indices)

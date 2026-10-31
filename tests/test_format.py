@@ -13,19 +13,41 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "blender"))
 
 from zpm.format import (
+    Armature,
     Attribute,
     AttributeDomain,
     AttributeMeaning,
     AttributeType,
+    Bone,
+    Camera,
+    Clip,
+    Collection,
     ColorLayer,
+    Curve,
+    Extension,
     FormatError,
+    Image,
+    ImageTile,
+    Lattice,
+    Light,
+    Material,
     Mesh,
-    MeshSpace,
+    PoseChannel,
+    Reference,
+    Sampler,
+    Scene,
+    SceneObject,
+    SceneSpace,
     ShapeInterpolation,
     ShapeTarget,
     SpaceAxis,
+    Spline,
+    TextureSlot,
+    Track,
     decode,
+    decode_scene,
     encode,
+    encode_scene,
     load,
     map_file,
     same_geometry,
@@ -33,7 +55,32 @@ from zpm.format import (
     snap_mesh,
 )
 from zpm.format.codec.quantize import decode_normal, encode_normal
-from zpm.format.container.layout import DIRECTORY_ENTRY, FILE_HEADER, SectionKind
+from zpm.format.container.layout import (
+    DIRECTORY_ENTRY,
+    FILE_HEADER,
+    NO_INDEX,
+    OPTIONAL_KIND_START,
+    AlphaMode,
+    AreaShape,
+    HandleType,
+    KeyMode,
+    LightType,
+    LightUnit,
+    ObjectFlags,
+    ObjectType,
+    ResourceKind,
+    RotationMode,
+    SamplerFilter,
+    SamplerWrap,
+    SectionKind,
+    SkinFlags,
+    SplineFlags,
+    SplineType,
+    TrackFlags,
+    TrackValue,
+    align,
+)
+from zpm.format.container.sections import Section, write_file
 from zpm.format.processing.reordering import reorder_mesh
 
 
@@ -128,7 +175,6 @@ def authored_mesh() -> Mesh:
         "Paint": ColorLayer(array("B", [7] * corners * 4), True, True),
         "Heat": ColorLayer(array("f", [0.5] * mesh.vertex_count * 4), False),
     }
-    mesh.space = MeshSpace(0.01, SpaceAxis.Y, SpaceAxis.NEG_Z)
     mesh.tangent_method = "MikkTSpace, test"
     mesh.attributes = attributes_for(mesh)
     mesh.shape_targets = shape_targets_for(mesh)
@@ -496,11 +542,7 @@ class CodecTests(unittest.TestCase):
         decoded = decode(encode(source))
         self.assertEqual(decoded.shape_targets[0].positions[0], float("inf"))
 
-    def test_default_space_stores_nothing(self):
-        names = {region.name for region in map_file(encode(triangle()))}
-        self.assertNotIn("MESH_SPACE", names)
-
-    def test_invalid_attributes_targets_and_space_are_refused(self):
+    def test_invalid_attributes_and_targets_are_refused(self):
         wrong_size = triangle()
         wrong_size.attributes = {
             "x": Attribute(
@@ -606,17 +648,416 @@ class CodecTests(unittest.TestCase):
     def test_atomic_save_and_bounded_load(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "test.zpm"
-            save(path, triangle())
+            save(path, Scene(meshes=[triangle()]))
             original = path.read_bytes()
-            self.assertEqual(load(path).vertex_count, 3)
+            self.assertEqual(load(path).meshes[0].vertex_count, 3)
             invalid = triangle()
             invalid.corners[0] = 99
             with self.assertRaises(FormatError):
-                save(path, invalid)
+                save(path, Scene(meshes=[invalid]))
             self.assertEqual(path.read_bytes(), original)
             with self.assertRaises(FormatError):
                 load(path, max_bytes=64)
             self.assertEqual(list(path.parent.iterdir()), [path])
+
+
+def sample_scene() -> Scene:
+    """One of everything scene files hold, with values that survive as Float32."""
+    shared = b"encoded image bytes"
+    mesh = grid_mesh(6)
+    mesh.material_slots = ["Skin"]
+    mesh.vertex_groups = ["Hip", "Spine"]
+    mesh.weight_offsets = array("I", [0] * (mesh.vertex_count + 1))
+    return Scene(
+        SceneSpace(0.5, SpaceAxis.Y, SpaceAxis.NEG_Z),
+        [mesh, triangle()],
+        [
+            Material(
+                "Skin",
+                (0.5, 0.25, 0.125, 0.5),
+                0.25,
+                0.75,
+                (1.0, 0.5, 0.25),
+                2.0,
+                0.5,
+                0.25,
+                AlphaMode.CUTOFF,
+                False,
+                [
+                    TextureSlot("base_color", 0, 0, "UVMap"),
+                    TextureSlot(
+                        "clearcoat normal", 1, 1, "", (0.5, 0.25), 0.5, (2.0, 4.0)
+                    ),
+                ],
+            ),
+            Material(
+                "Glass",
+                base_color=(0.5, 0.5, 0.5, 1.0),
+                model="glass",
+                parameters={"ior": 1.5, "tint": [0.5, 0.25, 0.125]},
+            ),
+        ],
+        [
+            Sampler(),
+            Sampler(SamplerFilter.NEAREST, SamplerWrap.CLIP, SamplerWrap.MIRROR),
+        ],
+        [
+            Image(
+                "Albedo", "sRGB", 64, 32, 4, True, [ImageTile(0, "albedo.png", shared)]
+            ),
+            Image(
+                "Normals",
+                "Non-Color",
+                8,
+                8,
+                3,
+                False,
+                [
+                    ImageTile(1001, "n.1001.png", shared),
+                    ImageTile(1002, "n.1002.png"),
+                ],
+            ),
+        ],
+        [
+            SceneObject(
+                "Rig",
+                ObjectType.ARMATURE,
+                0,
+                pose=[
+                    PoseChannel(
+                        1,
+                        (0.5, 0.0, 0.0),
+                        (0.5, 0.25, 0.0, 0.0),
+                        (2.0, 2.0, 2.0),
+                        RotationMode.XYZ,
+                    )
+                ],
+            ),
+            SceneObject(
+                "Body",
+                ObjectType.MESH,
+                0,
+                parent=0,
+                parent_bone=1,
+                skin_armature=0,
+                skin_flags=SkinFlags.VERTEX_GROUPS,
+                skin_bones=[0, NO_INDEX],
+            ),
+            SceneObject("Copy A", ObjectType.MESH, 1, location=(1.0, 2.0, 3.0)),
+            SceneObject(
+                "Copy B",
+                ObjectType.MESH,
+                1,
+                scale=(2.0, 0.5, 1.0),
+                rotation_mode=RotationMode.ZYX,
+                rotation=(0.5, 0.25, 0.125, 0.0),
+                flags=ObjectFlags.HIDDEN_IN_RENDER,
+            ),
+            SceneObject(
+                "Lamp",
+                ObjectType.LIGHT,
+                0,
+                properties={"note": "key", "level": 3, "on": True},
+                modifiers=[
+                    {"name": "Mod", "type": "X", "settings": {"object": Reference(0)}}
+                ],
+                constraints=[{"name": "C", "type": "COPY_LOCATION", "settings": {}}],
+                drivers=[{"path": "location", "index": 0, "expression": "var*2"}],
+            ),
+            SceneObject("Line", ObjectType.CURVE, 0),
+            SceneObject("Cage", ObjectType.LATTICE, 0),
+            SceneObject("Eye", ObjectType.CAMERA, 0, properties={"lens": [50.0, 35.0]}),
+            SceneObject("Set", ObjectType.EMPTY, instance_collection=1),
+        ],
+        [Collection("Props", NO_INDEX, [2, 3]), Collection("Inner", 0, [3, 4])],
+        [
+            Light(
+                "Key",
+                LightType.AREA,
+                (1.0, 0.5, 0.25),
+                100.0,
+                LightUnit.WATTS,
+                False,
+                0.5,
+                0.0,
+                0.0,
+                0.0,
+                AreaShape.RECTANGLE,
+                2.0,
+                4.0,
+            )
+        ],
+        [
+            Armature(
+                "Skeleton",
+                [
+                    Bone(
+                        "Hip",
+                        NO_INDEX,
+                        (0.0, 0.0, 0.0),
+                        (0.0, 0.0, 1.0),
+                        head_radius=0.25,
+                        tail_radius=0.125,
+                    ),
+                    Bone(
+                        "Spine",
+                        0,
+                        (0.0, 0.0, 1.0),
+                        (0.0, 0.0, 2.0),
+                        0.5,
+                        head_radius=0.25,
+                        tail_radius=0.125,
+                        is_connected=True,
+                        inherits_scale=False,
+                        settings={"bbone_x": 0.5},
+                    ),
+                ],
+            )
+        ],
+        [
+            Curve(
+                "Road",
+                [
+                    Spline(
+                        SplineType.BEZIER,
+                        SplineFlags.CYCLIC,
+                        4,
+                        12,
+                        [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                        [1.0, 1.0],
+                        [1.0, 0.5],
+                        [0.0, 0.25],
+                        [-0.5, 0.0, 0.0, 0.5, 0.0, 0.0],
+                        [0.5, 0.0, 0.0, 1.5, 0.0, 0.0],
+                        [
+                            HandleType.AUTO,
+                            HandleType.AUTO,
+                            HandleType.FREE,
+                            HandleType.VECTOR,
+                        ],
+                    ),
+                    Spline(
+                        SplineType.NURBS,
+                        SplineFlags.ENDPOINT,
+                        3,
+                        6,
+                        [0.0, 1.0, 0.0, 0.0, 2.0, 0.0, 0.0, 3.0, 0.0],
+                        [1.0, 2.0, 1.0],
+                        [1.0, 1.0, 1.0],
+                        [0.0, 0.0, 0.0],
+                        knots=[0.0, 0.0, 0.5, 1.0, 1.0],
+                    ),
+                ],
+                {"bevel_depth": 0.25},
+            )
+        ],
+        [
+            Lattice(
+                "Box",
+                2,
+                1,
+                1,
+                [-0.5, 0.0, 0.0, 0.5, 0.0, 0.0],
+                [-0.5, 0.25, 0.0, 0.5, 0.0, 0.0],
+                [1.0, 0.5],
+                ["Top"],
+                [0, 1, 1],
+                [0],
+                [0.5],
+                {"interpolation_type_u": "KEY_LINEAR"},
+            )
+        ],
+        [Camera("Lens", {"lens": 35.0})],
+        [
+            Clip(
+                "Walk",
+                30.0,
+                1.0,
+                25.0,
+                [
+                    Track(
+                        ResourceKind.OBJECT,
+                        0,
+                        "location",
+                        [1.0, 13.0, 25.0],
+                        [0.0, 0.5, 0.0],
+                        array_index=2,
+                    ),
+                    Track(
+                        ResourceKind.OBJECT,
+                        2,
+                        "rotation_quaternion",
+                        [1.0, 13.0, 25.0],
+                        [1.0, 0.5, 0.25, 0.0] * 3,
+                        components=4,
+                        flags=TrackFlags.SPHERICAL_ROTATION | TrackFlags.BAKED,
+                        key_modes=[KeyMode.BEZIER, KeyMode.CONSTANT, KeyMode.LINEAR],
+                        left_handle_types=[3, 0, 0],
+                        right_handle_types=[3, 0, 0],
+                        handles=[0.5, 0.0, 1.5, 0.0] * 3,
+                    ),
+                    Track(
+                        ResourceKind.MATERIAL,
+                        0,
+                        "name_tag",
+                        [1.0, 5.0],
+                        ["open", "closed"],
+                        value_type=TrackValue.STRING,
+                    ),
+                    Track(
+                        ResourceKind.OBJECT,
+                        1,
+                        "data",
+                        [1.0, 5.0],
+                        [0, 1],
+                        value_type=TrackValue.REFERENCE,
+                        target_kind=ResourceKind.MESH,
+                    ),
+                ],
+            )
+        ],
+        [
+            Extension("studio.notes", 2, False, b"keep me"),
+        ],
+        {"author": "test", "tags": ["a", "b"], "inner": {"depth": 1}},
+    )
+
+
+class SceneTests(unittest.TestCase):
+    def test_every_table_round_trips(self):
+        source = sample_scene()
+        decoded = decode_scene(encode_scene(source))
+        for name in (
+            "space",
+            "materials",
+            "samplers",
+            "images",
+            "objects",
+            "collections",
+            "lights",
+            "armatures",
+            "curves",
+            "lattices",
+            "cameras",
+            "clips",
+            "extensions",
+            "properties",
+        ):
+            self.assertEqual(getattr(decoded, name), getattr(source, name), name)
+        for first, second in zip(source.meshes, decoded.meshes, strict=True):
+            self.assertTrue(same_geometry(snap_mesh(first), second))
+
+    def test_identical_image_bytes_are_stored_once(self):
+        scene = sample_scene()
+        regions = {r.name: r.length for r in map_file(encode_scene(scene))}
+        self.assertEqual(regions["IMAGE_PAYLOADS"], align(len(b"encoded image bytes")))
+
+    def test_tracks_with_the_same_times_share_them(self):
+        regions = {r.name: r.length for r in map_file(encode_scene(sample_scene()))}
+        self.assertLessEqual(regions["TIME_STARTS"], 12)
+
+    def test_identical_meshes_are_stored_once(self):
+        scene = Scene(
+            meshes=[grid_mesh(5), grid_mesh(5), triangle()],
+            objects=[
+                SceneObject("A", ObjectType.MESH, 0),
+                SceneObject("B", ObjectType.MESH, 1),
+                SceneObject("C", ObjectType.MESH, 2),
+            ],
+        )
+        decoded = decode_scene(encode_scene(scene))
+        self.assertEqual(len(decoded.meshes), 2)
+        self.assertEqual([item.data for item in decoded.objects], [0, 0, 1])
+
+    def test_unknown_required_extensions_fail_and_optional_ones_pass(self):
+        scene = Scene(extensions=[Extension("future.thing", 1, True, b"x")])
+        with self.assertRaisesRegex(FormatError, "future.thing"):
+            decode_scene(encode_scene(scene))
+
+    def test_unknown_optional_sections_are_skipped(self):
+        sections = [
+            Section(SectionKind.SCENE_MESH_STARTS, array("I", [0]).tobytes()),
+            Section(OPTIONAL_KIND_START + 5, b"future data!"),
+        ]
+        data = write_file(sections)
+        self.assertEqual(decode_scene(data).objects, [])
+        self.assertEqual(sum(r.length for r in map_file(data)), len(data))
+
+    def test_an_empty_scene_is_valid_and_mesh_files_are_not_scenes(self):
+        self.assertEqual(decode_scene(encode_scene(Scene())).objects, [])
+        with self.assertRaises(FormatError):
+            decode_scene(encode(triangle()))
+
+    def test_every_scene_byte_is_named_exactly_once(self):
+        data = encode_scene(sample_scene())
+        at = 0
+        for region in map_file(data):
+            self.assertEqual(region.offset, at, region.name)
+            at += region.length
+        self.assertEqual(at, len(data))
+
+    def test_broken_links_and_cycles_are_refused(self):
+        def missing_data(scene):
+            scene.objects[0].data = 9
+
+        def missing_parent(scene):
+            scene.objects[0].parent = 99
+
+        def object_cycle(scene):
+            scene.objects[0].parent = 1
+            scene.objects[1].parent = 0
+
+        def collection_cycle(scene):
+            scene.collections[0].parent = 1
+
+        def bone_cycle(scene):
+            scene.armatures[0].bones[0].parent = 1
+
+        def missing_image(scene):
+            scene.materials[0].slots[0].image = 9
+
+        def posed_missing_bone(scene):
+            scene.objects[0].pose[0].bone = 9
+
+        def tree_missing_object(scene):
+            scene.objects[4].properties["link"] = Reference(99)
+
+        def track_missing_owner(scene):
+            scene.clips[0].tracks[0].owner = 99
+
+        def track_keys_missing_mesh(scene):
+            scene.clips[0].tracks[3].values[1] = 9
+
+        def track_going_back(scene):
+            scene.clips[0].tracks[0].times[1] = 0.0
+
+        def lattice_wrong_size(scene):
+            scene.lattices[0].points_w = 9
+
+        for change in (
+            missing_data,
+            missing_parent,
+            object_cycle,
+            collection_cycle,
+            bone_cycle,
+            missing_image,
+            posed_missing_bone,
+            tree_missing_object,
+            track_missing_owner,
+            track_keys_missing_mesh,
+            track_going_back,
+            lattice_wrong_size,
+        ):
+            scene = sample_scene()
+            change(scene)
+            with self.subTest(change.__name__), self.assertRaises(FormatError):
+                encode_scene(scene)
+
+    def test_every_truncation_is_refused(self):
+        data = encode_scene(sample_scene())
+        for length in range(0, len(data), 97):
+            with self.assertRaises(FormatError):
+                decode_scene(data[:length])
 
 
 if __name__ == "__main__":

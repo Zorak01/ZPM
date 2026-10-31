@@ -52,7 +52,6 @@ Flag values: `1` the column stores slopes, `2` a palette index holds a sign in i
 | 1 | `MESH_INFO` | 8 × 32-bit | Vertex, face, corner, edge and unique-position counts; shared face size or 0; position grid exponent; flags (1 = authored normals, 2 = normals calculated from faces) |
 | 2 | `POSITION_REPEAT_MASK` | Rank mask | Marks vertices that repeat an earlier position |
 | 3 | `POSITION_BACK_DISTANCES` | Column | How far each marked vertex reaches back from the newest unique position |
-| 4 | `MESH_SPACE` | Fixed 8 bytes | Float32 meters per unit, up axis, forward axis, two zero bytes. Absent means 1 m, +Z up, -Y forward |
 | 12–14 | `POSITION_GRID_X/Y/Z` | Column | Position as a whole number of grid steps |
 | 15 | `VERTEX_CREASES` | Column | 16-bit crease per vertex |
 | 16–18 | `POSITION_BITS_X/Y/Z` | Column | Float bits, mapped so their order follows their value. Only for meshes with no grid |
@@ -105,6 +104,51 @@ Flag values: `1` the column stores slopes, `2` a palette index holds a sign in i
 | 174 | `SHAPE_VERTICES` | Column | Rising vertex IDs each target changes |
 | 175–177 | `SHAPE_POSITION_X/Y/Z` | Column | Signed grid steps from the base shape, or ordered bits of the target with no grid |
 | 178–183 | `SHAPE_NORMAL_*`, `SHAPE_TANGENT_*` | Column | Optional signed changes on a 1 / 2^16 grid |
+
+### Scene files
+
+Every saved file is a scene. It has the same header, directory and tail as a mesh file, and always holds
+`SCENE_MESH_STARTS`. Each mesh in it is a complete mesh file, so a mesh opens with no copy using the mesh reader.
+Tables hold fixed records of 4-byte fields, read in place. Links are indices, with `0xFFFFFFFF` meaning none.
+
+| Kind | Section | Holds |
+| --- | --- | --- |
+| 4 | `SPACE` | Float32 meters per unit, up axis, forward axis, two zero bytes. Absent means 1 m, +Z up, -Y forward |
+| 200, 201 | `SCENE_MESH_STARTS`, `SCENE_MESHES` | UInt32 start per mesh plus a total, then the mesh files joined |
+| 202, 203 | `OBJECT_NAMES`, `OBJECT_INFO` | 148 bytes per object: type, data, parent, parent bone, rotation mode, flags, instance collection, skin armature, skin flags, location, rotation, scale, parent inverse, first pose channel, pose channel count |
+| 204 | `POSE_CHANNELS` | 48 bytes per channel: bone, location, rotation, scale, rotation mode |
+| 205–208 | `COLLECTION_*` | Names, parents, member starts, members |
+| 209, 210 | `MATERIAL_NAMES`, `MATERIAL_INFO` | 64 bytes per material: base color, metallic, roughness, emission, strength, normal scale, alpha cutoff, alpha mode, flags, first slot, slot count |
+| 211, 212 | `TEXTURE_SLOTS`, `TEXTURE_UV_NAMES` | 28 bytes per slot: image, sampler, offset, rotation, scale; and its UV layer name |
+| 213 | `SAMPLERS` | 12 bytes per sampler: filter, wrap U, wrap V |
+| 214–216 | `IMAGE_NAMES`, `IMAGE_COLOR_SPACES`, `IMAGE_INFO` | 24 bytes per image: width, height, channels, flags, first tile, tile count |
+| 217, 218 | `IMAGE_TILES`, `IMAGE_PATHS` | 8 bytes per tile: UDIM number, payload; and its path |
+| 219, 220 | `IMAGE_PAYLOAD_STARTS`, `IMAGE_PAYLOADS` | Original encoded image bytes, each distinct file once |
+| 221, 222 | `LIGHT_NAMES`, `LIGHT_INFO` | 56 bytes per light: type, unit, color, power, flags, area shape, radius, spot angle, spot blend, sun angle, area size |
+| 223, 224 | `ARMATURE_NAMES`, `ARMATURE_BONE_STARTS` | Names and where each armature's bones start |
+| 225, 226 | `BONE_NAMES`, `BONE_INFO` | 48 bytes per bone: parent, flags, head, tail, roll, envelope distance, head radius, tail radius |
+| 227, 228 | `SKIN_STARTS`, `SKIN_BONES` | For each object, the bone for each of its mesh's vertex groups |
+| 229 | `TEXTURE_ROLES` | What each texture slot feeds, as a name. `base_color`, `metallic`, `roughness`, `normal`, `emission` and `alpha` are shared; any other name is allowed |
+| 230 | `VALUE_STRINGS` | Name table shared by value trees and animation |
+| 231 | `VALUE_NODES` | 16 bytes per node: key string, type, and a and b (the value, or the start and count of an array or of children, always later in the table) |
+| 232 | `VALUE_POOL` | Column holding all arrays; floats as ordered bits |
+| 233 | `VALUE_OWNERS` | 12 bytes per tree, sorted: resource kind, index, root node |
+| 234 | `CAMERA_NAMES` | Camera names; settings live in value trees |
+| 235, 236 | `CURVE_NAMES`, `CURVE_INFO` | 8 bytes per curve: first spline, spline count |
+| 237 | `SPLINE_INFO` | 32 bytes per spline: type, flags, order, resolution, first point, point count, first knot, knot count |
+| 238–243 | `CURVE_POINT_*` | Exact columns: X, Y, Z, weight, radius, tilt |
+| 244–250 | `CURVE_HANDLE_*` | Exact left and right handles, and two handle types per point |
+| 251 | `CURVE_KNOTS` | Exact stored knots, when not calculated |
+| 252, 253 | `LATTICE_NAMES`, `LATTICE_INFO` | 20 bytes per lattice: U, V, W, first point, point count |
+| 254–260 | `LATTICE_*` | Exact columns: rest XYZ, deformed XYZ, weight |
+| 261, 262 | `CLIP_NAMES`, `CLIP_INFO` | 20 bytes per clip: first track, track count, frames per second, start, end |
+| 263 | `TRACK_INFO` | 52 bytes per track: owner kind, owner, path string, array index, value type, target kind, components, flags, time set, key count, first value, first mode, first handle |
+| 264, 265 | `TIME_STARTS`, `TIMES` | Distinct lists of key times |
+| 266–268 | `KEY_VALUES`, `KEY_MODES`, `KEY_HANDLES` | Key columns. Modes hold mode, left handle type << 8, right handle type << 16 |
+| 269–271 | `EXTENSION_NAMES`, `EXTENSION_INFO`, `EXTENSION_PAYLOADS` | Name, then version, flags (1 = required), start, length, then the bytes |
+
+Section kinds from `0x8000` up are optional: a reader skips any it does not know. A required extension a reader
+does not know makes it refuse the file.
 
 Unknown kinds are refused. Each axis uses grid integers, a constant, a palette with indices, or bits.
 Sections for data a mesh lacks, or that is all zero, are absent.

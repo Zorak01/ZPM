@@ -33,7 +33,6 @@ from .edges import encode_edge_endpoints, encode_edges, read_edges
 from .materials import encode_materials, read_materials
 from .positions import encode_positions, read_positions
 from .shapes import encode_shapes, read_shapes
-from .space import encode_space, read_space
 from .surface import (
     encode_marks,
     encode_normals,
@@ -108,7 +107,6 @@ def _encode_mesh(mesh: Mesh) -> bytes:
         flags |= MeshFlags.NORMALS_FROM_FACES
     elif mesh.corner_normals:
         sections += encode_normals(mesh)
-    sections += encode_space(mesh)
     sections += encode_tangents(mesh)
     sections += encode_tangent_method(mesh)
     sections += encode_attributes(mesh)
@@ -194,7 +192,6 @@ def decode(data: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
             uv_seams=read_uv_seams(sections, edge_count),
             tangent_layers=read_tangents(sections, corners),
             hole_starts=holes,
-            space=read_space(sections),
             tangent_method=read_tangent_method(sections),
             attributes=read_attributes(sections, sizes),
             shape_targets=read_shapes(sections, positions, exponent),

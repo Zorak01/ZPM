@@ -154,9 +154,9 @@ def snap_mesh(mesh: Mesh) -> Mesh:
     """Return the mesh as the file will hold it.
 
     Positions and shape targets move to a grid of at most 1 / 2^20 of the model's
-    largest size, so no
-    point moves more than 1 / 2^21 of it. Equal positions stay equal, so shared points
-    cannot crack apart. The step is a power of two, so snapping again changes nothing.
+    largest size, so no point moves more than 1 / 2^21 of it. Equal positions stay
+    equal, so shared points cannot crack apart. The step is a power of two, so
+    snapping again changes nothing.
     Normals and tangents become 12-bit directions, or normals their faces' when those
     match. UVs go on a 1 / 2^20 grid, float colors on 1 / 2^16, creases and weights to
     16 bits. RGBA8 colors stay exact. A UV layer's seams are dropped when they equal
@@ -188,9 +188,6 @@ def snap_mesh(mesh: Mesh) -> Mesh:
     if step:
         changes["positions"] = _snap_to_grid(mesh.positions, step)
     changes["shape_targets"] = _snap_targets(mesh, step)
-    changes["space"] = replace(
-        mesh.space, meters_per_unit=_as_float32(mesh.space.meters_per_unit)
-    )
     snapped = replace(mesh, **changes)
     if normals_match_faces(snapped):
         snapped.corner_normals = corner_normals_from_faces(

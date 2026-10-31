@@ -39,8 +39,6 @@ public unsafe struct ZpmMeshView
     bool _hasEdgeSharp, _hasEdgeSeam, _hasEdgeCreases, _hasFaceFlat, _hasVertexCreases;
     ZpmColumn _edgeSharp, _edgeSeam, _edgeCreases, _faceFlat, _vertexCreases;
 
-    float _metersPerUnit;
-    ZpmSpaceAxis _upAxis, _forwardAxis;
     ZpmNames _tangentMethod, _attributeNames;
     uint* _attributeFormats;
     ZpmShapeTargets _shapes;
@@ -71,15 +69,6 @@ public unsafe struct ZpmMeshView
 
     /// <summary>Whether any UV layer has tangents. TryGetTangentLayer says which.</summary>
     public readonly bool hasTangents => _hasTangents;
-
-    /// <summary>How long one unit of the file's coordinates is, in meters.</summary>
-    public readonly float metersPerUnit => _metersPerUnit;
-
-    /// <summary>Which way is up in the file's coordinates.</summary>
-    public readonly ZpmSpaceAxis upAxis => _upAxis;
-
-    /// <summary>Which way is forward in the file's coordinates.</summary>
-    public readonly ZpmSpaceAxis forwardAxis => _forwardAxis;
 
     /// <summary>How many custom attributes the file holds.</summary>
     public readonly uint attributeCount => _attributeNames.count;
@@ -159,7 +148,7 @@ public unsafe struct ZpmMeshView
 
     static bool IsLayeredKind(ZpmSectionKind kind) =>
         IsUvStreamKind(kind) || IsTangentStreamKind(kind) || IsFirstColorKind(kind) || IsSecondColorKind(kind)
-        || kind == ZpmSectionKind.UvSeams || kind == ZpmSectionKind.AttributeValues;
+        || kind == ZpmSectionKind.UvSeams || kind == ZpmSectionKind.AttributeValues || (int)kind >= ZpmLayout.OptionalKindStart;
 
     bool TryBindSection(ZpmSectionKind kind, ZpmSectionFlags flags, byte* section, long available)
     {
@@ -198,8 +187,6 @@ public unsafe struct ZpmMeshView
                 _weightValues = ZpmColumn.Bind(section, flags);
                 _hasWeightValues = true;
                 return true;
-            case ZpmSectionKind.MeshSpace:
-                return available >= ZpmLayout.MeshSpaceBytes && TryReadMeshSpace(section);
             case ZpmSectionKind.TangentMethod:
                 _tangentMethod = ZpmNames.Bind(section);
                 return true;
@@ -364,22 +351,8 @@ public unsafe struct ZpmMeshView
         }
     }
 
-    bool TryReadMeshSpace(byte* space)
-    {
-        _metersPerUnit = Unsafe.ReadUnaligned<float>(space);
-        _upAxis = (ZpmSpaceAxis)space[4];
-        _forwardAxis = (ZpmSpaceAxis)space[5];
-        return float.IsFinite(_metersPerUnit) && _metersPerUnit > 0
-            && _upAxis <= ZpmSpaceAxis.NegativeZ && _forwardAxis <= ZpmSpaceAxis.NegativeZ
-            && (int)_upAxis % ZpmLayout.AxisCount != (int)_forwardAxis % ZpmLayout.AxisCount
-            && Unsafe.ReadUnaligned<ushort>(space + 6) == 0;
-    }
-
     bool TryReadMeshInfo(byte* info)
     {
-        _metersPerUnit = 1f;
-        _upAxis = ZpmSpaceAxis.Z;
-        _forwardAxis = ZpmSpaceAxis.NegativeY;
         _vertexCount = Unsafe.ReadUnaligned<uint>(info);
         _faceCount = Unsafe.ReadUnaligned<uint>(info + 4);
         _cornerCount = Unsafe.ReadUnaligned<uint>(info + 8);

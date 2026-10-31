@@ -11,7 +11,8 @@ from .layout import (
     DIRECTORY_ENTRY,
     FILE_HEADER,
     MESH_INFO,
-    MESH_SPACE,
+    OPTIONAL_KIND_START,
+    SPACE,
     TAIL_BYTES,
     SectionFlags,
     SectionKind,
@@ -21,7 +22,7 @@ from .layout import (
 _CONSTANT_BYTES = 4
 _FIXED_LENGTHS = {
     SectionKind.MESH_INFO: MESH_INFO.size,
-    SectionKind.MESH_SPACE: MESH_SPACE.size,
+    SectionKind.SPACE: SPACE.size,
     SectionKind.POSITION_CONSTANT_X: _CONSTANT_BYTES,
     SectionKind.POSITION_CONSTANT_Y: _CONSTANT_BYTES,
     SectionKind.POSITION_CONSTANT_Z: _CONSTANT_BYTES,
@@ -41,6 +42,35 @@ _RAW_KINDS = {
     SectionKind.COLOR_FORMATS,
     SectionKind.ATTRIBUTE_FORMATS,
     SectionKind.SHAPE_INFO,
+    SectionKind.SCENE_MESH_STARTS,
+    SectionKind.SCENE_MESHES,
+    SectionKind.OBJECT_INFO,
+    SectionKind.POSE_CHANNELS,
+    SectionKind.COLLECTION_PARENTS,
+    SectionKind.COLLECTION_MEMBER_STARTS,
+    SectionKind.COLLECTION_MEMBERS,
+    SectionKind.MATERIAL_INFO,
+    SectionKind.TEXTURE_SLOTS,
+    SectionKind.SAMPLERS,
+    SectionKind.IMAGE_INFO,
+    SectionKind.IMAGE_TILES,
+    SectionKind.IMAGE_PAYLOAD_STARTS,
+    SectionKind.IMAGE_PAYLOADS,
+    SectionKind.LIGHT_INFO,
+    SectionKind.ARMATURE_BONE_STARTS,
+    SectionKind.BONE_INFO,
+    SectionKind.SKIN_STARTS,
+    SectionKind.SKIN_BONES,
+    SectionKind.VALUE_NODES,
+    SectionKind.VALUE_OWNERS,
+    SectionKind.CURVE_INFO,
+    SectionKind.SPLINE_INFO,
+    SectionKind.LATTICE_INFO,
+    SectionKind.CLIP_INFO,
+    SectionKind.TRACK_INFO,
+    SectionKind.TIME_STARTS,
+    SectionKind.EXTENSION_INFO,
+    SectionKind.EXTENSION_PAYLOADS,
     SectionKind.COLOR_RG_REPEAT_MASK,
     SectionKind.COLOR_RG_EXCEPTION_MASK,
     SectionKind.COLOR_BA_REPEAT_MASK,
@@ -55,6 +85,23 @@ _NAME_KINDS = {
     SectionKind.ATTRIBUTE_NAMES,
     SectionKind.SHAPE_NAMES,
     SectionKind.SHAPE_GROUP_NAMES,
+    SectionKind.OBJECT_NAMES,
+    SectionKind.COLLECTION_NAMES,
+    SectionKind.MATERIAL_NAMES,
+    SectionKind.TEXTURE_UV_NAMES,
+    SectionKind.IMAGE_NAMES,
+    SectionKind.IMAGE_COLOR_SPACES,
+    SectionKind.IMAGE_PATHS,
+    SectionKind.LIGHT_NAMES,
+    SectionKind.ARMATURE_NAMES,
+    SectionKind.BONE_NAMES,
+    SectionKind.TEXTURE_ROLES,
+    SectionKind.VALUE_STRINGS,
+    SectionKind.CAMERA_NAMES,
+    SectionKind.CURVE_NAMES,
+    SectionKind.LATTICE_NAMES,
+    SectionKind.CLIP_NAMES,
+    SectionKind.EXTENSION_NAMES,
 }
 
 
@@ -96,6 +143,9 @@ def map_file(data: bytes) -> list:
     ]
     for index, (raw_kind, raw_flags, layer, offset) in enumerate(entries):
         end = entries[index + 1][3] if index + 1 < count else limit
+        if raw_kind >= OPTIONAL_KIND_START:
+            regions.append(FileRegion(f"OPTIONAL_{raw_kind}", offset, end - offset))
+            continue
         kind = SectionKind(raw_kind)
         flags = SectionFlags(raw_flags)
         used = _used_length(kind, flags, data[offset:end])

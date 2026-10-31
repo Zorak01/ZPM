@@ -10,7 +10,25 @@ VERSION = 1
 FILE_HEADER = struct.Struct("<4sHHI")
 DIRECTORY_ENTRY = struct.Struct("<HBBI")
 MESH_INFO = struct.Struct("<6IiI")
-MESH_SPACE = struct.Struct("<fBBH")
+SPACE = struct.Struct("<fBBH")
+OBJECT_INFO = struct.Struct("<9I26f2I")
+POSE_CHANNEL = struct.Struct("<I10fI")
+MATERIAL_INFO = struct.Struct("<12f4I")
+TEXTURE_SLOT = struct.Struct("<2I5f")
+VALUE_NODE = struct.Struct("<4I")
+VALUE_OWNER = struct.Struct("<3I")
+CURVE_INFO = struct.Struct("<2I")
+SPLINE_INFO = struct.Struct("<8I")
+LATTICE_INFO = struct.Struct("<5I")
+CLIP_INFO = struct.Struct("<2I3f")
+TRACK_INFO = struct.Struct("<13I")
+EXTENSION_INFO = struct.Struct("<4I")
+SAMPLER = struct.Struct("<3I")
+IMAGE_INFO = struct.Struct("<6I")
+IMAGE_TILE = struct.Struct("<2I")
+LIGHT_INFO = struct.Struct("<2I4f2I6f")
+BONE_INFO = struct.Struct("<2I10f")
+INDEX = struct.Struct("<I")
 SHAPE_INFO = struct.Struct("<2I5fI")
 COLUMN_COUNT = struct.Struct("<I")
 TAIL_BYTES = 32
@@ -36,6 +54,9 @@ OFFSET_GRID_BITS = 16
 UNIT_MAX = 65535
 MIN_RING_CORNERS = 3
 NO_SHAPE_TARGET = UINT32_MAX
+NO_INDEX = UINT32_MAX
+OPTIONAL_KIND_START = 0x8000
+MAX_VALUE_DEPTH = 64
 
 
 class MeshFlags(IntFlag):
@@ -50,7 +71,7 @@ class SectionKind(IntEnum):
     MESH_INFO = 1
     POSITION_REPEAT_MASK = 2
     POSITION_BACK_DISTANCES = 3
-    MESH_SPACE = 4
+    SPACE = 4
     POSITION_GRID_X = 12
     POSITION_GRID_Y = 13
     POSITION_GRID_Z = 14
@@ -165,6 +186,78 @@ class SectionKind(IntEnum):
     SHAPE_TANGENT_X = 181
     SHAPE_TANGENT_Y = 182
     SHAPE_TANGENT_Z = 183
+    SCENE_MESH_STARTS = 200
+    SCENE_MESHES = 201
+    OBJECT_NAMES = 202
+    OBJECT_INFO = 203
+    POSE_CHANNELS = 204
+    COLLECTION_NAMES = 205
+    COLLECTION_PARENTS = 206
+    COLLECTION_MEMBER_STARTS = 207
+    COLLECTION_MEMBERS = 208
+    MATERIAL_NAMES = 209
+    MATERIAL_INFO = 210
+    TEXTURE_SLOTS = 211
+    TEXTURE_UV_NAMES = 212
+    SAMPLERS = 213
+    IMAGE_NAMES = 214
+    IMAGE_COLOR_SPACES = 215
+    IMAGE_INFO = 216
+    IMAGE_TILES = 217
+    IMAGE_PATHS = 218
+    IMAGE_PAYLOAD_STARTS = 219
+    IMAGE_PAYLOADS = 220
+    LIGHT_NAMES = 221
+    LIGHT_INFO = 222
+    ARMATURE_NAMES = 223
+    ARMATURE_BONE_STARTS = 224
+    BONE_NAMES = 225
+    BONE_INFO = 226
+    SKIN_STARTS = 227
+    SKIN_BONES = 228
+    TEXTURE_ROLES = 229
+    VALUE_STRINGS = 230
+    VALUE_NODES = 231
+    VALUE_POOL = 232
+    VALUE_OWNERS = 233
+    CAMERA_NAMES = 234
+    CURVE_NAMES = 235
+    CURVE_INFO = 236
+    SPLINE_INFO = 237
+    CURVE_POINT_X = 238
+    CURVE_POINT_Y = 239
+    CURVE_POINT_Z = 240
+    CURVE_POINT_W = 241
+    CURVE_POINT_RADIUS = 242
+    CURVE_POINT_TILT = 243
+    CURVE_HANDLE_LEFT_X = 244
+    CURVE_HANDLE_LEFT_Y = 245
+    CURVE_HANDLE_LEFT_Z = 246
+    CURVE_HANDLE_RIGHT_X = 247
+    CURVE_HANDLE_RIGHT_Y = 248
+    CURVE_HANDLE_RIGHT_Z = 249
+    CURVE_HANDLE_TYPES = 250
+    CURVE_KNOTS = 251
+    LATTICE_NAMES = 252
+    LATTICE_INFO = 253
+    LATTICE_REST_X = 254
+    LATTICE_REST_Y = 255
+    LATTICE_REST_Z = 256
+    LATTICE_DEFORM_X = 257
+    LATTICE_DEFORM_Y = 258
+    LATTICE_DEFORM_Z = 259
+    LATTICE_WEIGHTS = 260
+    CLIP_NAMES = 261
+    CLIP_INFO = 262
+    TRACK_INFO = 263
+    TIME_STARTS = 264
+    TIMES = 265
+    KEY_VALUES = 266
+    KEY_MODES = 267
+    KEY_HANDLES = 268
+    EXTENSION_NAMES = 269
+    EXTENSION_INFO = 270
+    EXTENSION_PAYLOADS = 271
 
 
 class StreamRole(IntEnum):
@@ -252,6 +345,186 @@ class ShapeFlags(IntFlag):
 
 
 SHAPE_INTERPOLATION_SHIFT = 8
+
+
+class ObjectType(IntEnum):
+    MESH = 0
+    EMPTY = 1
+    ARMATURE = 2
+    LIGHT = 3
+    CURVE = 4
+    LATTICE = 5
+    CAMERA = 6
+
+
+class RotationMode(IntEnum):
+    """What an object's four rotation values mean. Eulers leave the last one zero."""
+
+    QUATERNION = 0
+    AXIS_ANGLE = 1
+    XYZ = 2
+    XZY = 3
+    YXZ = 4
+    YZX = 5
+    ZXY = 6
+    ZYX = 7
+
+
+class ObjectFlags(IntFlag):
+    NONE = 0
+    HIDDEN_IN_VIEWPORT = 1
+    HIDDEN_IN_RENDER = 2
+    NOT_SELECTABLE = 4
+
+
+class SkinFlags(IntFlag):
+    NONE = 0
+    VERTEX_GROUPS = 1
+    BONE_ENVELOPES = 2
+    PRESERVE_VOLUME = 4
+
+
+class AlphaMode(IntEnum):
+    OPAQUE = 0
+    CUTOFF = 1
+    BLEND = 2
+
+
+class ResourceKind(IntEnum):
+    """What a value tree or animation track belongs to."""
+
+    SCENE = 0
+    OBJECT = 1
+    MESH = 2
+    MATERIAL = 3
+    IMAGE = 4
+    LIGHT = 5
+    ARMATURE = 6
+    BONE = 7
+    COLLECTION = 8
+    CURVE = 9
+    LATTICE = 10
+    CAMERA = 11
+
+
+class ValueType(IntEnum):
+    """What one node of a value tree holds."""
+
+    BOOL = 0
+    INT = 1
+    FLOAT = 2
+    STRING = 3
+    REFERENCE = 4
+    INT_ARRAY = 5
+    FLOAT_ARRAY = 6
+    DICT = 7
+    LIST = 8
+
+
+class SplineType(IntEnum):
+    POLY = 0
+    BEZIER = 1
+    NURBS = 2
+
+
+class SplineFlags(IntFlag):
+    NONE = 0
+    CYCLIC = 1
+    ENDPOINT = 2
+    BEZIER_KNOTS = 4
+
+
+class HandleType(IntEnum):
+    FREE = 0
+    ALIGNED = 1
+    VECTOR = 2
+    AUTO = 3
+    AUTO_CLAMPED = 4
+
+
+class TrackValue(IntEnum):
+    """What a track's keys hold. A reference key is checked at the time it applies."""
+
+    FLOAT = 0
+    INT = 1
+    BOOL = 2
+    STRING = 3
+    REFERENCE = 4
+
+
+class TrackFlags(IntFlag):
+    NONE = 0
+    BAKED = 1
+    SPHERICAL_ROTATION = 2
+
+
+class KeyMode(IntEnum):
+    """How a key reaches the next one."""
+
+    CONSTANT = 0
+    LINEAR = 1
+    BEZIER = 2
+    SINE = 3
+    QUAD = 4
+    CUBIC = 5
+    QUART = 6
+    QUINT = 7
+    EXPO = 8
+    CIRC = 9
+    BACK = 10
+    BOUNCE = 11
+    ELASTIC = 12
+
+
+class ExtensionFlags(IntFlag):
+    NONE = 0
+    REQUIRED = 1
+
+
+KEY_LEFT_HANDLE_SHIFT = 8
+KEY_RIGHT_HANDLE_SHIFT = 16
+
+
+class SamplerFilter(IntEnum):
+    LINEAR = 0
+    NEAREST = 1
+    CUBIC = 2
+
+
+class SamplerWrap(IntEnum):
+    REPEAT = 0
+    EXTEND = 1
+    CLIP = 2
+    MIRROR = 3
+
+
+class LightType(IntEnum):
+    POINT = 0
+    SPOT = 1
+    SUN = 2
+    AREA = 3
+
+
+class LightUnit(IntEnum):
+    WATTS = 0
+    WATTS_PER_SQUARE_METER = 1
+
+
+class AreaShape(IntEnum):
+    SQUARE = 0
+    RECTANGLE = 1
+    DISK = 2
+    ELLIPSE = 3
+
+
+class BoneFlags(IntFlag):
+    """The low bits of a BONE_INFO entry."""
+
+    NONE = 0
+    CONNECTED = 1
+    DEFORM = 2
+    INHERIT_ROTATION = 4
+    INHERIT_SCALE = 8
 
 
 class SectionFlags(IntFlag):

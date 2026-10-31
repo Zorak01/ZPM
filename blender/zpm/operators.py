@@ -6,11 +6,11 @@ import logging
 from pathlib import Path
 
 import bpy
-from bpy.props import EnumProperty, StringProperty
+from bpy.props import StringProperty
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 from . import mesh_io
-from .format import FormatError, Profile, load, save
+from .format import FormatError, load, save
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ class IMPORT_MESH_OT_zpm(bpy.types.Operator, ImportHelper):
     bl_options = {"UNDO"}
 
     filename_ext = ".zpm"
-    filter_glob: StringProperty(default="*.zpm;*.zmc", options={"HIDDEN"})
+    filter_glob: StringProperty(default="*.zpm", options={"HIDDEN"})
 
     @classmethod
     def poll(cls, context):
@@ -64,16 +64,6 @@ class EXPORT_MESH_OT_zpm(bpy.types.Operator, ExportHelper):
 
     filename_ext = ".zpm"
     filter_glob: StringProperty(default="*.zpm", options={"HIDDEN"})
-    profile: EnumProperty(
-        name="Storage",
-        description="All profiles preserve Float32 position bits and topology",
-        items=(
-            ("direct", "Direct", "Smallest; readable by index without decoding"),
-            ("compact", "Compact", "16-bit indices where possible; exact positions"),
-            ("raw32", "Raw 32-bit", "Uncompressed reference layout"),
-        ),
-        default="direct",
-    )
 
     @classmethod
     def poll(cls, context):
@@ -81,7 +71,6 @@ class EXPORT_MESH_OT_zpm(bpy.types.Operator, ExportHelper):
         return context.mode == "OBJECT" and obj is not None and obj.type == "MESH"
 
     def draw(self, context):
-        self.layout.prop(self, "profile")
         box = self.layout.box()
         box.label(text="Mesh core only", icon="MESH_DATA")
         box.label(text="Active object, local coordinates, base mesh.")
@@ -91,7 +80,7 @@ class EXPORT_MESH_OT_zpm(bpy.types.Operator, ExportHelper):
     def execute(self, context):
         try:
             geometry = mesh_io.capture(context.active_object.data)
-            save(self.filepath, geometry, profile=Profile(self.profile))
+            save(self.filepath, geometry)
         except (OSError, FormatError, RuntimeError) as error:
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}

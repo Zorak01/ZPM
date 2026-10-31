@@ -1,180 +1,44 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Exact, aligned mesh codec compatible with the mesh-core benchmark packets.
-
-The ZMC1 test envelope is deliberately retained during format development.
-RAW32 and COMPACT use it; its experimental compression modes are rejected rather
-than interpreted as a different encoding. DIRECT uses ZMD1, see direct.py.
-"""
+"""Bounded, atomic file access for the one ZPM mesh layout; see direct.py."""
 
 import os
-import struct
-import sys
 import tempfile
-from array import array
-from enum import StrEnum
 from pathlib import Path
 
 from . import direct
 from .model import FormatError, Mesh
 
-HEADER = struct.Struct("<4s15I")
 DEFAULT_MAX_BYTES = 512 * 1024 * 1024
 
 
-class Profile(StrEnum):
-    RAW32 = "raw32"
-    COMPACT = "compact"
-    DIRECT = "direct"
-
-
-def _bytes(buffer: array) -> bytes:
-    if sys.byteorder == "little":
-        return buffer.tobytes()
-    little_endian = array(buffer.typecode, buffer)
-    little_endian.byteswap()
-    return little_endian.tobytes()
-
-
-def _array(code: str, data: memoryview) -> array:
-    result = array(code)
-    result.frombytes(data)
-    if sys.byteorder != "little":
-        result.byteswap()
-    return result
-
-
-def encode(mesh: Mesh, *, profile: Profile = Profile.COMPACT) -> bytes:
-    """Encode validated buffers; positions remain byte-for-byte exact.
-
-    Compact omits uniform face counts and uses 16-bit IDs through 65,536
-    vertices. Larger meshes use 32-bit IDs. Neither profile changes vertex IDs.
-    """
-    mesh.validate()
-    try:
-        profile = Profile(profile)
-    except ValueError as error:
-        raise FormatError(f"Unknown profile: {profile}") from error
-    if profile is Profile.DIRECT:
-        return direct.encode(mesh)
-    raw = profile is Profile.RAW32
-    arity = mesh.arity
-    if not arity and mesh.face_sizes:
-        first = mesh.face_sizes[0]
-        if all(size == first for size in mesh.face_sizes):
-            arity = first
-    if raw:
-        sizes = array("I", mesh.face_sizes)
-        if mesh.arity:
-            sizes = array("I", [mesh.arity]) * mesh.face_count
-        arity = 0
-    else:
-        sizes = array("I", mesh.face_sizes) if not arity else array("I")
-    code = "I" if raw or mesh.vertex_count > 65536 else "H"
-    streams = (
-        _bytes(mesh.positions),
-        _bytes(sizes),
-        _bytes(array(code, mesh.corners)),
-        _bytes(array(code, mesh.edges)),
-    )
-    values = (
-        1,
-        mesh.vertex_count,
-        mesh.face_count,
-        len(mesh.corners),
-        mesh.edge_count,
-        0,
-        1024,
-        0 if raw else 4,
-        0 if raw else 3,
-        arity,
-        *(len(stream) for stream in streams),
-        int(raw),
-    )
-    if any(value > 0xFFFFFFFF for value in values):
-        raise FormatError("Mesh exceeds the packet's 32-bit size limit")
-    return HEADER.pack(b"ZMC1", *values) + b"".join(streams)
+def encode(mesh: Mesh) -> bytes:
+    """Encode validated buffers; positions remain byte-for-byte exact."""
+    return direct.encode(mesh)
 
 
 def decode(data: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
-    """Decode one packet with strict length, mode, range and allocation checks.
+    """Expand one file into a Mesh, with strict length, range and size checks.
 
-    max_bytes limits both packet size and retained decoded buffers. It is not
-    a peak process-memory limit: decoding also retains the input packet.
+    max_bytes limits both file size and retained expanded buffers. It is not
+    a peak process-memory limit: expanding also retains the input bytes.
     """
     if len(data) > max_bytes:
-        raise FormatError("Packet is truncated or exceeds the configured size limit")
-    if data[:4] == direct.MAGIC:
-        return direct.decode(data, max_bytes)
-    if len(data) < HEADER.size:
-        raise FormatError("Packet is truncated or exceeds the configured size limit")
-    (
-        magic,
-        version,
-        vertices,
-        faces,
-        corners,
-        edges,
-        position_mode,
-        block_size,
-        face_mode,
-        edge_mode,
-        arity,
-        plen,
-        clen,
-        flen,
-        elen,
-        raw,
-    ) = HEADER.unpack_from(data)
-    if magic != b"ZMC1" or version != 1:
-        raise FormatError("Unsupported ZPM mesh packet or version")
-    expected_modes = (0, 0) if raw == 1 else (4, 3)
-    if raw not in (0, 1) or position_mode != 0:
-        raise FormatError("This packet uses an experimental compression mode")
-    if (face_mode, edge_mode) != expected_modes:
-        raise FormatError("Only aligned RAW32 and COMPACT packets are supported")
-    width = 4 if raw or vertices > 65536 else 2
-    expected = (
-        vertices * 12,
-        0 if arity else faces * 4,
-        corners * width,
-        edges * 2 * width,
-    )
-    lengths = (plen, clen, flen, elen)
-    if lengths != expected or HEADER.size + sum(lengths) != len(data):
-        raise FormatError("Packet stream lengths do not match the header")
-    if sum(lengths) > max_bytes:
-        raise FormatError("Decoded mesh exceeds the configured size limit")
-    if arity and (arity < 3 or faces * arity != corners or raw):
-        raise FormatError("Invalid uniform face layout")
-    if not arity and faces > corners // 3:
-        raise FormatError("Invalid face count")
-    view = memoryview(data)
-    buffers = []
-    offset = HEADER.size
-    for code, length in zip(
-        ("f", "I", "I" if width == 4 else "H", "I" if width == 4 else "H"),
-        lengths,
-        strict=True,
-    ):
-        buffers.append(_array(code, view[offset : offset + length]))
-        offset += length
-    mesh = Mesh(*buffers, arity=arity)
-    mesh.validate()
-    return mesh
+        raise FormatError("File exceeds the configured size limit")
+    return direct.decode(data, max_bytes)
 
 
 def load(path: str | Path, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
-    """Read a bounded packet. Reject oversized files before allocating them."""
+    """Read a bounded file. Reject oversized files before allocating them."""
     with Path(path).open("rb") as stream:
         if os.fstat(stream.fileno()).st_size > max_bytes:
             raise FormatError("File exceeds the configured size limit")
         return decode(stream.read(max_bytes + 1), max_bytes=max_bytes)
 
 
-def save(path: str | Path, mesh: Mesh, *, profile: Profile = Profile.COMPACT) -> None:
+def save(path: str | Path, mesh: Mesh) -> None:
     """Replace a file atomically after successful encoding, in the same directory."""
-    packet = encode(mesh, profile=profile)
+    packet = encode(mesh)
     destination = Path(path)
     temporary = None
     try:

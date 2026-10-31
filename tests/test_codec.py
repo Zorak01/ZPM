@@ -12,9 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "blender"))
 
-from zpm.format import FormatError, Mesh, Profile, decode, encode, load, save
-from zpm.format.codec import HEADER
-
+from zpm.format import FormatError, Mesh, decode, encode, load, save
 
 REFERENCE_HASHES = {
     "repository_obj418": (
@@ -40,25 +38,21 @@ def triangle() -> Mesh:
 
 class CodecTests(unittest.TestCase):
     def assert_round_trip(self, source):
-        for profile in Profile:
-            with self.subTest(profile=profile):
-                decoded = decode(encode(source, profile=profile))
-                self.assertEqual(
-                    decoded.positions.tobytes(), source.positions.tobytes()
-                )
-                self.assertEqual(list(decoded.corners), list(source.corners))
-                self.assertEqual(list(decoded.edges), list(source.edges))
-                sizes = (
-                    [decoded.arity] * decoded.face_count
-                    if decoded.arity
-                    else list(decoded.face_sizes)
-                )
-                expected = (
-                    [source.arity] * source.face_count
-                    if source.arity
-                    else list(source.face_sizes)
-                )
-                self.assertEqual(sizes, expected)
+        decoded = decode(encode(source))
+        self.assertEqual(decoded.positions.tobytes(), source.positions.tobytes())
+        self.assertEqual(list(decoded.corners), list(source.corners))
+        self.assertEqual(list(decoded.edges), list(source.edges))
+        sizes = (
+            [decoded.arity] * decoded.face_count
+            if decoded.arity
+            else list(decoded.face_sizes)
+        )
+        expected = (
+            [source.arity] * source.face_count
+            if source.arity
+            else list(source.face_sizes)
+        )
+        self.assertEqual(sizes, expected)
 
     def test_triangle(self):
         self.assert_round_trip(triangle())
@@ -102,12 +96,6 @@ class CodecTests(unittest.TestCase):
             self.assertEqual(result.edges.itemsize, width)
             self.assertEqual(result.edges[-1], count - 1)
 
-    def test_compact_saves_counts_and_index_bytes(self):
-        self.assertEqual(len(encode(triangle())), 64 + 36 + 6 + 12)
-        self.assertEqual(
-            len(encode(triangle(), profile=Profile.RAW32)), 64 + 36 + 4 + 12 + 24
-        )
-
     def test_every_truncation_and_trailing_data(self):
         packet = encode(triangle())
         for length in range(len(packet)):
@@ -116,15 +104,7 @@ class CodecTests(unittest.TestCase):
         with self.assertRaises(FormatError):
             decode(packet + b"extra")
 
-    def test_direct_truncation_and_trailing_data(self):
-        packet = encode(triangle(), profile=Profile.DIRECT)
-        for length in range(len(packet)):
-            with self.assertRaises(FormatError):
-                decode(packet[:length])
-        with self.assertRaises(FormatError):
-            decode(packet + b"extra")
-
-    def test_direct_repeated_positions_loose_edges_and_grid(self):
+    def test_repeated_positions_loose_edges_and_grid(self):
         side = 40
         positions = array("f")
         for y in range(side):
@@ -142,8 +122,8 @@ class CodecTests(unittest.TestCase):
                 edges.extend((min(a, b), max(a, b)))
         grid = Mesh(positions, array("I", [4] * (len(corners) // 4)), corners, edges)
         self.assert_round_trip(grid)
-        packet = encode(grid, profile=Profile.DIRECT)
-        self.assertLess(len(packet), len(encode(grid)) / 2)
+        plain_bytes = len(positions) * 4 + (len(corners) + len(edges)) * 2
+        self.assertLess(len(encode(grid)), plain_bytes / 2)
         twins = array("f", [1, 2, 3] * 200)
         self.assert_round_trip(
             Mesh(twins, array("I"), array("I"), array("I", [0, 199, 5, 3]))
@@ -156,7 +136,7 @@ class CodecTests(unittest.TestCase):
         )
         self.assert_round_trip(mixed)
 
-    def test_direct_matches_reference_encoder(self):
+    def test_matches_reference_encoder(self):
         """Hashes come from benchmarks/direct-read: both encoders write equal bytes."""
         root = Path(__file__).resolve().parents[1] / "benchmarks/mesh-core/fixtures"
         for name, expected in REFERENCE_HASHES.items():
@@ -173,30 +153,29 @@ class CodecTests(unittest.TestCase):
                     values[v * 3 + f : v * 3 + f + c],
                     values[v * 3 + f + c :],
                 )
-                packet = encode(source, profile=Profile.DIRECT)
+                packet = encode(source)
                 self.assertEqual(hashlib.sha256(packet).hexdigest(), expected)
                 self.assertEqual(list(decode(packet).edges), list(source.edges))
 
     def test_invalid_headers(self):
         source = encode(triangle())
-        for field, value in (
-            (1, 2),
-            (2, 0),
-            (3, 99),
-            (4, 999),
-            (6, 1),
-            (8, 3),
-            (9, 2),
-            (10, 2),
-            (11, 999),
-            (15, 7),
+        for offset, value in (
+            (0, 0),
+            (4, 99),
+            (8, 99),
+            (12, 99),
+            (16, 99),
+            (20, 99),
+            (24, 9),
+            (27, 9),
+            (28, 9),
+            (29, 4),
+            (30, 0x80),
         ):
-            header = list(HEADER.unpack_from(source))
-            header[field] = value
-            with self.subTest(field=field), self.assertRaises(FormatError):
-                decode(HEADER.pack(*header) + source[HEADER.size :])
-        with self.assertRaises(FormatError):
-            decode(b"BAD!" + source[4:])
+            changed = bytearray(source)
+            changed[offset] = value
+            with self.subTest(offset=offset), self.assertRaises(FormatError):
+                decode(bytes(changed))
 
     def test_invalid_meshes(self):
         mesh = triangle()

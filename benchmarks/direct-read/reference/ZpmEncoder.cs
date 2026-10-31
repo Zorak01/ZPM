@@ -42,13 +42,6 @@ public sealed class ZpmSource
     }
 }
 
-/// <summary>Which layers the encoder may use. Smallest allows all; Fast keeps one lookup per value.</summary>
-public readonly record struct ZpmEncodeOptions(bool allowRepeatedPositions, bool allowPalettes, bool allowCornerReferences)
-{
-    public static readonly ZpmEncodeOptions Smallest = new(true, true, true);
-    public static readonly ZpmEncodeOptions Fast = new(false, false, false);
-}
-
 /// <summary>Bytes per stream of an encoded file, and the choices the encoder made.</summary>
 public sealed class ZpmEncodeReport
 {
@@ -66,7 +59,7 @@ public static class ZpmEncoder
     const long MaxResidualRange = 1L << ZpmColumn.MaxWidth;
     const int MaxSlope = sbyte.MaxValue;
 
-    public static byte[] Encode(ZpmSource source, ZpmEncodeOptions options, out ZpmEncodeReport report)
+    public static byte[] Encode(ZpmSource source, out ZpmEncodeReport report)
     {
         report = new ZpmEncodeReport();
         var sections = new List<Section>();
@@ -78,10 +71,10 @@ public static class ZpmEncoder
         WriteU32(header, ZpmLayout.EdgeCountAt, source.edgeCount);
 
         ZpmFlags flags = ZpmFlags.None;
-        report.positionBytes = AppendPositions(source, options, header, sections, ref flags, report);
+        report.positionBytes = AppendPositions(source, header, sections, ref flags, report);
         report.cornerBytes = AppendCorners(source, header, sections, report);
         report.faceBytes = AppendFaceStarts(source, header, sections);
-        report.edgeBytes = AppendEdges(source, options, header, sections, ref flags, report);
+        report.edgeBytes = AppendEdges(source, header, sections, ref flags, report);
         header[ZpmLayout.FlagsAt] = (byte)flags;
 
         uint tableBytes = (uint)sections.Count * 4;
@@ -106,7 +99,7 @@ public static class ZpmEncoder
         return output.ToArray();
     }
 
-    static int AppendPositions(ZpmSource source, ZpmEncodeOptions options, byte[] header, List<Section> sections, ref ZpmFlags flags, ZpmEncodeReport report)
+    static int AppendPositions(ZpmSource source, byte[] header, List<Section> sections, ref ZpmFlags flags, ZpmEncodeReport report)
     {
         uint vertices = source.vertexCount;
         if (vertices == 0)
@@ -115,14 +108,13 @@ public static class ZpmEncoder
         var directModes = new ZpmAxisMode[3];
         var directArguments = new uint[3];
         for (int axis = 0; axis < 3; axis++)
-            AppendAxis(source.positions, 3, axis, (int)vertices, options, direct, out directModes[axis], out directArguments[axis]);
+            AppendAxis(source.positions, 3, axis, (int)vertices, direct, out directModes[axis], out directArguments[axis]);
         int best = SizeOf(direct);
         List<Section> chosen = direct;
         ZpmAxisMode[] modes = directModes;
         uint[] arguments = directArguments;
         uint unique = vertices;
 
-        if (options.allowRepeatedPositions)
         {
             var seen = new Dictionary<(uint, uint, uint), uint>();
             var rows = new List<uint>();
@@ -149,7 +141,7 @@ public static class ZpmEncoder
                 var layeredArguments = new uint[3];
                 uint[] uniqueRows = rows.ToArray();
                 for (int axis = 0; axis < 3; axis++)
-                    AppendAxis(uniqueRows, 3, axis, seen.Count, options, layered, out layeredModes[axis], out layeredArguments[axis]);
+                    AppendAxis(uniqueRows, 3, axis, seen.Count, layered, out layeredModes[axis], out layeredArguments[axis]);
                 if (SizeOf(layered) < best)
                 {
                     best = SizeOf(layered);
@@ -173,7 +165,7 @@ public static class ZpmEncoder
         return best;
     }
 
-    static void AppendAxis(uint[] rows, int stride, int axis, int count, ZpmEncodeOptions options, List<Section> sections, out ZpmAxisMode mode, out uint argument)
+    static void AppendAxis(uint[] rows, int stride, int axis, int count, List<Section> sections, out ZpmAxisMode mode, out uint argument)
     {
         var ordered = new long[count];
         var distinct = new HashSet<uint>();
@@ -196,7 +188,6 @@ public static class ZpmEncoder
         Section direct = BuildColumn(ordered);
         mode = ZpmAxisMode.Bits;
         argument = 0;
-        if (options.allowPalettes)
         {
             uint[] sorted = magnitudes.ToArray();
             var lookup = new Dictionary<uint, long>(sorted.Length);
@@ -299,7 +290,7 @@ public static class ZpmEncoder
         return Align(bytes.Length);
     }
 
-    static int AppendEdges(ZpmSource source, ZpmEncodeOptions options, byte[] header, List<Section> sections, ref ZpmFlags flags, ZpmEncodeReport report)
+    static int AppendEdges(ZpmSource source, byte[] header, List<Section> sections, ref ZpmFlags flags, ZpmEncodeReport report)
     {
         uint edges = source.edgeCount;
         if (edges == 0)
@@ -316,7 +307,7 @@ public static class ZpmEncoder
         ZpmFlags edgeFlags = ZpmFlags.None;
         uint looseTotal = 0;
 
-        if (options.allowCornerReferences && source.cornerCount != 0)
+        if (source.cornerCount != 0)
         {
             var next = new uint[source.cornerCount];
             uint at = 0;

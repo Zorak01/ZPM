@@ -1,47 +1,11 @@
 # Mesh-core contract
 
-Status: prototype 0.1. Updated 2026-10-31. Two envelopes: ZMC1 (RAW32, COMPACT) below,
-and [ZMD1](#zmd1-direct-read-layout) (DIRECT). Readers choose by magic.
+Status: prototype 0.1. Updated 2026-10-31.
 
-This implementation uses the existing **ZMC1 benchmark envelope**, with a `.zpm`
-file extension in Blender. This is not a frozen final ZPM container. Readers
-must inspect magic and version, not infer layout from a filename.
+ZPM has one mesh layout and no export options. The magic is `ZMD1`, and files use the
+`.zpm` extension. Readers must inspect the magic, not infer layout from a filename.
 
-## Packet layout
-
-Little-endian. A 64-byte header is followed by four contiguous streams.
-
-| Header field | Type | Meaning |
-| --- | --- | --- |
-| Magic | 4 bytes | `ZMC1` |
-| Version | UInt32 | `1` |
-| Vertex, face, corner, edge counts | 4 × UInt32 | Exact element counts |
-| Position mode | UInt32 | `0`: raw Float32 XYZ |
-| Position block size | UInt32 | Reserved in aligned profiles; writer uses 1024 |
-| Face mode | UInt32 | `0`: raw UInt32; `4`: aligned compact IDs |
-| Edge mode | UInt32 | `0`: raw UInt32; `3`: aligned compact IDs |
-| Uniform face arity | UInt32 | `0`: explicit face sizes; otherwise shared size ≥ 3 |
-| Four stream lengths | 4 × UInt32 | Position, face-size, corner, edge byte lengths |
-| Raw flag | UInt32 | `1`: RAW32; `0`: COMPACT |
-
-| Stream | Contents |
-| --- | --- |
-| Positions | `vertex_count × 3` Float32 values |
-| Face sizes | Absent for shared arity; otherwise `face_count` UInt32 values |
-| Corners | `corner_count` vertex IDs, preserving face order and winding |
-| Edges | `edge_count × 2` vertex IDs, preserving endpoint order |
-
-RAW32 always uses UInt32 IDs and explicit face sizes. COMPACT uses UInt16 IDs
-when vertex count ≤ 65,536, otherwise UInt32. UInt16 narrows integer storage,
-not position precision. No welding, triangulation, reordering or quantization.
-
-Other experimental benchmark profiles are **not supported** by this reader.
-They fail with a clear error. The format API supports arbitrary index topology;
-the Blender adapter additionally rejects self-loop edges, duplicate edges,
-repeated vertices inside a face and missing explicit face-boundary edges.
-Loose edges and nonmanifold edges remain valid.
-
-## ZMD1 direct-read layout
+## Layout
 
 The file is its own runtime form. Any vertex, corner, face or edge is read by index from the file
 bytes, with no decode step, no allocation and nothing else touched. Positions and IDs stay exact.
@@ -97,14 +61,19 @@ can leave the file or return a missing ID. Fuzzing covers this.
 The reference reader is `benchmarks/direct-read/reference/ZpmMeshView.cs`.
 The Python API expands whole files into a `Mesh` for editing; it has no by-index reader.
 
-## Validation and memory
+## Limits and writing
 
-Lengths and modes are checked before allocating decoded arrays. Indices and
-face totals are validated before constructing Blender data. The default read
-limit is 512 MiB for the packet and retained decoded buffers, configurable by
-API callers. It is not a peak RAM budget. Input bytes, decoded arrays, temporary
-integer conversion buffers and Blender's own mesh can coexist.
+The file is 32-bit addressed, so one mesh file stays under 4 GiB.
 
-Writers validate before opening the destination. They write a temporary file
-in the destination directory, then replace the destination atomically. This
-avoids leaving an existing file half-written after an encode or write failure.
+The Python API's `decode` and `load` expand a file into arrays, for editing tools like Blender.
+Counts and lengths are checked before allocating. The default limit is 512 MiB for the file and
+the expanded buffers, configurable by API callers. It is not a peak RAM budget.
+
+The format API supports arbitrary index topology. The Blender adapter additionally rejects self-loop
+edges, duplicate edges, repeated vertices inside a face and missing face-boundary edges.
+Loose edges and nonmanifold edges remain valid. No welding, triangulation, reordering or
+quantization happens: repeated positions are shared in storage, but every vertex keeps its ID.
+
+Writers validate before opening the destination. They write a temporary file in the destination
+directory, then replace the destination atomically. This avoids leaving an existing file
+half-written after an encode or write failure.

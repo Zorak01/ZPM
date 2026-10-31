@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""ZMD1 direct-read files: small, exact, and readable by index without decoding.
+"""The ZPM mesh layout (ZMD1): small, exact, and readable by index without decoding.
 
 This module writes the same bytes as the benchmark reference and expands a file
 into a Mesh for editing. Runtime readers index the file instead; see
@@ -144,31 +144,30 @@ def _build_rank_mask(marks: list) -> tuple:
     return _bytes(words) + _bytes(ranks), False
 
 
-def _build_axis(rows: list, axis: int, count: int, palettes: bool) -> tuple:
+def _build_axis(rows: list, axis: int, count: int) -> tuple:
     """Return (mode, argument, sections), the smallest legal layout of one axis."""
     column = [rows[i * 3 + axis] for i in range(count)]
     if len(set(column)) == 1:
         return AXIS_CONSTANT, rows[axis], []
     direct = _build_column([_to_ordered(bits) for bits in column])
-    if palettes:
-        negative = any(bits & SIGN_BIT for bits in column)
-        ordered = sorted({bits & MAGNITUDE for bits in column})
-        lookup = {value: index for index, value in enumerate(ordered)}
-        if negative:
-            indices = [lookup[b & MAGNITUDE] * 2 + (b >> 31) for b in column]
-        else:
-            indices = [lookup[b & MAGNITUDE] for b in column]
-        palette = _build_column(ordered)
-        mapped = _build_column(indices)
-        if _align(len(palette[0])) + _align(len(mapped[0])) < _align(len(direct[0])):
-            mode = AXIS_SIGNED_PALETTE if negative else AXIS_PALETTE
-            return mode, len(ordered), [palette, mapped]
+    negative = any(bits & SIGN_BIT for bits in column)
+    ordered = sorted({bits & MAGNITUDE for bits in column})
+    lookup = {value: index for index, value in enumerate(ordered)}
+    if negative:
+        indices = [lookup[b & MAGNITUDE] * 2 + (b >> 31) for b in column]
+    else:
+        indices = [lookup[b & MAGNITUDE] for b in column]
+    palette = _build_column(ordered)
+    mapped = _build_column(indices)
+    if _align(len(palette[0])) + _align(len(mapped[0])) < _align(len(direct[0])):
+        mode = AXIS_SIGNED_PALETTE if negative else AXIS_PALETTE
+        return mode, len(ordered), [palette, mapped]
     return AXIS_BITS, 0, [direct]
 
 
 def _build_positions(bits: list, count: int) -> tuple:
     """Return (sections, modes, arguments, unique count, flags)."""
-    direct_axes = [_build_axis(bits, axis, count, True) for axis in range(3)]
+    direct_axes = [_build_axis(bits, axis, count) for axis in range(3)]
     best = [section for axis in direct_axes for section in axis[2]]
     axes = direct_axes
     unique = count
@@ -187,7 +186,7 @@ def _build_positions(bits: list, count: int) -> tuple:
             marks[vertex] = True
             repeat_ids.append(known)
     if repeat_ids:
-        layered_axes = [_build_axis(rows, axis, len(seen), True) for axis in range(3)]
+        layered_axes = [_build_axis(rows, axis, len(seen)) for axis in range(3)]
         layered = [_build_rank_mask(marks), _build_column(repeat_ids)]
         layered += [section for axis in layered_axes for section in axis[2]]
         if _size_of(layered) < _size_of(best):

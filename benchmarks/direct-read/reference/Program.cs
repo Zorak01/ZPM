@@ -6,7 +6,7 @@ using System.Text.Json;
 namespace Zpm.DirectRead;
 
 /// <summary>
-/// encode FIXTURE OUTPUT_DIR   writes and verifies direct.zmd and direct_fast.zmd
+/// encode FIXTURE OUTPUT_DIR   writes and verifies direct.zmd
 /// measure PACKET              times reads of a .zmd file
 /// measure-view PACKET         times the same reads of a RAW32 or COMPACT16 .zmc packet
 /// fuzz PACKET SEED COUNT      flips bytes and proves validated files never read out of range
@@ -37,10 +37,10 @@ static unsafe class Program
         ZpmSource source = ZpmSource.Load(fixture);
         Directory.CreateDirectory(folder);
         var variants = new List<object>();
-        foreach (var (name, options) in new[] { ("direct", ZpmEncodeOptions.Smallest), ("direct_fast", ZpmEncodeOptions.Fast) })
+        foreach (string name in new[] { "direct" })
         {
             var clock = Stopwatch.StartNew();
-            byte[] file = ZpmEncoder.Encode(source, options, out ZpmEncodeReport report);
+            byte[] file = ZpmEncoder.Encode(source, out ZpmEncodeReport report);
             clock.Stop();
             Verify(source, file);
             string path = Path.Combine(folder, name + ".zmd");

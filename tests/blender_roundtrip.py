@@ -48,8 +48,9 @@ def check_colors_tangents_and_weights(directory):
     total = sum(len(vertex.groups) for vertex in imported.data.vertices)
     assert total == 80, total
     assert sorted(imported.data.color_attributes.keys()) == ["Heat", "Paint"]
-    expected = snap_mesh(mesh_adapter.capture_object(obj))
-    actual = snap_mesh(mesh_adapter.capture_object(imported))
+    scene = bpy.context.scene
+    expected = snap_mesh(mesh_adapter.capture_object(obj, scene))
+    actual = snap_mesh(mesh_adapter.capture_object(imported, scene))
     assert same_geometry(actual, expected, compare_normals=False)
     print("PASS: colors, tangents, vertex groups and weights")
 
@@ -130,6 +131,57 @@ def check_materials_and_authored_marks(directory):
     print("PASS: materials, per-layer data and authored marks")
 
 
+def check_attributes_and_shape_keys(directory):
+    """Custom attributes of each type, shape keys and units survive."""
+    bpy.ops.mesh.primitive_monkey_add()
+    obj = bpy.context.active_object
+    mesh = obj.data
+    types = (
+        ("a_bool", "BOOLEAN", "POINT"),
+        ("a_int8", "INT8", "POINT"),
+        ("a_int", "INT", "FACE"),
+        ("a_int16", "INT16_2D", "CORNER"),
+        ("a_int32", "INT32_2D", "EDGE"),
+        ("a_float", "FLOAT", "EDGE"),
+        ("a_float2", "FLOAT2", "POINT"),
+        ("a_vector", "FLOAT_VECTOR", "CORNER"),
+        ("a_color", "FLOAT_COLOR", "EDGE"),
+        ("a_quaternion", "QUATERNION", "FACE"),
+        ("a_matrix", "FLOAT4X4", "POINT"),
+    )
+    for name, data_type, domain in types:
+        mesh.attributes.new(name, data_type, domain)
+    mesh.attributes["a_int"].data[3].value = -7
+    mesh.attributes["a_float"].data[2].value = 0.125
+    mesh.attributes["a_vector"].data[1].vector = (1.5, -2.5, 3.5)
+    mesh.attributes["a_bool"].data[0].value = True
+    obj.vertex_groups.new(name="Lips")
+    basis = obj.shape_key_add(name="Basis", from_mix=False)
+    smile = obj.shape_key_add(name="Smile", from_mix=False)
+    smile.relative_key = basis
+    smile.slider_min = -1.0
+    smile.value = 0.25
+    smile.vertex_group = "Lips"
+    for index in range(0, len(smile.data), 7):
+        smile.data[index].co.z += 0.1
+    bpy.context.scene.unit_settings.scale_length = 0.5
+    expected = snap_mesh(mesh_adapter.capture_mesh(mesh))
+    path = str(Path(directory) / "attributes.zpm")
+    assert bpy.ops.export_mesh.zpm(filepath=path) == {"FINISHED"}
+    geometry = load(path)
+    assert geometry.space.meters_per_unit == 0.5
+    assert geometry.tangent_method.startswith("MikkTSpace")
+    assert sorted(geometry.attributes) == sorted(row[0] for row in types)
+    before = set(bpy.data.objects.keys())
+    assert bpy.ops.import_mesh.zpm(filepath=path) == {"FINISHED"}
+    imported = bpy.data.objects[(set(bpy.data.objects.keys()) - before).pop()]
+    assert imported.scale[0] == 1.0, "Same units must not rescale"
+    actual = snap_mesh(mesh_adapter.capture_mesh(imported.data))
+    assert same_geometry(actual, expected, compare_normals=False)
+    bpy.context.scene.unit_settings.scale_length = 1.0
+    print("PASS: custom attributes, shape keys and units")
+
+
 def check_holes_are_refused():
     """Blender has no faces with holes, so importing one fails, changing nothing."""
     square = [(0, 0, 0), (4, 0, 0), (4, 4, 0), (0, 4, 0)]
@@ -208,6 +260,7 @@ def run():
         check_surface_data(directory)
         check_colors_tangents_and_weights(directory)
         check_materials_and_authored_marks(directory)
+        check_attributes_and_shape_keys(directory)
         check_holes_are_refused()
         geometry = mesh_adapter.capture_mesh(source)
         geometry.corners[0] = geometry.vertex_count + 1

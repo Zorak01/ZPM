@@ -5,8 +5,28 @@
 from array import array
 from dataclasses import dataclass, field
 
-from .container.layout import MIN_RING_CORNERS
+from .container.layout import (
+    MIN_RING_CORNERS,
+    NO_SHAPE_TARGET,
+    AttributeDomain,
+    AttributeMeaning,
+    AttributeType,
+    ShapeInterpolation,
+    SpaceAxis,
+)
 from .errors import FormatError
+
+MAX_ATTRIBUTE_COMPONENTS = 255
+ATTRIBUTE_TYPECODES = {
+    AttributeType.BOOL: "B",
+    AttributeType.INT8: "b",
+    AttributeType.UINT8: "B",
+    AttributeType.INT16: "h",
+    AttributeType.UINT16: "H",
+    AttributeType.INT32: "i",
+    AttributeType.UINT32: "I",
+    AttributeType.FLOAT32: "f",
+}
 
 
 def _empty_floats() -> array:
@@ -36,6 +56,62 @@ class ColorLayer:
     @property
     def is_float(self) -> bool:
         return self.values.typecode == "f"
+
+
+@dataclass(frozen=True, slots=True)
+class MeshSpace:
+    """What a mesh's coordinates mean. The default is what Blender uses."""
+
+    meters_per_unit: float = 1.0
+    up: SpaceAxis = SpaceAxis.Z
+    forward: SpaceAxis = SpaceAxis.NEG_Y
+
+
+@dataclass(slots=True)
+class Attribute:
+    """One named custom attribute, stored exactly.
+
+    values holds components per element, interleaved, with one array type per
+    AttributeType, as ATTRIBUTE_TYPECODES lists.
+    """
+
+    domain: AttributeDomain
+    value_type: AttributeType
+    components: int
+    values: array
+    meaning: AttributeMeaning = AttributeMeaning.NONE
+
+
+@dataclass(slots=True)
+class ShapeTarget:
+    """One blendshape: where every vertex goes when it is fully applied.
+
+    positions: flat XYZ Float32, one triple per vertex, as absolute positions.
+    reference: index of the target this one is relative to; its own index if none.
+    is_relative: blends as an offset from reference, not by time between targets.
+    value, minimum, maximum: its current weight and allowed range.
+    frame: its place in time, for absolute targets.
+    vertex_group: name of the group limiting it, or empty.
+    in_between_of, in_between_weight: the target this one shapes on its way to, and at
+        what weight; NO_SHAPE_TARGET if none.
+    normal_offsets, tangent_offsets: flat XYZ changes per vertex, or empty.
+    """
+
+    name: str
+    positions: array
+    reference: int = 0
+    is_relative: bool = True
+    value: float = 0.0
+    minimum: float = 0.0
+    maximum: float = 1.0
+    frame: float = 0.0
+    vertex_group: str = ""
+    is_muted: bool = False
+    interpolation: ShapeInterpolation = ShapeInterpolation.LINEAR
+    in_between_of: int = NO_SHAPE_TARGET
+    in_between_weight: float = 0.0
+    normal_offsets: array = field(default_factory=_empty_floats)
+    tangent_offsets: array = field(default_factory=_empty_floats)
 
 
 @dataclass(slots=True)
@@ -73,6 +149,11 @@ class Mesh:
     weight_offsets: where each vertex's weights start, plus one final total.
     weight_groups, weight_values: one group index and one Float32 per weight.
 
+    space: units and axes of the coordinates.
+    tangent_method: what made the tangents and its version, or empty if unknown.
+    attributes: name to custom Attribute.
+    shape_targets: blendshapes, in the order they evaluate.
+
     Arrays remain mutable and are owned by the caller. Call validate after edits.
     """
 
@@ -98,6 +179,10 @@ class Mesh:
     material_slots: list = field(default_factory=list)
     face_materials: array = field(default_factory=_empty_indices)
     hole_starts: array = field(default_factory=_empty_indices)
+    space: MeshSpace = field(default_factory=MeshSpace)
+    tangent_method: str = ""
+    attributes: dict = field(default_factory=dict)
+    shape_targets: list = field(default_factory=list)
     color_layers: dict = field(default_factory=dict)
     vertex_groups: list = field(default_factory=list)
     weight_offsets: array = field(default_factory=_empty_indices)
@@ -123,6 +208,16 @@ class Mesh:
             len(buffer) * buffer.itemsize
             for buffer in (self.positions, self.face_sizes, self.corners, self.edges)
         )
+
+    def domain_size(self, domain: AttributeDomain) -> int:
+        """Return how many elements an attribute on this domain has."""
+        return {
+            AttributeDomain.POINT: self.vertex_count,
+            AttributeDomain.EDGE: self.edge_count,
+            AttributeDomain.FACE: self.face_count,
+            AttributeDomain.CORNER: len(self.corners),
+            AttributeDomain.MESH: 1,
+        }[domain]
 
     def validate(self) -> None:
         """Validate structure and index ranges without allocating expanded faces."""
@@ -183,6 +278,38 @@ class Mesh:
         self._validate_weights()
         self._validate_crease_chains()
         self._validate_holes()
+        self._validate_attributes()
+        self._validate_shape_targets()
+
+    def _validate_attributes(self) -> None:
+        for name, attribute in self.attributes.items():
+            elements = self.domain_size(attribute.domain)
+            if not 1 <= attribute.components <= MAX_ATTRIBUTE_COMPONENTS or len(
+                attribute.values
+            ) != (elements * attribute.components):
+                raise FormatError(f"Attribute {name} does not match the mesh")
+            if attribute.values.typecode != ATTRIBUTE_TYPECODES[attribute.value_type]:
+                raise FormatError(f"Attribute {name} has the wrong array type")
+
+    def _validate_shape_targets(self) -> None:
+        count = len(self.shape_targets)
+        names = {target.name for target in self.shape_targets}
+        if len(names) != count:
+            raise FormatError("Shape target names must be different")
+        for target in self.shape_targets:
+            offsets = (target.normal_offsets, target.tangent_offsets)
+            if (
+                len(target.positions) != len(self.positions)
+                or target.reference >= count
+                or (
+                    target.in_between_of != NO_SHAPE_TARGET
+                    and target.in_between_of >= count
+                )
+                or any(
+                    buffer and len(buffer) != len(self.positions) for buffer in offsets
+                )
+            ):
+                raise FormatError(f"Shape target {target.name} does not match the mesh")
 
     def _validate_crease_chains(self) -> None:
         offsets, vertices = self.crease_chain_offsets, self.crease_chain_vertices

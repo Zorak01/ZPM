@@ -4,11 +4,18 @@
 
 import math
 
-from ..container.layout import COLOR_GRID_BITS, NORMAL_BITS, UNIT_MAX, UV_GRID_BITS
+from ..container.layout import (
+    COLOR_GRID_BITS,
+    NORMAL_BITS,
+    OFFSET_GRID_BITS,
+    UNIT_MAX,
+    UV_GRID_BITS,
+)
 
 _NORMAL_MAX = (1 << NORMAL_BITS) - 1
 _UV_SCALE = 1 << UV_GRID_BITS
 _COLOR_SCALE = 1 << COLOR_GRID_BITS
+_OFFSET_SCALE = 1 << OFFSET_GRID_BITS
 _TANGENT_SIGN_BIT = 1 << NORMAL_BITS
 _INT32_MAX = 2**31 - 1
 
@@ -85,3 +92,14 @@ def encode_color_channel(value: float) -> int:
 
 def decode_color_channel(stored: int) -> float:
     return stored / _COLOR_SCALE
+
+
+def encode_offset(value: float) -> int:
+    """Return a shape target's normal or tangent change on a grid of 1 / 2^16."""
+    if not math.isfinite(value):
+        return 0
+    return max(-_INT32_MAX, min(_INT32_MAX, round(value * _OFFSET_SCALE)))
+
+
+def decode_offset(stored: int) -> float:
+    return stored / _OFFSET_SCALE

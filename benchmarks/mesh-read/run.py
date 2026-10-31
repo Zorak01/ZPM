@@ -148,6 +148,35 @@ def write_surface(mesh: Mesh, path: Path) -> None:
         stream.write(array("I", mesh.crease_chain_vertices).tobytes())
         stream.write(struct.pack("<I", len(mesh.hole_starts)))
         stream.write(array("I", mesh.hole_starts).tobytes())
+        stream.write(
+            struct.pack(
+                "<fII", mesh.space.meters_per_unit, mesh.space.up, mesh.space.forward
+            )
+        )
+        write_attributes(mesh, stream)
+        write_shape_targets(mesh, stream)
+
+
+def write_attributes(mesh: Mesh, stream) -> None:
+    """Write each attribute's elements, component by component, as raw 32-bit values."""
+    stream.write(struct.pack("<I", len(mesh.attributes)))
+    for name in sorted(mesh.attributes):
+        attribute = mesh.attributes[name]
+        values = attribute.values
+        if values.typecode != "f":
+            values = array("I", [value & 0xFFFFFFFF for value in values])
+        stream.write(struct.pack("<I", len(attribute.values)))
+        stream.write(values.tobytes())
+
+
+def write_shape_targets(mesh: Mesh, stream) -> None:
+    """Write each target's whole positions, then its normal and tangent changes."""
+    stream.write(struct.pack("<I", len(mesh.shape_targets)))
+    for target in mesh.shape_targets:
+        stream.write(target.positions.tobytes())
+        for offsets in (target.normal_offsets, target.tangent_offsets):
+            stream.write(struct.pack("<I", len(offsets)))
+            stream.write(offsets.tobytes())
 
 
 def write_fixture(mesh: Mesh, path: Path) -> None:

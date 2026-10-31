@@ -11,6 +11,7 @@ from .layout import (
     DIRECTORY_ENTRY,
     FILE_HEADER,
     MESH_INFO,
+    MESH_SPACE,
     TAIL_BYTES,
     SectionFlags,
     SectionKind,
@@ -20,6 +21,7 @@ from .layout import (
 _CONSTANT_BYTES = 4
 _FIXED_LENGTHS = {
     SectionKind.MESH_INFO: MESH_INFO.size,
+    SectionKind.MESH_SPACE: MESH_SPACE.size,
     SectionKind.POSITION_CONSTANT_X: _CONSTANT_BYTES,
     SectionKind.POSITION_CONSTANT_Y: _CONSTANT_BYTES,
     SectionKind.POSITION_CONSTANT_Z: _CONSTANT_BYTES,
@@ -37,6 +39,8 @@ _RAW_KINDS = {
     SectionKind.TANGENT_REPEAT_MASK,
     SectionKind.TANGENT_EXCEPTION_MASK,
     SectionKind.COLOR_FORMATS,
+    SectionKind.ATTRIBUTE_FORMATS,
+    SectionKind.SHAPE_INFO,
     SectionKind.COLOR_RG_REPEAT_MASK,
     SectionKind.COLOR_RG_EXCEPTION_MASK,
     SectionKind.COLOR_BA_REPEAT_MASK,
@@ -47,6 +51,10 @@ _NAME_KINDS = {
     SectionKind.COLOR_NAMES,
     SectionKind.GROUP_NAMES,
     SectionKind.MATERIAL_SLOT_NAMES,
+    SectionKind.TANGENT_METHOD,
+    SectionKind.ATTRIBUTE_NAMES,
+    SectionKind.SHAPE_NAMES,
+    SectionKind.SHAPE_GROUP_NAMES,
 }
 
 

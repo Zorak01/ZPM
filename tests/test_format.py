@@ -13,9 +13,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "blender"))
 
 from zpm.format import (
+    Attribute,
+    AttributeDomain,
+    AttributeMeaning,
+    AttributeType,
     ColorLayer,
     FormatError,
     Mesh,
+    MeshSpace,
+    ShapeInterpolation,
+    ShapeTarget,
+    SpaceAxis,
     decode,
     encode,
     load,
@@ -120,7 +128,83 @@ def authored_mesh() -> Mesh:
         "Paint": ColorLayer(array("B", [7] * corners * 4), True, True),
         "Heat": ColorLayer(array("f", [0.5] * mesh.vertex_count * 4), False),
     }
+    mesh.space = MeshSpace(0.01, SpaceAxis.Y, SpaceAxis.NEG_Z)
+    mesh.tangent_method = "MikkTSpace, test"
+    mesh.attributes = attributes_for(mesh)
+    mesh.shape_targets = shape_targets_for(mesh)
     return mesh
+
+
+def attributes_for(mesh: Mesh) -> dict:
+    points, edges = mesh.vertex_count, mesh.edge_count
+    faces, corners = mesh.face_count, len(mesh.corners)
+    return {
+        "mask": Attribute(
+            AttributeDomain.POINT,
+            AttributeType.BOOL,
+            1,
+            array("B", [i % 3 == 0 for i in range(points)]),
+        ),
+        "wear": Attribute(
+            AttributeDomain.EDGE,
+            AttributeType.FLOAT32,
+            1,
+            array("f", [i * 0.1 for i in range(edges)]),
+        ),
+        "id": Attribute(
+            AttributeDomain.FACE,
+            AttributeType.INT32,
+            1,
+            array("i", [i - 50 for i in range(faces)]),
+        ),
+        "flow": Attribute(
+            AttributeDomain.CORNER,
+            AttributeType.FLOAT32,
+            3,
+            array("f", [i * 0.5 for i in range(corners * 3)]),
+            AttributeMeaning.VECTOR,
+        ),
+        "pair": Attribute(
+            AttributeDomain.POINT,
+            AttributeType.INT16,
+            2,
+            array("h", [i - 9 for i in range(points * 2)]),
+        ),
+        "seed": Attribute(
+            AttributeDomain.MESH, AttributeType.UINT32, 1, array("I", [4000000000])
+        ),
+    }
+
+
+def shape_targets_for(mesh: Mesh) -> list:
+    moved = array("f", mesh.positions)
+    for vertex in range(0, mesh.vertex_count, 5):
+        moved[vertex * 3 + 2] += 0.5
+    normals = array("f", [0.0]) * len(mesh.positions)
+    normals[0] = 0.25
+    return [
+        ShapeTarget("Basis", array("f", mesh.positions)),
+        ShapeTarget(
+            "Smile",
+            moved,
+            value=0.5,
+            minimum=-1.0,
+            maximum=2.0,
+            vertex_group="Face",
+            normal_offsets=normals,
+            tangent_offsets=array("f", normals),
+        ),
+        ShapeTarget(
+            "HalfSmile",
+            array("f", moved),
+            is_relative=False,
+            frame=10.0,
+            is_muted=True,
+            interpolation=ShapeInterpolation.BSPLINE,
+            in_between_of=1,
+            in_between_weight=0.5,
+        ),
+    ]
 
 
 def holed_mesh() -> Mesh:
@@ -375,6 +459,67 @@ class CodecTests(unittest.TestCase):
         no_slot = triangle()
         no_slot.face_materials = array("I", [1])
         for mesh in (too_few, at_face_start, outside, no_edge, no_slot):
+            with self.assertRaises(FormatError):
+                encode(mesh)
+
+    def test_attributes_stay_exact_for_every_bit_pattern(self):
+        source = triangle()
+        bits = array("I", [0x80000000, 0x7FC01234, 0xFF800000])
+        values = array("f")
+        values.frombytes(bits.tobytes())
+        source.attributes = {
+            "odd": Attribute(AttributeDomain.POINT, AttributeType.FLOAT32, 1, values)
+        }
+        decoded = decode(encode(source)).attributes["odd"].values
+        self.assertEqual(sorted(decoded.tobytes()), sorted(values.tobytes()))
+
+    def test_targets_store_only_what_moved_and_come_back_exact(self):
+        source = grid_mesh(40)
+        moved = array("f", source.positions)
+        moved[2] = 0.75
+        source.shape_targets = [
+            ShapeTarget("Basis", array("f", source.positions)),
+            ShapeTarget("Bump", moved),
+        ]
+        snapped = snap_mesh(source)
+        data = encode(source)
+        decoded = decode(data)
+        self.assertTrue(same_geometry(snapped, decoded))
+        regions = {r.name: r.length for r in map_file(data)}
+        self.assertLess(regions["SHAPE_VERTICES"], 32)
+
+    def test_targets_without_a_grid_keep_their_bits(self):
+        source = triangle()
+        moved = array("f", source.positions)
+        moved[0] = float("inf")
+        source.shape_targets = [ShapeTarget("Far", moved)]
+        decoded = decode(encode(source))
+        self.assertEqual(decoded.shape_targets[0].positions[0], float("inf"))
+
+    def test_default_space_stores_nothing(self):
+        names = {region.name for region in map_file(encode(triangle()))}
+        self.assertNotIn("MESH_SPACE", names)
+
+    def test_invalid_attributes_targets_and_space_are_refused(self):
+        wrong_size = triangle()
+        wrong_size.attributes = {
+            "x": Attribute(
+                AttributeDomain.POINT, AttributeType.INT32, 1, array("i", [1])
+            )
+        }
+        wrong_code = triangle()
+        wrong_code.attributes = {
+            "x": Attribute(
+                AttributeDomain.MESH, AttributeType.INT32, 1, array("f", [1.0])
+            )
+        }
+        wrong_target = triangle()
+        wrong_target.shape_targets = [ShapeTarget("x", array("f", [1.0]))]
+        missing_reference = triangle()
+        missing_reference.shape_targets = [
+            ShapeTarget("x", array("f", missing_reference.positions), reference=3)
+        ]
+        for mesh in (wrong_size, wrong_code, wrong_target, missing_reference):
             with self.assertRaises(FormatError):
                 encode(mesh)
 

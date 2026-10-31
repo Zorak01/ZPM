@@ -7,7 +7,7 @@ from array import array
 from collections import deque
 from dataclasses import replace
 
-from ..container.layout import AXIS_COUNT
+from ..container.layout import AXIS_COUNT, AttributeDomain
 from ..mesh import ColorLayer, Mesh
 from .faces import face_edges, face_lists
 
@@ -123,6 +123,32 @@ def _reordered_color(layer: ColorLayer, corner_order, vertex_order) -> ColorLaye
     )
 
 
+def _reordered_targets(mesh: Mesh, vertex_order: list) -> list:
+    return [
+        replace(
+            target,
+            positions=_pick(target.positions, vertex_order, AXIS_COUNT),
+            normal_offsets=_pick(target.normal_offsets, vertex_order, AXIS_COUNT),
+            tangent_offsets=_pick(target.tangent_offsets, vertex_order, AXIS_COUNT),
+        )
+        for target in mesh.shape_targets
+    ]
+
+
+def _reordered_attributes(mesh: Mesh, orders: dict) -> dict:
+    return {
+        name: replace(
+            attribute,
+            values=_pick(
+                attribute.values, orders[attribute.domain], attribute.components
+            ),
+        )
+        if attribute.domain in orders
+        else attribute
+        for name, attribute in mesh.attributes.items()
+    }
+
+
 def reorder_mesh(mesh: Mesh) -> Mesh:
     """Return the same shape with nearby faces, vertices and edges stored together.
 
@@ -178,6 +204,16 @@ def reorder_mesh(mesh: Mesh) -> Mesh:
             "I", [new_ids[vertex] for vertex in mesh.crease_chain_vertices]
         ),
         face_materials=_pick(mesh.face_materials, order),
+        attributes=_reordered_attributes(
+            mesh,
+            {
+                AttributeDomain.POINT: vertex_order,
+                AttributeDomain.EDGE: edge_order,
+                AttributeDomain.FACE: order,
+                AttributeDomain.CORNER: corner_order,
+            },
+        ),
+        shape_targets=_reordered_targets(mesh, vertex_order),
         hole_starts=array("I", sorted(new_corners[at] for at in mesh.hole_starts)),
         uv_layers={
             name: _pick(layer, corner_order, 2)

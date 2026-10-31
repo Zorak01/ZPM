@@ -4,7 +4,7 @@
 
 from array import array
 
-from ..container.layout import AXIS_COUNT
+from ..container.layout import AXIS_COUNT, AttributeDomain
 from ..mesh import Mesh
 from .faces import face_lists
 
@@ -25,6 +25,48 @@ def _weights_of(mesh: Mesh, vertex: int) -> tuple:
     )
 
 
+def _attribute_rows(mesh: Mesh, domain: AttributeDomain) -> list:
+    """Return (exact bytes, bytes per element) for each attribute on this domain."""
+    rows = []
+    for name in sorted(mesh.attributes):
+        attribute = mesh.attributes[name]
+        if attribute.domain == domain:
+            raw = attribute.values.tobytes()
+            rows.append((raw, attribute.components * attribute.values.itemsize))
+    return rows
+
+
+def _at(rows: list, index: int) -> tuple:
+    return tuple(raw[index * size : (index + 1) * size] for raw, size in rows)
+
+
+def _attribute_formats(mesh: Mesh) -> list:
+    return sorted(
+        (name, a.domain, a.value_type, a.components, a.meaning)
+        for name, a in mesh.attributes.items()
+    )
+
+
+def _target_facts(mesh: Mesh) -> list:
+    return [
+        (
+            t.name,
+            t.reference,
+            t.is_relative,
+            t.value,
+            t.minimum,
+            t.maximum,
+            t.frame,
+            t.vertex_group,
+            t.is_muted,
+            t.interpolation,
+            t.in_between_of,
+            t.in_between_weight,
+        )
+        for t in mesh.shape_targets
+    ]
+
+
 def _key(mesh: Mesh, compare_normals: bool) -> tuple:
     bits = mesh.positions.tobytes()
     size = 4 * AXIS_COUNT
@@ -39,12 +81,27 @@ def _key(mesh: Mesh, compare_normals: bool) -> tuple:
         if not mesh.color_layers[name].is_corner
     ]
 
+    point_rows = _attribute_rows(mesh, AttributeDomain.POINT)
+    edge_rows = _attribute_rows(mesh, AttributeDomain.EDGE)
+    face_rows = _attribute_rows(mesh, AttributeDomain.FACE)
+    corner_rows = _attribute_rows(mesh, AttributeDomain.CORNER)
+    targets = [(t.positions.tobytes(), size) for t in mesh.shape_targets]
+    offsets_of_targets = [
+        (buffer.tobytes(), size)
+        for t in mesh.shape_targets
+        for buffer in (t.normal_offsets, t.tangent_offsets)
+        if buffer
+    ]
+
     def point(vertex: int) -> tuple:
         return (
             bits[vertex * size : (vertex + 1) * size],
             _group(mesh.vertex_creases, vertex, 1),
             _weights_of(mesh, vertex),
             tuple(_group(layer.values, vertex, _CHANNELS) for layer in point_colors),
+            _at(point_rows, vertex),
+            _at(targets, vertex),
+            _at(offsets_of_targets, vertex),
         )
 
     uv_names = sorted(mesh.uv_layers)
@@ -71,6 +128,7 @@ def _key(mesh: Mesh, compare_normals: bool) -> tuple:
                     _group(mesh.sharp_corners, corner, 1),
                     _group(mesh.smoothing_groups, corner, 1),
                     corner in holes,
+                    _at(corner_rows, corner),
                 )
             )
             corner += 1
@@ -78,6 +136,7 @@ def _key(mesh: Mesh, compare_normals: bool) -> tuple:
             (
                 tuple(rows),
                 _group(mesh.flat_faces, index, 1),
+                _at(face_rows, index),
                 mesh.material_slots[mesh.face_materials[index]]
                 if mesh.face_materials
                 else "",
@@ -93,6 +152,7 @@ def _key(mesh: Mesh, compare_normals: bool) -> tuple:
                 _group(mesh.seam_edges, edge, 1),
                 _group(mesh.edge_creases, edge, 1),
                 tuple(_group(mesh.uv_seams[n], edge, 1) for n in seam_names),
+                _at(edge_rows, edge),
             )
         )
     points = sorted(point(vertex) for vertex in range(mesh.vertex_count))
@@ -109,6 +169,11 @@ def _key(mesh: Mesh, compare_normals: bool) -> tuple:
         sorted((name, c.is_srgb) for name, c in mesh.color_layers.items()),
         sorted(chains),
         mesh.material_slots,
+        mesh.space,
+        mesh.tangent_method,
+        _attribute_formats(mesh),
+        _attribute_rows(mesh, AttributeDomain.MESH),
+        _target_facts(mesh),
         sorted(mesh.vertex_groups),
     )
 

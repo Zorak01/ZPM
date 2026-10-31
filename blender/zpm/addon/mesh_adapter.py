@@ -4,10 +4,27 @@
 
 import math
 from array import array
+from typing import NamedTuple
 
 import bpy
+from bpy_extras.io_utils import axis_conversion
+from mathutils import Matrix
 
-from ..format import ColorLayer, FormatError, Mesh
+from ..format import (
+    Attribute,
+    AttributeDomain,
+    AttributeMeaning,
+    AttributeType,
+    ColorLayer,
+    FormatError,
+    Mesh,
+    MeshSpace,
+    ShapeInterpolation,
+    ShapeTarget,
+    SpaceAxis,
+)
+from ..format.container.layout import NO_SHAPE_TARGET
+from ..format.mesh import ATTRIBUTE_TYPECODES
 
 _MAX_TANGENT_FACE_SIZE = 4
 _BYTE_MAX = 255
@@ -17,11 +34,98 @@ _SMOOTHING_GROUP_ATTRIBUTE = "zpm_smoothing_group"
 _UV_SEAM_ATTRIBUTE_PREFIX = "zpm_seam:"
 _CHAIN_OFFSETS_PROPERTY = "zpm_crease_chain_offsets"
 _CHAIN_VERTICES_PROPERTY = "zpm_crease_chain_vertices"
+_IN_BETWEEN_PROPERTY_PREFIX = "zpm_in_between:"
+_ZPM_NAME_PREFIX = "zpm_"
+_HIDDEN_NAME_PREFIX = "."
+_STORED_ATTRIBUTES = {
+    "position",
+    "sharp_edge",
+    "sharp_face",
+    "uv_seam",
+    "material_index",
+    "crease_edge",
+    "crease_vert",
+    "custom_normal",
+}
+_DOMAINS = {
+    "POINT": AttributeDomain.POINT,
+    "EDGE": AttributeDomain.EDGE,
+    "FACE": AttributeDomain.FACE,
+    "CORNER": AttributeDomain.CORNER,
+}
+_AXIS_NAMES = {
+    SpaceAxis.X: "X",
+    SpaceAxis.Y: "Y",
+    SpaceAxis.Z: "Z",
+    SpaceAxis.NEG_X: "-X",
+    SpaceAxis.NEG_Y: "-Y",
+    SpaceAxis.NEG_Z: "-Z",
+}
+_SHAPE_INTERPOLATIONS = {
+    "KEY_LINEAR": ShapeInterpolation.LINEAR,
+    "KEY_CARDINAL": ShapeInterpolation.CARDINAL,
+    "KEY_CATMULL_ROM": ShapeInterpolation.CATMULL_ROM,
+    "KEY_BSPLINE": ShapeInterpolation.BSPLINE,
+}
 
 
-def capture_object(obj: bpy.types.Object) -> Mesh:
-    """Copy an object's base mesh with its vertex groups and weights."""
+class _BlenderAttribute(NamedTuple):
+    """How one Blender attribute type maps to a file format and a bulk buffer."""
+
+    value_type: AttributeType
+    components: int
+    meaning: AttributeMeaning
+    field: str
+    buffer_code: str
+
+
+_ATTRIBUTE_TYPES = {
+    "BOOLEAN": _BlenderAttribute(
+        AttributeType.BOOL, 1, AttributeMeaning.NONE, "value", "b"
+    ),
+    "INT8": _BlenderAttribute(
+        AttributeType.INT8, 1, AttributeMeaning.NONE, "value", "i"
+    ),
+    "INT": _BlenderAttribute(
+        AttributeType.INT32, 1, AttributeMeaning.NONE, "value", "i"
+    ),
+    "INT16_2D": _BlenderAttribute(
+        AttributeType.INT16, 2, AttributeMeaning.NONE, "value", "i"
+    ),
+    "INT32_2D": _BlenderAttribute(
+        AttributeType.INT32, 2, AttributeMeaning.NONE, "value", "i"
+    ),
+    "FLOAT": _BlenderAttribute(
+        AttributeType.FLOAT32, 1, AttributeMeaning.NONE, "value", "f"
+    ),
+    "FLOAT2": _BlenderAttribute(
+        AttributeType.FLOAT32, 2, AttributeMeaning.VECTOR, "vector", "f"
+    ),
+    "FLOAT_VECTOR": _BlenderAttribute(
+        AttributeType.FLOAT32, 3, AttributeMeaning.VECTOR, "vector", "f"
+    ),
+    "FLOAT_COLOR": _BlenderAttribute(
+        AttributeType.FLOAT32, 4, AttributeMeaning.COLOR, "color", "f"
+    ),
+    "QUATERNION": _BlenderAttribute(
+        AttributeType.FLOAT32, 4, AttributeMeaning.QUATERNION, "value", "f"
+    ),
+    "FLOAT4X4": _BlenderAttribute(
+        AttributeType.FLOAT32, 16, AttributeMeaning.MATRIX, "value", "f"
+    ),
+}
+_TANGENT_METHOD = "MikkTSpace, Blender {version}"
+
+
+def _scene_meters_per_unit(scene: bpy.types.Scene) -> float:
+    settings = scene.unit_settings
+    return 1.0 if settings.system == "NONE" else settings.scale_length
+
+
+def capture_object(obj: bpy.types.Object, scene: bpy.types.Scene) -> Mesh:
+    """Copy an object's base mesh with its groups, weights and the scene's units."""
     result = capture_mesh(obj.data)
+    result.space = MeshSpace(meters_per_unit=_scene_meters_per_unit(scene))
     result.vertex_groups = [group.name for group in obj.vertex_groups]
     if result.vertex_groups:
         offsets = array("I", [0])
@@ -105,6 +209,75 @@ def _capture_materials(mesh: bpy.types.Mesh) -> dict:
     }
 
 
+def _capture_attribute(attribute) -> Attribute:
+    if attribute.data_type not in _ATTRIBUTE_TYPES:
+        raise FormatError(
+            f"Attribute {attribute.name} has a type ZPM cannot store yet: "
+            f"{attribute.data_type}"
+        )
+    stored = _ATTRIBUTE_TYPES[attribute.data_type]
+    buffer = array(stored.buffer_code, [0]) * (len(attribute.data) * stored.components)
+    if buffer:
+        attribute.data.foreach_get(stored.field, buffer)
+    typecode = ATTRIBUTE_TYPECODES[stored.value_type]
+    values = (
+        array(typecode, [1 if v else 0 for v in buffer])
+        if (stored.value_type == AttributeType.BOOL)
+        else array(typecode, buffer)
+    )
+    return Attribute(
+        _DOMAINS[attribute.domain],
+        stored.value_type,
+        stored.components,
+        values,
+        stored.meaning,
+    )
+
+
+def _capture_attributes(mesh: bpy.types.Mesh) -> dict:
+    """Return attributes nothing else in the file holds. Hidden ones are UI state."""
+    taken = _STORED_ATTRIBUTES | {layer.name for layer in mesh.uv_layers}
+    taken |= {layer.name for layer in mesh.color_attributes}
+    return {
+        attribute.name: _capture_attribute(attribute)
+        for attribute in mesh.attributes
+        if attribute.name not in taken
+        and not attribute.name.startswith((_ZPM_NAME_PREFIX, _HIDDEN_NAME_PREFIX))
+    }
+
+
+def _capture_shape_target(mesh, block, blocks, is_relative) -> ShapeTarget:
+    positions = array("f", [0.0]) * (len(mesh.vertices) * 3)
+    if positions:
+        block.data.foreach_get("co", positions)
+    between = mesh.get(_IN_BETWEEN_PROPERTY_PREFIX + block.name)
+    return ShapeTarget(
+        block.name,
+        positions,
+        reference=blocks.find(block.relative_key.name),
+        is_relative=is_relative,
+        value=block.value,
+        minimum=block.slider_min,
+        maximum=block.slider_max,
+        frame=block.frame,
+        vertex_group=block.vertex_group,
+        is_muted=block.mute,
+        interpolation=_SHAPE_INTERPOLATIONS[block.interpolation],
+        in_between_of=int(between[0]) if between else NO_SHAPE_TARGET,
+        in_between_weight=float(between[1]) if between else 0.0,
+    )
+
+
+def _capture_shape_targets(mesh: bpy.types.Mesh) -> list:
+    if mesh.shape_keys is None:
+        return []
+    blocks = mesh.shape_keys.key_blocks
+    return [
+        _capture_shape_target(mesh, block, blocks, mesh.shape_keys.use_relative)
+        for block in blocks
+    ]
+
+
 def _capture_crease(mesh: bpy.types.Mesh, name: str) -> array:
     attribute = mesh.attributes.get(name)
     if attribute is None:
@@ -126,8 +299,14 @@ def _capture_surface(mesh: bpy.types.Mesh) -> dict:
             layer.uv.foreach_get("vector", values)
         layers[layer.name] = values
     smooth = _capture_flags(mesh.polygons, "use_smooth", len(mesh.polygons))
+    tangents = _capture_tangents(mesh)
     return {
         **_capture_materials(mesh),
+        "attributes": _capture_attributes(mesh),
+        "shape_targets": _capture_shape_targets(mesh),
+        "tangent_method": _TANGENT_METHOD.format(version=bpy.app.version_string)
+        if tangents
+        else "",
         "uv_seams": _capture_uv_seams(mesh),
         "sharp_corners": _capture_attribute_flags(mesh, _SHARP_CORNER_ATTRIBUTE),
         "smoothing_groups": _capture_smoothing_groups(mesh),
@@ -141,7 +320,7 @@ def _capture_surface(mesh: bpy.types.Mesh) -> dict:
         "flat_faces": array("B", [0 if flag else 1 for flag in smooth]),
         "edge_creases": _capture_crease(mesh, "crease_edge"),
         "vertex_creases": _capture_crease(mesh, "crease_vert"),
-        "tangent_layers": _capture_tangents(mesh),
+        "tangent_layers": tangents,
         "color_layers": _capture_colors(mesh),
     }
 
@@ -220,6 +399,70 @@ def _apply_materials(mesh: Mesh, result: bpy.types.Mesh) -> None:
         result.materials.append(material)
 
 
+def _apply_attributes(mesh: Mesh, result: bpy.types.Mesh) -> None:
+    by_format = {
+        (stored.value_type, stored.components, stored.meaning): (name, stored)
+        for name, stored in _ATTRIBUTE_TYPES.items()
+    }
+    domains = {domain: name for name, domain in _DOMAINS.items()}
+    for name, attribute in mesh.attributes.items():
+        data_type, stored = by_format[
+            (attribute.value_type, attribute.components, attribute.meaning)
+        ]
+        new = result.attributes.new(name, data_type, domains[attribute.domain])
+        new.data.foreach_set(stored.field, array(stored.buffer_code, attribute.values))
+
+
+def _validate_attributes_fit(mesh: Mesh) -> None:
+    known = {
+        (stored.value_type, stored.components, stored.meaning)
+        for stored in _ATTRIBUTE_TYPES.values()
+    }
+    for name, attribute in mesh.attributes.items():
+        key = (attribute.value_type, attribute.components, attribute.meaning)
+        if attribute.domain == AttributeDomain.MESH or key not in known:
+            raise FormatError(f"Blender has no attribute like {name}")
+
+
+def apply_shape_keys(mesh: Mesh, obj: bpy.types.Object) -> None:
+    """Add a mesh's shape targets to the object. Normal changes have no home here."""
+    if not mesh.shape_targets:
+        return
+    blocks = [
+        obj.shape_key_add(name=t.name, from_mix=False) for t in mesh.shape_targets
+    ]
+    data = obj.data
+    data.shape_keys.use_relative = mesh.shape_targets[0].is_relative
+    names = {v: k for k, v in _SHAPE_INTERPOLATIONS.items()}
+    for block, target in zip(blocks, mesh.shape_targets, strict=True):
+        if target.positions:
+            block.data.foreach_set("co", target.positions)
+        block.relative_key = blocks[target.reference]
+        block.slider_min = target.minimum
+        block.slider_max = target.maximum
+        block.value = target.value
+        block.vertex_group = target.vertex_group
+        block.mute = target.is_muted
+        block.interpolation = names[target.interpolation]
+        if target.in_between_of != NO_SHAPE_TARGET:
+            data[_IN_BETWEEN_PROPERTY_PREFIX + target.name] = [
+                target.in_between_of,
+                target.in_between_weight,
+            ]
+
+
+def apply_space(mesh: Mesh, obj: bpy.types.Object, scene: bpy.types.Scene) -> None:
+    """Place an object so a file with other units or axes looks right in this scene."""
+    default = MeshSpace(meters_per_unit=_scene_meters_per_unit(scene))
+    if mesh.space == default:
+        return
+    scale = mesh.space.meters_per_unit / default.meters_per_unit
+    axes = axis_conversion(
+        from_forward=_AXIS_NAMES[mesh.space.forward], from_up=_AXIS_NAMES[mesh.space.up]
+    ).to_4x4()
+    obj.matrix_world = axes @ Matrix.Scale(scale, 4)
+
+
 def _apply_crease(result: bpy.types.Mesh, name: str, domain: str, values: array):
     if values:
         attribute = result.attributes.new(name, "FLOAT", domain)
@@ -241,6 +484,7 @@ def _apply_surface(mesh: Mesh, result: bpy.types.Mesh) -> None:
     _apply_crease(result, "crease_vert", "POINT", mesh.vertex_creases)
     _apply_colors(mesh, result)
     _apply_authored_marks(mesh, result)
+    _apply_attributes(mesh, result)
     if mesh.has_custom_normals and mesh.corner_normals:
         values = mesh.corner_normals
         result.normals_split_custom_set(
@@ -310,10 +554,12 @@ def create_mesh(mesh: Mesh, *, name: str) -> bpy.types.Mesh:
     """Create a mesh datablock, leaving scene linking and selection to the caller.
 
     Blender keeps no stored tangents, so it recalculates them from UVs when needed.
-    A mesh with holes is refused: Blender has no such faces and would have to change it.
+    Shape keys need the object: see apply_shape_keys. A mesh with holes is refused:
+    Blender has no such faces and would have to change it.
     On failure the partial datablock is removed. Existing scene data is untouched.
     """
     mesh.validate()
+    _validate_attributes_fit(mesh)
     corner_edges = _validate_geometry(mesh)
     result = bpy.data.meshes.new(name)
     try:

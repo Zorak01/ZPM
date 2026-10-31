@@ -7,7 +7,7 @@ Tangents and seams belong to a UV layer, so they use that layer's number.
 
 from array import array
 
-from ..container.layout import AXIS_COUNT, MAX_UV_LAYERS, SectionKind, to_signed
+from ..container.layout import AXIS_COUNT, MAX_LAYERS, SectionKind, to_signed
 from ..container.sections import Section, SectionReader, column_section
 from ..errors import FormatError
 from ..mesh import Mesh
@@ -91,7 +91,7 @@ def encode_uv_seams(mesh: Mesh) -> list:
 
 def encode_uv_layers(mesh: Mesh) -> list:
     names = sorted(mesh.uv_layers)
-    if len(names) > MAX_UV_LAYERS:
+    if len(names) > MAX_LAYERS:
         raise FormatError("The mesh has too many UV layers")
     if not names:
         return []
@@ -138,6 +138,23 @@ def read_normals(sections: SectionReader, corners: list) -> array:
         return array("f")
     pairs = read_corner_pairs(sections, SectionKind.NORMAL_REPEAT_MASK, corners)
     return array("f", [part for a, b in pairs for part in decode_normal(a, b)])
+
+
+def encode_tangent_method(mesh: Mesh) -> list:
+    """Return the name of what made the tangents, when the mesh names one."""
+    if not mesh.tangent_method:
+        return []
+    names = encode_names([mesh.tangent_method])
+    return [Section(SectionKind.TANGENT_METHOD, names)]
+
+
+def read_tangent_method(sections: SectionReader) -> str:
+    if not sections.has(SectionKind.TANGENT_METHOD):
+        return ""
+    names = read_names(sections.raw(SectionKind.TANGENT_METHOD))
+    if len(names) != 1:
+        raise FormatError("A file names one tangent method")
+    return names[0]
 
 
 def _uv_names(sections: SectionReader) -> list:

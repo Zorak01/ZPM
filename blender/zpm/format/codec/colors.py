@@ -9,7 +9,7 @@ need a whole value, so they take two streams: red and green, then blue and alpha
 from array import array
 
 from ..container.layout import (
-    MAX_UV_LAYERS,
+    MAX_LAYERS,
     ColorFormat,
     SectionKind,
     to_signed,
@@ -69,7 +69,7 @@ def _encode_layer(layer_data: ColorLayer, mesh: Mesh, layer: int) -> list:
 def encode_colors(mesh: Mesh) -> list:
     """Return every color layer with the name and format tables describing them."""
     names = sorted(mesh.color_layers)
-    if len(names) > MAX_UV_LAYERS:
+    if len(names) > MAX_LAYERS:
         raise FormatError("The mesh has too many color layers")
     if not names:
         return []

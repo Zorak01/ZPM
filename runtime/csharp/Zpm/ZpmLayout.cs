@@ -9,6 +9,7 @@ public enum ZpmSectionKind : ushort
     MeshInfo = 1,
     PositionRepeatMask = 2,
     PositionBackDistances = 3,
+    MeshSpace = 4,
     PositionGridX = 12,
     VertexCreases = 15,
     PositionBitsX = 16,
@@ -48,6 +49,7 @@ public enum ZpmSectionKind : ushort
     UvNames = 79,
     UvStream = 80,
     UvStreamLast = 88,
+    TangentMethod = 95,
     TangentStream = 96,
     TangentStreamLast = 104,
     ColorNames = 110,
@@ -60,6 +62,23 @@ public enum ZpmSectionKind : ushort
     WeightOffsets = 145,
     WeightGroups = 146,
     WeightValues = 147,
+    AttributeNames = 160,
+    AttributeFormats = 161,
+    AttributeValues = 162,
+    ShapeNames = 170,
+    ShapeGroupNames = 171,
+    ShapeInfo = 172,
+    ShapeStarts = 173,
+    ShapeVertices = 174,
+    ShapePositionX = 175,
+    ShapePositionY = 176,
+    ShapePositionZ = 177,
+    ShapeNormalX = 178,
+    ShapeNormalY = 179,
+    ShapeNormalZ = 180,
+    ShapeTangentX = 181,
+    ShapeTangentY = 182,
+    ShapeTangentZ = 183,
 }
 
 /// <summary>A section's place in a corner stream, added to the stream's first kind.</summary>
@@ -93,6 +112,8 @@ public static class ZpmLayout
     public const int FileHeaderBytes = 12;
     public const int DirectoryEntryBytes = 8;
     public const int MeshInfoBytes = 32;
+    public const int MeshSpaceBytes = 8;
+    public const int ShapeInfoBytes = 32;
     public const int ColumnCountBytes = 4;
     public const int ConstantBytes = 4;
     public const int TailBytes = 32;
@@ -104,6 +125,7 @@ public static class ZpmLayout
     public const float UvGridScale = 1048576f;
     public const float UnitMax = 65535f;
     public const uint UnitLimit = 65536;
+    public const float OffsetGridScale = 65536f;
     public const uint TangentSignBit = 4096;
     public const uint CustomNormalsFlag = 1;
     public const uint NormalsFromFacesFlag = 2;

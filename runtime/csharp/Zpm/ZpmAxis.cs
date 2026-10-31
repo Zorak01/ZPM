@@ -55,7 +55,7 @@ public unsafe struct ZpmAxis
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    static uint OrderedToBits(uint ordered) => ordered ^ ((uint)((int)~ordered >> SignShift) | SignBit);
+    internal static uint OrderedToBits(uint ordered) => ordered ^ ((uint)((int)~ordered >> SignShift) | SignBit);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     readonly uint GridToBits(int grid) => BitConverter.SingleToUInt32Bits(grid * _step);

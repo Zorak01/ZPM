@@ -39,6 +39,11 @@ public unsafe struct ZpmMeshView
     bool _hasEdgeSharp, _hasEdgeSeam, _hasEdgeCreases, _hasFaceFlat, _hasVertexCreases;
     ZpmColumn _edgeSharp, _edgeSeam, _edgeCreases, _faceFlat, _vertexCreases;
 
+    float _metersPerUnit;
+    ZpmSpaceAxis _upAxis, _forwardAxis;
+    ZpmNames _tangentMethod, _attributeNames;
+    uint* _attributeFormats;
+    ZpmShapeTargets _shapes;
     bool _hasTangents;
     ZpmNames _uvNames, _colorNames, _groupNames, _materialSlots;
     bool _hasFaceMaterials, _hasHoles, _hasCornerSharp, _hasSmoothingGroups, _hasCreaseChains, _hasCreaseChainVertices;
@@ -66,6 +71,21 @@ public unsafe struct ZpmMeshView
 
     /// <summary>Whether any UV layer has tangents. TryGetTangentLayer says which.</summary>
     public readonly bool hasTangents => _hasTangents;
+
+    /// <summary>How long one unit of the file's coordinates is, in meters.</summary>
+    public readonly float metersPerUnit => _metersPerUnit;
+
+    /// <summary>Which way is up in the file's coordinates.</summary>
+    public readonly ZpmSpaceAxis upAxis => _upAxis;
+
+    /// <summary>Which way is forward in the file's coordinates.</summary>
+    public readonly ZpmSpaceAxis forwardAxis => _forwardAxis;
+
+    /// <summary>How many custom attributes the file holds.</summary>
+    public readonly uint attributeCount => _attributeNames.count;
+
+    /// <summary>The file's blendshape tables, for reading target facts and names.</summary>
+    public readonly ZpmShapeTargets shapeTargets => _shapes;
 
     /// <summary>How many material slots the file names.</summary>
     public readonly uint materialSlotCount => _materialSlots.count;
@@ -138,10 +158,13 @@ public unsafe struct ZpmMeshView
     static bool IsTangentStreamKind(ZpmSectionKind kind) => kind >= ZpmSectionKind.TangentStream && kind <= ZpmSectionKind.TangentStreamLast;
 
     static bool IsLayeredKind(ZpmSectionKind kind) =>
-        IsUvStreamKind(kind) || IsTangentStreamKind(kind) || IsFirstColorKind(kind) || IsSecondColorKind(kind) || kind == ZpmSectionKind.UvSeams;
+        IsUvStreamKind(kind) || IsTangentStreamKind(kind) || IsFirstColorKind(kind) || IsSecondColorKind(kind)
+        || kind == ZpmSectionKind.UvSeams || kind == ZpmSectionKind.AttributeValues;
 
     bool TryBindSection(ZpmSectionKind kind, ZpmSectionFlags flags, byte* section, long available)
     {
+        if (_shapes.TryBindSection(kind, flags, section))
+            return true;
         if (IsLayeredKind(kind))
         {
             _hasTangents |= IsTangentStreamKind(kind);
@@ -174,6 +197,17 @@ public unsafe struct ZpmMeshView
             case ZpmSectionKind.WeightValues:
                 _weightValues = ZpmColumn.Bind(section, flags);
                 _hasWeightValues = true;
+                return true;
+            case ZpmSectionKind.MeshSpace:
+                return available >= ZpmLayout.MeshSpaceBytes && TryReadMeshSpace(section);
+            case ZpmSectionKind.TangentMethod:
+                _tangentMethod = ZpmNames.Bind(section);
+                return true;
+            case ZpmSectionKind.AttributeNames:
+                _attributeNames = ZpmNames.Bind(section);
+                return true;
+            case ZpmSectionKind.AttributeFormats:
+                _attributeFormats = (uint*)section;
                 return true;
             case ZpmSectionKind.MaterialSlotNames:
                 _materialSlots = ZpmNames.Bind(section);
@@ -330,8 +364,22 @@ public unsafe struct ZpmMeshView
         }
     }
 
+    bool TryReadMeshSpace(byte* space)
+    {
+        _metersPerUnit = Unsafe.ReadUnaligned<float>(space);
+        _upAxis = (ZpmSpaceAxis)space[4];
+        _forwardAxis = (ZpmSpaceAxis)space[5];
+        return float.IsFinite(_metersPerUnit) && _metersPerUnit > 0
+            && _upAxis <= ZpmSpaceAxis.NegativeZ && _forwardAxis <= ZpmSpaceAxis.NegativeZ
+            && (int)_upAxis % ZpmLayout.AxisCount != (int)_forwardAxis % ZpmLayout.AxisCount
+            && Unsafe.ReadUnaligned<ushort>(space + 6) == 0;
+    }
+
     bool TryReadMeshInfo(byte* info)
     {
+        _metersPerUnit = 1f;
+        _upAxis = ZpmSpaceAxis.Z;
+        _forwardAxis = ZpmSpaceAxis.NegativeY;
         _vertexCount = Unsafe.ReadUnaligned<uint>(info);
         _faceCount = Unsafe.ReadUnaligned<uint>(info + 4);
         _cornerCount = Unsafe.ReadUnaligned<uint>(info + 8);
@@ -493,6 +541,9 @@ public unsafe struct ZpmMeshView
             && _materialSlots.Validate(_limit)
             && ValidateValues(_hasFaceMaterials, _faceMaterials, _faceCount, _materialSlots.count)
             && ValidateCreaseChains()
+            && _tangentMethod.Validate(_limit)
+            && ValidateAttributes()
+            && _shapes.Validate(_limit, _vertexCount)
             && ValidateValues(_hasEdgeCreases, _edgeCreases, _edgeCount, ZpmLayout.UnitLimit)
             && ValidateValues(_hasVertexCreases, _vertexCreases, _vertexCount, ZpmLayout.UnitLimit)
             && ValidateUvLayers() && ValidateColorLayers() && ValidateWeights();
@@ -512,6 +563,23 @@ public unsafe struct ZpmMeshView
             if (TryGetTangentLayer(layer, out ZpmCornerStream tangents) && !tangents.Validate(_limit, _cornerCount, _vertexCount))
                 return false;
             if (TryGetUvSeamLayer(layer, out ZpmColumn seams) && !ValidateValues(true, seams, _edgeCount, 2))
+                return false;
+        }
+        return true;
+    }
+
+    readonly bool ValidateAttributes()
+    {
+        if (!_attributeNames.Validate(_limit))
+            return false;
+        uint count = _attributeNames.count;
+        if (count == 0)
+            return true;
+        if (_attributeFormats == null || (ulong)(_limit - (byte*)_attributeFormats) < (ulong)count * ZpmLayout.ColumnCountBytes)
+            return false;
+        for (uint attribute = 0; attribute < count; attribute++)
+        {
+            if (!TryGetAttribute(attribute, out ZpmAttribute found) || !found.Validate(_limit))
                 return false;
         }
         return true;
@@ -774,6 +842,86 @@ public unsafe struct ZpmMeshView
 
     /// <summary>Returns whether a face is shaded flat.</summary>
     public readonly bool IsFaceFlat(uint face) => _hasFaceFlat && _faceFlat.Get(face) != 0;
+
+    /// <summary>Finds a custom attribute's UTF-8 name. Returns false when out of range.</summary>
+    public readonly bool TryGetAttributeName(uint attribute, out byte* utf8, out uint length) =>
+        _attributeNames.TryGet(attribute, out utf8, out length);
+
+    /// <summary>Finds one custom attribute by walking the directory. Returns false when it does not exist. Keep the result.</summary>
+    public readonly bool TryGetAttribute(uint attribute, out ZpmAttribute found)
+    {
+        found = default;
+        if (attribute >= _attributeNames.count || _attributeFormats == null)
+            return false;
+        uint format = _attributeFormats[attribute];
+        for (uint i = 0; i < _sectionCount; i++)
+        {
+            byte* entry = _data + ZpmLayout.FileHeaderBytes + i * ZpmLayout.DirectoryEntryBytes;
+            if ((ZpmSectionKind)Unsafe.ReadUnaligned<ushort>(entry) == ZpmSectionKind.AttributeValues && entry[3] == attribute)
+            {
+                byte* section = _data + Unsafe.ReadUnaligned<uint>(entry + 4);
+                found = ZpmAttribute.Bind(format, section, (ZpmSectionFlags)entry[2], GetDomainSize(ZpmAttribute.GetDomain(format)));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    readonly uint GetDomainSize(ZpmAttributeDomain domain) => domain switch
+    {
+        ZpmAttributeDomain.Point => _vertexCount,
+        ZpmAttributeDomain.Edge => _edgeCount,
+        ZpmAttributeDomain.Face => _faceCount,
+        ZpmAttributeDomain.Corner => _cornerCount,
+        _ => 1,
+    };
+
+    /// <summary>Finds the UTF-8 name of what made the tangents. Returns false when the file names none.</summary>
+    public readonly bool TryGetTangentMethod(out byte* utf8, out uint length) =>
+        _tangentMethod.TryGet(0, out utf8, out length);
+
+    /// <summary>Returns where a vertex goes under a shape target. Costs a binary search over the target's vertices.</summary>
+    public readonly ZpmVertex GetShapeTargetPosition(uint target, uint vertex)
+    {
+        if (!_shapes.TryFindVertex(target, vertex, out uint at))
+            return GetVertex(vertex);
+        _shapes.GetStoredPosition(at, out uint x, out uint y, out uint z);
+        if (!_hasGrid)
+            return new ZpmVertex(ZpmAxis.OrderedToBits(x), ZpmAxis.OrderedToBits(y), ZpmAxis.OrderedToBits(z));
+        ZpmVertex basePosition = GetVertex(vertex);
+        return new ZpmVertex(
+            BitConverter.SingleToUInt32Bits(basePosition.x + (int)x * _gridStep),
+            BitConverter.SingleToUInt32Bits(basePosition.y + (int)y * _gridStep),
+            BitConverter.SingleToUInt32Bits(basePosition.z + (int)z * _gridStep));
+    }
+
+    /// <summary>
+    /// Fills the caller's buffers with the vertices a target changes and how far each moves from the
+    /// base shape, as XYZ. Returns how many it wrote. The fastest way to apply a target.
+    /// </summary>
+    public readonly uint GetShapeOffsets(uint target, uint* vertices, float* offsets)
+    {
+        uint start = _shapes.GetStart(target);
+        uint count = _shapes.GetAffectedCount(target);
+        for (uint i = 0; i < count; i++)
+        {
+            uint vertex = _shapes.GetVertexAt(start + i);
+            vertices[i] = vertex;
+            _shapes.GetStoredPosition(start + i, out uint x, out uint y, out uint z);
+            if (_hasGrid)
+            {
+                offsets[i * 3] = (int)x * _gridStep;
+                offsets[i * 3 + 1] = (int)y * _gridStep;
+                offsets[i * 3 + 2] = (int)z * _gridStep;
+                continue;
+            }
+            ZpmVertex basePosition = GetVertex(vertex);
+            offsets[i * 3] = BitConverter.UInt32BitsToSingle(ZpmAxis.OrderedToBits(x)) - basePosition.x;
+            offsets[i * 3 + 1] = BitConverter.UInt32BitsToSingle(ZpmAxis.OrderedToBits(y)) - basePosition.y;
+            offsets[i * 3 + 2] = BitConverter.UInt32BitsToSingle(ZpmAxis.OrderedToBits(z)) - basePosition.z;
+        }
+        return count;
+    }
 
     /// <summary>Returns the material slot a face uses. Slot 0 when the file stores no slots per face.</summary>
     public readonly uint GetFaceMaterial(uint face) => _hasFaceMaterials ? _faceMaterials.Get(face) : 0;

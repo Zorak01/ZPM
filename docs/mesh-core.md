@@ -52,6 +52,7 @@ Flag values: `1` the column stores slopes, `2` a palette index holds a sign in i
 | 1 | `MESH_INFO` | 8 × 32-bit | Vertex, face, corner, edge and unique-position counts; shared face size or 0; position grid exponent; flags (1 = authored normals, 2 = normals calculated from faces) |
 | 2 | `POSITION_REPEAT_MASK` | Rank mask | Marks vertices that repeat an earlier position |
 | 3 | `POSITION_BACK_DISTANCES` | Column | How far each marked vertex reaches back from the newest unique position |
+| 4 | `MESH_SPACE` | Fixed 8 bytes | Float32 meters per unit, up axis, forward axis, two zero bytes. Absent means 1 m, +Z up, -Y forward |
 | 12–14 | `POSITION_GRID_X/Y/Z` | Column | Position as a whole number of grid steps |
 | 15 | `VERTEX_CREASES` | Column | 16-bit crease per vertex |
 | 16–18 | `POSITION_BITS_X/Y/Z` | Column | Float bits, mapped so their order follows their value. Only for meshes with no grid |
@@ -82,6 +83,7 @@ Flag values: `1` the column stores slopes, `2` a palette index holds a sign in i
 | 59 | `CREASE_CHAIN_OFFSETS` | Column | Where each chain's vertices start, plus a final total |
 | 60 | `CREASE_CHAIN_VERTICES` | Column | Vertex IDs along each chain; neighbours share an edge |
 | 78 | `UV_SEAMS` | Column, layered by UV layer | A layer's own seams, only when they differ from `EDGE_SEAM` |
+| 95 | `TANGENT_METHOD` | Name table | One name: what made the tangents and its version |
 | 64–72 | `NORMAL_*` | Corner stream | Two 12-bit values per corner |
 | 79 | `UV_NAMES` | UInt32 count, then length + UTF-8 | Layer names; a name's position is its layer number |
 | 80–88 | `UV_*` | Corner stream, one per layer | Two grid integers per corner |
@@ -93,6 +95,16 @@ Flag values: `1` the column stores slopes, `2` a palette index holds a sign in i
 | 144 | `GROUP_NAMES` | Name table | Vertex group names; a weight's group is an index here |
 | 145 | `WEIGHT_OFFSETS` | Column | Where each vertex's weights start, plus a final total |
 | 146–147 | `WEIGHT_GROUPS`, `WEIGHT_VALUES` | Column | A group index and a 16-bit value per weight |
+| 160 | `ATTRIBUTE_NAMES` | Name table | Custom attribute names |
+| 161 | `ATTRIBUTE_FORMATS` | UInt32 per attribute | Domain, type << 8, components << 16, meaning << 24 |
+| 162 | `ATTRIBUTE_VALUES` | Column, layered by attribute | All of component 0, then component 1 and so on. Floats as ordered bits, so exact |
+| 170 | `SHAPE_NAMES` | Name table | Blendshape names, in evaluation order |
+| 171 | `SHAPE_GROUP_NAMES` | Name table | Vertex group limiting each target; empty for none |
+| 172 | `SHAPE_INFO` | 32 bytes per target | Reference, in-between-of, value, minimum, maximum, frame, in-between weight, flags (1 relative, 2 muted, interpolation << 8) |
+| 173 | `SHAPE_STARTS` | Column | Where each target's run starts, plus a final total |
+| 174 | `SHAPE_VERTICES` | Column | Rising vertex IDs each target changes |
+| 175–177 | `SHAPE_POSITION_X/Y/Z` | Column | Signed grid steps from the base shape, or ordered bits of the target with no grid |
+| 178–183 | `SHAPE_NORMAL_*`, `SHAPE_TANGENT_*` | Column | Optional signed changes on a 1 / 2^16 grid |
 
 Unknown kinds are refused. Each axis uses grid integers, a constant, a palette with indices, or bits.
 Sections for data a mesh lacks, or that is all zero, are absent.

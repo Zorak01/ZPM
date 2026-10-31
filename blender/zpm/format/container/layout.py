@@ -10,6 +10,8 @@ VERSION = 1
 FILE_HEADER = struct.Struct("<4sHHI")
 DIRECTORY_ENTRY = struct.Struct("<HBBI")
 MESH_INFO = struct.Struct("<6IiI")
+MESH_SPACE = struct.Struct("<fBBH")
+SHAPE_INFO = struct.Struct("<2I5fI")
 COLUMN_COUNT = struct.Struct("<I")
 TAIL_BYTES = 32
 ALIGNMENT = 4
@@ -20,7 +22,7 @@ MAX_WIDTH = 32
 MAX_SLOPE = 127
 MAX_UNIFORM_ARITY = 255
 MAX_RELATIVE_ARITY = 4
-MAX_UV_LAYERS = 255
+MAX_LAYERS = 255
 UINT32_MAX = 0xFFFFFFFF
 SIGN_BIT = 0x80000000
 AXIS_COUNT = 3
@@ -30,8 +32,10 @@ MAX_GRID_VALUE = 1 << 24
 NORMAL_BITS = 12
 UV_GRID_BITS = 20
 COLOR_GRID_BITS = 16
+OFFSET_GRID_BITS = 16
 UNIT_MAX = 65535
 MIN_RING_CORNERS = 3
+NO_SHAPE_TARGET = UINT32_MAX
 
 
 class MeshFlags(IntFlag):
@@ -46,6 +50,7 @@ class SectionKind(IntEnum):
     MESH_INFO = 1
     POSITION_REPEAT_MASK = 2
     POSITION_BACK_DISTANCES = 3
+    MESH_SPACE = 4
     POSITION_GRID_X = 12
     POSITION_GRID_Y = 13
     POSITION_GRID_Z = 14
@@ -109,6 +114,7 @@ class SectionKind(IntEnum):
     UV_EXCEPTION_MASK = 86
     UV_EXCEPTION_A = 87
     UV_EXCEPTION_B = 88
+    TANGENT_METHOD = 95
     TANGENT_REPEAT_MASK = 96
     TANGENT_DISTANCES = 97
     TANGENT_VALUES_A = 98
@@ -142,6 +148,23 @@ class SectionKind(IntEnum):
     WEIGHT_OFFSETS = 145
     WEIGHT_GROUPS = 146
     WEIGHT_VALUES = 147
+    ATTRIBUTE_NAMES = 160
+    ATTRIBUTE_FORMATS = 161
+    ATTRIBUTE_VALUES = 162
+    SHAPE_NAMES = 170
+    SHAPE_GROUP_NAMES = 171
+    SHAPE_INFO = 172
+    SHAPE_STARTS = 173
+    SHAPE_VERTICES = 174
+    SHAPE_POSITION_X = 175
+    SHAPE_POSITION_Y = 176
+    SHAPE_POSITION_Z = 177
+    SHAPE_NORMAL_X = 178
+    SHAPE_NORMAL_Y = 179
+    SHAPE_NORMAL_Z = 180
+    SHAPE_TANGENT_X = 181
+    SHAPE_TANGENT_Y = 182
+    SHAPE_TANGENT_Z = 183
 
 
 class StreamRole(IntEnum):
@@ -167,6 +190,70 @@ class ColorFormat(IntFlag):
     SRGB = 4
 
 
+class SpaceAxis(IntEnum):
+    """A direction along one axis of the file's coordinate system."""
+
+    X = 0
+    Y = 1
+    Z = 2
+    NEG_X = 3
+    NEG_Y = 4
+    NEG_Z = 5
+
+
+class AttributeDomain(IntEnum):
+    """What a custom attribute holds one element for."""
+
+    POINT = 0
+    EDGE = 1
+    FACE = 2
+    CORNER = 3
+    MESH = 4
+
+
+class AttributeType(IntEnum):
+    """How one component of a custom attribute is stored. All are exact."""
+
+    BOOL = 0
+    INT8 = 1
+    UINT8 = 2
+    INT16 = 3
+    UINT16 = 4
+    INT32 = 5
+    UINT32 = 6
+    FLOAT32 = 7
+
+
+class AttributeMeaning(IntEnum):
+    """What a custom attribute's components mean together."""
+
+    NONE = 0
+    VECTOR = 1
+    COLOR = 2
+    QUATERNION = 3
+    MATRIX = 4
+
+
+class ShapeInterpolation(IntEnum):
+    """How an absolute shape target blends with its neighbours in time."""
+
+    LINEAR = 0
+    CARDINAL = 1
+    CATMULL_ROM = 2
+    BSPLINE = 3
+
+
+class ShapeFlags(IntFlag):
+    """The low bits of a SHAPE_INFO entry; interpolation sits above them."""
+
+    NONE = 0
+    RELATIVE = 1
+    MUTED = 2
+
+
+SHAPE_INTERPOLATION_SHIFT = 8
+
+
 class SectionFlags(IntFlag):
     NONE = 0
     HAS_SLOPES = 1
@@ -185,6 +272,16 @@ def bits_to_ordered(bits: int) -> int:
 def ordered_to_bits(ordered: int) -> int:
     """Undo bits_to_ordered."""
     return ordered ^ SIGN_BIT if ordered & SIGN_BIT else ordered ^ UINT32_MAX
+
+
+def float_bits(value: float) -> int:
+    """Return a Float32's bits."""
+    return struct.unpack("<I", struct.pack("<f", value))[0]
+
+
+def float_from_bits(bits: int) -> float:
+    """Return the Float32 these bits hold."""
+    return struct.unpack("<f", struct.pack("<I", bits))[0]
 
 
 def to_signed(value: int) -> int:

@@ -37,6 +37,8 @@ class IMPORT_MESH_OT_zpm(bpy.types.Operator, ImportHelper):
             mesh = mesh_adapter.create_mesh(geometry, name=Path(self.filepath).stem)
             obj = bpy.data.objects.new(mesh.name, mesh)
             mesh_adapter.apply_vertex_groups(geometry, obj)
+            mesh_adapter.apply_shape_keys(geometry, obj)
+            mesh_adapter.apply_space(geometry, obj, context.scene)
             context.collection.objects.link(obj)
         except (OSError, FormatError, RuntimeError) as error:
             if obj is not None:
@@ -76,12 +78,13 @@ class EXPORT_MESH_OT_zpm(bpy.types.Operator, ExportHelper):
         box.label(text="Mesh data only", icon="MESH_DATA")
         box.label(text="Active object, local coordinates, base mesh.")
         box.label(text="Positions, faces, edges, normals, UVs, sharp, seams, creases.")
-        box.label(text="Colors, tangents, vertex groups and weights too.")
+        box.label(text="Colors, tangents, vertex groups, weights, shape keys too.")
+        box.label(text="Custom attributes and the scene's units.")
         box.label(text="Material slots per face; material settings not exported yet.")
 
     def execute(self, context):
         try:
-            geometry = mesh_adapter.capture_object(context.active_object)
+            geometry = mesh_adapter.capture_object(context.active_object, context.scene)
             save(self.filepath, geometry)
         except (OSError, FormatError, RuntimeError) as error:
             self.report({"ERROR"}, str(error))

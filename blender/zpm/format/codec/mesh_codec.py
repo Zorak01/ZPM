@@ -9,6 +9,7 @@ from ..container.layout import (
     MAX_UNIFORM_ARITY,
     MESH_INFO,
     UINT32_MAX,
+    AttributeDomain,
     MeshFlags,
     SectionKind,
 )
@@ -18,6 +19,7 @@ from ..mesh import Mesh
 from ..processing.faces import corner_normals_from_faces, face_lists
 from ..processing.reordering import reorder_mesh
 from ..processing.snapping import grid_exponent, normals_match_faces, snap_mesh
+from .attributes import encode_attributes, read_attributes
 from .colors import encode_colors, read_colors
 from .corners import (
     encode_corners,
@@ -30,14 +32,18 @@ from .corners import (
 from .edges import encode_edge_endpoints, encode_edges, read_edges
 from .materials import encode_materials, read_materials
 from .positions import encode_positions, read_positions
+from .shapes import encode_shapes, read_shapes
+from .space import encode_space, read_space
 from .surface import (
     encode_marks,
     encode_normals,
+    encode_tangent_method,
     encode_tangents,
     encode_uv_layers,
     encode_uv_seams,
     read_marks,
     read_normals,
+    read_tangent_method,
     read_tangents,
     read_uv_layers,
     read_uv_seams,
@@ -77,7 +83,7 @@ def _encode_mesh(mesh: Mesh) -> bytes:
         raise FormatError("The mesh exceeds the file's 32-bit size limit")
     sections = []
     unique_count = 0
-    exponent = grid_exponent(mesh.positions)
+    exponent = grid_exponent(mesh)
     if vertex_count:
         positions, unique_count = encode_positions(mesh, exponent)
         sections += positions
@@ -102,7 +108,11 @@ def _encode_mesh(mesh: Mesh) -> bytes:
         flags |= MeshFlags.NORMALS_FROM_FACES
     elif mesh.corner_normals:
         sections += encode_normals(mesh)
+    sections += encode_space(mesh)
     sections += encode_tangents(mesh)
+    sections += encode_tangent_method(mesh)
+    sections += encode_attributes(mesh)
+    sections += encode_shapes(mesh, exponent)
     sections += encode_uv_layers(mesh)
     sections += encode_uv_seams(mesh)
     sections += encode_materials(mesh)
@@ -164,6 +174,13 @@ def decode(data: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
         raise FormatError("Edges in a mesh with holes must store their endpoints")
     edges = read_edges(sections, edge_count, corners, sizes)
     code = "H" if width == 2 else "I"
+    sizes = {
+        AttributeDomain.POINT: vertices,
+        AttributeDomain.EDGE: edge_count,
+        AttributeDomain.FACE: faces,
+        AttributeDomain.CORNER: corner_count,
+        AttributeDomain.MESH: 1,
+    }
     try:
         mesh = Mesh(
             positions,
@@ -177,6 +194,10 @@ def decode(data: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
             uv_seams=read_uv_seams(sections, edge_count),
             tangent_layers=read_tangents(sections, corners),
             hole_starts=holes,
+            space=read_space(sections),
+            tangent_method=read_tangent_method(sections),
+            attributes=read_attributes(sections, sizes),
+            shape_targets=read_shapes(sections, positions, exponent),
             color_layers=read_colors(sections, corners),
             **read_materials(sections, faces),
             **read_marks(sections, edge_count, faces, vertices, corner_count),

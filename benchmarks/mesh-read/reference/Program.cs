@@ -236,6 +236,80 @@ static unsafe class Program
             }
         }
         Require(seen == holes, "hole count");
+        Require(MathF.Abs(view.metersPerUnit - reader.ReadSingle()) == 0f, "meters per unit");
+        Require((uint)view.upAxis == reader.ReadUInt32() && (uint)view.forwardAxis == reader.ReadUInt32(), "axes");
+        VerifyAttributes(view, reader);
+        VerifyShapeTargets(view, reader);
+    }
+
+    static void VerifyAttributes(in ZpmMeshView view, BinaryReader reader)
+    {
+        uint attributes = reader.ReadUInt32();
+        Require(attributes == view.attributeCount, "attribute count");
+        for (uint a = 0; a < attributes; a++)
+        {
+            Require(view.TryGetAttribute(a, out ZpmAttribute attribute), "attribute");
+            Require(reader.ReadUInt32() == attribute.elementCount * attribute.componentCount, "attribute size");
+            for (uint e = 0; e < attribute.elementCount; e++)
+            {
+                for (uint c = 0; c < attribute.componentCount; c++)
+                {
+                    bool isSame = attribute.type == ZpmAttributeType.Float32
+                        ? BitConverter.SingleToUInt32Bits(attribute.GetFloat(e, c)) == reader.ReadUInt32()
+                        : attribute.GetInt(e, c) == reader.ReadInt32();
+                    Require(isSame, "attribute value");
+                }
+            }
+        }
+    }
+
+    static void VerifyShapeTargets(in ZpmMeshView view, BinaryReader reader)
+    {
+        ZpmShapeTargets shapes = view.shapeTargets;
+        uint targets = reader.ReadUInt32();
+        Require(targets == shapes.count, "shape target count");
+        var vertices = new uint[view.vertexCount + 1];
+        var offsets = new float[view.vertexCount * 3 + 3];
+        fixed (uint* v = vertices)
+        fixed (float* o = offsets)
+        {
+            for (uint t = 0; t < targets; t++)
+            {
+                for (uint i = 0; i < view.vertexCount; i++)
+                {
+                    ZpmVertex position = view.GetShapeTargetPosition(t, i);
+                    Require(position.x == reader.ReadSingle() && position.y == reader.ReadSingle() && position.z == reader.ReadSingle(), "target position");
+                }
+                uint count = view.GetShapeOffsets(t, v, o);
+                Require(count == shapes.GetAffectedCount(t), "target vertices");
+                for (uint i = 0; i < count; i++)
+                {
+                    ZpmVertex start = view.GetVertex(v[i]);
+                    ZpmVertex end = view.GetShapeTargetPosition(t, v[i]);
+                    Require(start.x + o[i * 3] == end.x && start.y + o[i * 3 + 1] == end.y && start.z + o[i * 3 + 2] == end.z, "target offset");
+                }
+                VerifyShapeOffsets(shapes, t, reader, false);
+                VerifyShapeOffsets(shapes, t, reader, true);
+            }
+        }
+    }
+
+    static void VerifyShapeOffsets(in ZpmShapeTargets shapes, uint target, BinaryReader reader, bool isTangent)
+    {
+        const float Tolerance = 1e-5f;
+        uint length = reader.ReadUInt32();
+        Require((length != 0) == (isTangent ? shapes.hasTangentOffsets : shapes.hasNormalOffsets), "has shape offsets");
+        for (uint i = 0; i < length / 3; i++)
+        {
+            float x = reader.ReadSingle(), y = reader.ReadSingle(), z = reader.ReadSingle();
+            if (shapes.TryFindVertex(target, i, out uint at))
+            {
+                ZpmNormal change = isTangent ? shapes.GetTangentOffsetAt(at) : shapes.GetNormalOffsetAt(at);
+                Require(MathF.Abs(change.x - x) < Tolerance && MathF.Abs(change.y - y) < Tolerance && MathF.Abs(change.z - z) < Tolerance, "shape offset");
+            }
+            else
+                Require(x == 0f && y == 0f && z == 0f, "unmoved shape offset");
+        }
     }
 
     /// <summary>The whole-mesh pair copy must match reading each corner on its own.</summary>
@@ -455,6 +529,24 @@ static unsafe class Program
         {
             view.IsCornerSharp(c);
             view.GetCornerSmoothingGroup(c);
+        }
+        for (uint a = 0; a < view.attributeCount; a++)
+        {
+            if (view.TryGetAttribute(a, out ZpmAttribute attribute))
+            {
+                for (uint e = 0; e < attribute.elementCount; e++)
+                {
+                    for (uint c = 0; c < attribute.componentCount; c++)
+                        attribute.GetUInt(e, c);
+                }
+            }
+        }
+        ZpmShapeTargets shapes = view.shapeTargets;
+        for (uint t = 0; t < shapes.count; t++)
+        {
+            shapes.GetTarget(t);
+            for (uint v = 0; v < view.vertexCount; v++)
+                view.GetShapeTargetPosition(t, v);
         }
         for (uint chain = 0; chain < view.creaseChainCount; chain++)
         {

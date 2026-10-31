@@ -246,6 +246,38 @@ Blender's single set of seams, costs nothing extra.
 **Technique:** A layer's format word gains an sRGB flag, costing no bytes. Blender's byte colors are sRGB and its
 float colors linear, and each is restored the same way.
 
+### Blendshapes that store only what moved, exactly
+
+**Problem:** glTF stores every vertex of every target unless told otherwise, and a face rig has dozens of targets
+that each move a small patch. Adding a float offset back to a float position can also drift by a bit.
+
+**Technique:** All targets share one list of rising vertex IDs, with one start per target. A vertex missing from a
+target's run did not move, and a binary search finds it with no memory. Rising runs fit the column's slope, so
+a target moving every vertex costs almost nothing in IDs, with no sparse or dense mode to choose. Offsets are whole
+steps on the mesh's own position grid, so adding one back is exact, and targets share the same tiny move limit as
+positions. Absolute and relative targets store alike. Meshes with no grid store each target's float bits.
+
+**Numbers:** 52 made-up smooth bumps of 8% of the model's size, moving vertices by up to 3% of it, not real
+face-rig data: `minotaur` 34,489 bytes, 2.1x smaller than sparse ID + three floats and 39.6x smaller than dense
+floats. `04263` 388,620 bytes, 2.6x and 26.8x. Most cost is offsets, about 15 bits each per axis on `04263`.
+
+**Prior art:** sparse targets are common, and so are quantized ones. Exact grid-step offsets sharing the mesh's
+grid, readable without unpacking, we have not seen, though we have not surveyed every format.
+
+### Custom attributes, exact, on any domain
+
+**Technique:** One column per attribute, all of component 0 then all of component 1, so like values sit together
+and any value is one multiply away. Floats use their ordered bits, so every pattern survives and close values take
+few bits. Any domain, 8 to 32-bit types, up to 255 components, and a declared meaning like vector or color.
+
+**Numbers:** a smooth Float32 attribute took 52,784 of 66,776 raw bytes on `04263` (1.27x), and 8,560 of 8,760
+on `minotaur` (1.02x). Ordered bits barely help noisy low digits, so this is a clear place to improve.
+
+### Units and axes only when they differ
+
+**Technique:** 8 bytes, absent for 1 m with +Z up and -Y forward. Blender places an imported object to match, so a
+file in other units or axes looks right without changing its vertices.
+
 ## The file itself
 
 ### Labelled sections

@@ -11,6 +11,8 @@ from ..container.layout import (
     SectionFlags,
     SectionKind,
     bits_to_ordered,
+    float_bits,
+    float_from_bits,
     ordered_to_bits,
     to_signed,
 )
@@ -26,21 +28,13 @@ from ..storage.back_references import resolve_back_references
 from ..storage.rank_mask import encode_rank_mask, read_rank_mask
 
 
-def _float_bits(value: float) -> int:
-    return struct.unpack("<I", struct.pack("<f", value))[0]
-
-
-def _float_from_bits(bits: int) -> float:
-    return struct.unpack("<f", struct.pack("<I", bits))[0]
-
-
 def _encode_axis(rows: list, axis: int, count: int, exponent: int) -> list:
     column = [rows[i * AXIS_COUNT + axis] for i in range(count)]
     if len(set(column)) == 1:
         kind = SectionKind(SectionKind.POSITION_CONSTANT_X + axis)
-        return [Section(kind, struct.pack("<I", _float_bits(column[0])))]
+        return [Section(kind, struct.pack("<I", float_bits(column[0])))]
     if exponent == NO_GRID:
-        ordered = [bits_to_ordered(_float_bits(value)) for value in column]
+        ordered = [bits_to_ordered(float_bits(value)) for value in column]
         return [
             column_section(SectionKind(SectionKind.POSITION_BITS_X + axis), ordered)
         ]
@@ -113,10 +107,10 @@ def _read_axis(sections: SectionReader, axis: int, count: int, exponent: int) ->
     grid = SectionKind(SectionKind.POSITION_GRID_X + axis)
     if sections.has(constant):
         stored = struct.unpack("<I", sections.raw(constant)[:4])[0]
-        return [_float_from_bits(stored)] * count
+        return [float_from_bits(stored)] * count
     if sections.has(bits):
         return [
-            _float_from_bits(ordered_to_bits(value))
+            float_from_bits(ordered_to_bits(value))
             for value in sections.column(bits, count)
         ]
     if exponent == NO_GRID:

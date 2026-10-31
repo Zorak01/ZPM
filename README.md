@@ -6,7 +6,7 @@ materials, rigs, and animation between Blender, engines, and other tools.
 The goal is simple: **smaller files, faster loading, lower memory use, and more
 of your work preserved when you export.**
 
-ZPM is in early development. Mesh import and export work today. The wider
+ZPM is in early development. Mesh import and export work today, with units and axes. The wider
 feature set below is planned, not implemented yet.
 
 **Reading a ZPM mesh means no decode step.** A mesh is read by index
@@ -24,12 +24,12 @@ smallest earlier experiment, which had to decode all of it first.
 | Tangents | Stored per corner with their sign, for each UV layer | Working |
 | UVs | Multiple named UV sets and coordinates spanning UDIM tiles | Working |
 | Vertex colors | Multiple named RGBA layers, stored per vertex or face corner; 8-bit or float values; linear or sRGB | Working |
-| Custom attributes | Named data attached to vertices, face corners, edges, or faces | Planned |
+| Custom attributes | Named exact data on vertices, face corners, edges, faces, or the whole mesh | Working |
 | Materials and textures | Material slots per face work. Planned: material properties, texture references, and textures embedded in the file when asked for | Partly |
 | Objects and hierarchy | Mesh objects, empty objects, names, transforms, parenting, collections, and instances | Planned |
 | Bones and rigs | Bone head, tail, length, roll, parenting, rest transforms, pose data, and control shapes | Planned |
 | Skinning | Named vertex groups and painted weights; bone influences come with bones | Working |
-| Blendshapes | Named shape targets, changed vertices, values, ranges, and relative shape references | Planned |
+| Blendshapes | Named shape targets, changed vertices, values, ranges, relative and absolute targets, in-betweens, and normal and tangent changes | Working |
 | Rig behavior | Constraints, drivers, and their referenced objects, bones, and properties | Planned |
 | Other objects | Lights, curves, and lattices, with their associated properties | Planned |
 | Animation | Tracks that can target any stored property, including custom attributes | Planned |

@@ -12,17 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "blender"))
 
 import zpm
 from zpm import mesh_io
-from zpm.format import FormatError, load
-
-
-def snapshot(mesh):
-    geometry = mesh_io.capture(mesh)
-    return (
-        geometry.positions.tobytes(),
-        list(geometry.face_sizes),
-        list(geometry.corners),
-        list(geometry.edges),
-    )
+from zpm.format import FormatError, load, same_geometry, snap_positions
 
 
 def run():
@@ -58,18 +48,18 @@ def run():
             bpy.context.collection.objects.link(obj)
             bpy.context.view_layer.objects.active = obj
             obj.location = (10, 20, 30)
-            expected = snapshot(source)
+            expected = snap_positions(mesh_io.capture(source))
             path = str(Path(directory) / f"{name}.zpm")
             assert bpy.ops.export_mesh.zpm(filepath=path) == {"FINISHED"}
             geometry = load(path)
             result = mesh_io.create(geometry, name="api-result")
-            assert snapshot(result) == expected, (name, expected, snapshot(result))
+            assert same_geometry(mesh_io.capture(result), expected), name
             before = set(bpy.data.objects.keys())
             assert bpy.ops.import_mesh.zpm(filepath=path) == {"FINISHED"}
             imported = set(bpy.data.objects.keys()) - before
             assert len(imported) == 1
             imported_obj = bpy.data.objects[imported.pop()]
-            assert snapshot(imported_obj.data) == expected
+            assert same_geometry(mesh_io.capture(imported_obj.data), expected), name
             assert tuple(imported_obj.location) == (0, 0, 0)
             assert tuple(obj.location) == (10, 20, 30)
             print(f"PASS: {name}, API and file operators")

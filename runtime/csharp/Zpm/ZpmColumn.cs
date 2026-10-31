@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-using System.Numerics;
+using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 
-namespace Zpm.DirectRead;
+namespace Zpm;
 
 /// <summary>
 /// A read-only array of UInt32 values stored in file bytes, readable by index without decoding.
@@ -13,15 +13,15 @@ namespace Zpm.DirectRead;
 /// </summary>
 public unsafe struct ZpmColumn
 {
-    public const int BlockSize = 64;
-    public const int BlocksPerGroup = 8;
-    public const int MaxWidth = 32;
+    const int CountBytes = 4;
+    const int BlockSize = 64;
     const int BlockShift = 6;
     const uint BlockMask = 63;
     const int GroupShift = 3;
     const uint GroupMask = 7;
     const int BitsPerByteShift = 3;
     const uint BitMask = 7;
+    const int MaxWidth = 32;
     const ulong SumBytes = 0x0101010101010101UL;
     const uint WideValues = 8;
     const uint MaxWideWidth = 27;
@@ -33,31 +33,29 @@ public unsafe struct ZpmColumn
     byte* _payload;
     uint _count;
 
+    /// <summary>How many values the column holds.</summary>
     public readonly uint count => _count;
-    public readonly uint blockCount => BlockCountOf(_count);
 
-    public static uint BlockCountOf(uint count) => (uint)(((ulong)count + BlockMask) >> BlockShift);
-    public static uint GroupCountOf(uint blocks) => (uint)(((ulong)blocks + GroupMask) >> GroupShift);
-    public static uint Align4(uint offset) => (offset + 3) & ~3u;
+    readonly uint blockCount => (uint)(((ulong)_count + BlockMask) >> BlockShift);
 
-    /// <summary>Points at a column. The entry is its file offset, with bit 0 set when it stores slopes.</summary>
-    public static ZpmColumn Bind(byte* file, uint entry, uint count)
+    /// <summary>Points at a column section. Touches only its count until validated.</summary>
+    public static ZpmColumn Bind(byte* section, ZpmSectionFlags flags)
     {
-        uint blocks = BlockCountOf(count);
-        uint offset = entry & ~1u;
-        var column = new ZpmColumn { _count = count };
-        column._bases = (uint*)(file + offset);
-        offset += blocks * 4;
-        if ((entry & 1) != 0)
+        var column = new ZpmColumn { _count = Unsafe.ReadUnaligned<uint>(section) };
+        uint blocks = column.blockCount;
+        ulong offset = CountBytes;
+        column._bases = (uint*)(section + offset);
+        offset += (ulong)blocks * 4;
+        if ((flags & ZpmSectionFlags.HasSlopes) != 0)
         {
-            column._slopes = (sbyte*)(file + offset);
+            column._slopes = (sbyte*)(section + offset);
             offset += blocks;
         }
-        column._widths = file + offset;
-        offset = Align4(offset + blocks);
-        column._groups = (uint*)(file + offset);
-        offset += GroupCountOf(blocks) * 4;
-        column._payload = file + offset;
+        column._widths = section + offset;
+        offset = (offset + blocks + 3) & ~3UL;
+        column._groups = (uint*)(section + offset);
+        offset += (((ulong)blocks + GroupMask) >> GroupShift) * 4;
+        column._payload = section + offset;
         return column;
     }
 
@@ -67,7 +65,7 @@ public unsafe struct ZpmColumn
         uint group = block >> GroupShift;
         ulong widths = Unsafe.ReadUnaligned<ulong>(_widths + (group << GroupShift));
         ulong before = widths & ((1UL << (int)((block & GroupMask) << BitsPerByteShift)) - 1);
-        // Each full block holds 64 values, so its payload is exactly width * 8 bytes.
+        // A full block holds 64 values, so its payload is exactly width * 8 bytes.
         uint skipped = (uint)((before * SumBytes) >> 56) << BitsPerByteShift;
         return _groups[group] + skipped;
     }
@@ -170,12 +168,9 @@ public unsafe struct ZpmColumn
     /// </summary>
     public readonly bool ValidateLayout(byte* limit)
     {
-        byte* tables = (byte*)_bases;
         uint blocks = blockCount;
-        if (tables >= limit && blocks != 0)
-            return false;
-        // Check the descriptors fit first: their pointers came from the untrusted count.
-        if ((ulong)(limit - tables) < (ulong)blocks * 5 || _payload > limit)
+        // Check the descriptors fit first: their pointers came from an untrusted count.
+        if (_payload > limit || (byte*)_bases > limit)
             return false;
         ulong running = 0;
         for (uint block = 0; block < blocks; block++)
@@ -183,17 +178,11 @@ public unsafe struct ZpmColumn
             uint width = _widths[block];
             if (width > MaxWidth)
                 return false;
-            if ((block & GroupMask) == 0)
-            {
-                if (_groups[block >> GroupShift] != running)
-                    return false;
-            }
+            if ((block & GroupMask) == 0 && _groups[block >> GroupShift] != running)
+                return false;
             bool last = block + 1 == blocks;
             uint values = last ? _count - (block << BlockShift) : BlockSize;
-            if (!last)
-                running += (ulong)width << BitsPerByteShift;
-            else
-                running += ((ulong)width * values + BitMask) >> BitsPerByteShift;
+            running += last ? ((ulong)width * values + BitMask) >> BitsPerByteShift : (ulong)width << BitsPerByteShift;
             if (running > (ulong)(limit - _payload))
                 return false;
         }
@@ -223,8 +212,28 @@ public unsafe struct ZpmColumn
         return true;
     }
 
-    /// <summary>Returns the lowest and highest value a block could hold, from its descriptor alone.</summary>
-    public readonly void GetBlockRange(uint block, bool signedBase, out long low, out long high)
+    /// <summary>Proves first[i] + this[i] is below limit, for two columns of equal count.</summary>
+    public readonly bool ValidateSumBelow(in ZpmColumn first, ulong limit)
+    {
+        uint blocks = blockCount;
+        for (uint block = 0; block < blocks; block++)
+        {
+            first.GetBlockRange(block, false, out long firstLow, out long firstHigh);
+            GetBlockRange(block, true, out long low, out long high);
+            if (firstLow + low >= 0 && (ulong)(firstHigh + high) < limit)
+                continue;
+            uint start = block << BlockShift;
+            uint end = Math.Min(start + BlockSize, _count);
+            for (uint i = start; i < end; i++)
+            {
+                if (first.Get(i) + Get(i) >= limit)
+                    return false;
+            }
+        }
+        return true;
+    }
+
+    readonly void GetBlockRange(uint block, bool signedBase, out long low, out long high)
     {
         long start = signedBase ? (int)_bases[block] : _bases[block];
         long slope = _slopes == null ? 0 : _slopes[block];
@@ -232,79 +241,5 @@ public unsafe struct ZpmColumn
         long travel = slope * (values - 1);
         low = start + Math.Min(0, travel);
         high = start + Math.Max(0, travel) + ((1L << _widths[block]) - 1);
-    }
-}
-
-/// <summary>
-/// Marks some of N elements, and answers in constant time how many marked or unmarked
-/// elements come before any element. Stores 8 + 4 bytes per 64 elements.
-/// </summary>
-public unsafe struct ZpmRankMask
-{
-    const int WordShift = 6;
-    const uint WordMask = 63;
-    const int BitsPerWord = 64;
-
-    ulong* _words;
-    uint* _ranks;
-    uint _count;
-
-    public readonly uint wordCount => WordCountOf(_count);
-
-    public static uint WordCountOf(uint count) => (uint)(((ulong)count + WordMask) >> WordShift);
-    public static uint ByteSizeOf(uint count) => WordCountOf(count) * 12;
-
-    public static ZpmRankMask Bind(byte* file, uint offset, uint count) => new()
-    {
-        _words = (ulong*)(file + offset),
-        _ranks = (uint*)(file + offset + WordCountOf(count) * 8),
-        _count = count,
-    };
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public readonly bool IsSet(uint index) => (_words[index >> WordShift] >> (int)(index & WordMask) & 1) != 0;
-
-    /// <summary>Returns how many unmarked elements come before this index.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public readonly uint GetClearRank(uint index)
-    {
-        uint word = index >> WordShift;
-        ulong below = (1UL << (int)(index & WordMask)) - 1;
-        return _ranks[word] + (uint)BitOperations.PopCount(~_words[word] & below);
-    }
-
-    /// <summary>Returns how many marked elements come before this index.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public readonly uint GetSetRank(uint index) => index - GetClearRank(index);
-
-    /// <summary>Returns how many elements from this index on, inside its word, share its mark.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public readonly uint GetClearRun(uint index)
-    {
-        int shift = (int)(index & WordMask);
-        ulong marked = _words[index >> WordShift] >> shift;
-        return (uint)Math.Min(BitOperations.TrailingZeroCount(marked), BitsPerWord - shift);
-    }
-
-    /// <summary>Checks the mask fits the file and its ranks add up to the expected unmarked total.</summary>
-    public readonly bool Validate(byte* limit, uint clearCount)
-    {
-        uint words = wordCount;
-        if ((byte*)_words >= limit && words != 0)
-            return false;
-        if ((ulong)(limit - (byte*)_words) < (ulong)words * 12)
-            return false;
-        uint running = 0;
-        for (uint word = 0; word < words; word++)
-        {
-            if (_ranks[word] != running)
-                return false;
-            ulong bits = _words[word];
-            uint used = word + 1 == words ? _count - (word << WordShift) : BitsPerWord;
-            if (used < BitsPerWord && bits >> (int)used != 0)
-                return false;
-            running += used - (uint)BitOperations.PopCount(bits);
-        }
-        return running == clearCount;
     }
 }

@@ -13,7 +13,7 @@ feature set below is planned, not implemented yet.
 straight from the file bytes, with no allocation: one face on a real 3,682-vertex
 character takes about 0.09 microseconds, and the file is 2.1x smaller than the
 smallest earlier experiment, which had to decode all of it first.
-[Measurements](benchmarks/direct-read/README.md) | [Layout](docs/mesh-core.md#layout)
+[Measurements](benchmarks/mesh-read/README.md) | [Layout](docs/mesh-core.md#layout)
 
 ## What ZPM will store
 
@@ -46,10 +46,10 @@ properties should all be animatable.
 | File size | Bytes on disk for the same data and quality |
 | Features | What survives an export/import round trip |
 
-The current mesh core preserves positions and topology without quantizing,
-welding, or triangulating the model. Smaller encodings are tested against that
-baseline. Performance improvements are claims to demonstrate with public data,
-not assumptions about the format.
+The mesh core keeps triangles, quads and n-gons as they are, and never welds or drops
+data. To shrink files it may reorder elements and snap positions by at most 0.00005% of the
+model's size. [What saving changes](docs/mesh-core.md#what-saving-changes). Performance
+improvements are claims to demonstrate with public data, not assumptions about the format.
 
 ## Blender
 
@@ -86,9 +86,10 @@ save("copy.zpm", mesh)
 ```
 
 The Python API expands a whole file into arrays for editing. By-index reading is
-in the [C# reference reader](benchmarks/direct-read/reference/ZpmMeshView.cs).
+in the [C# reference reader](runtime/csharp/Zpm/ZpmMeshView.cs).
 
-See the [packet contract](docs/mesh-core.md) and [architecture](docs/architecture.md).
+See the [file contract](docs/mesh-core.md), [architecture](docs/architecture.md) and
+[how each technique works](docs/techniques.md).
 
 ## Public benchmarks
 
@@ -104,7 +105,7 @@ These results compare mesh-core encodings on identical input. They do not
 establish an advantage over GLB, glTF, FBX, or other complete scene formats.
 
 These are earlier experiments, kept as the comparison.
-[Current results](benchmarks/direct-read/README.md) measure today's layout next to
+[Current results](benchmarks/mesh-read/README.md) measure today's layout next to
 them, rerun on one machine.
 
 ## Development
@@ -130,13 +131,14 @@ trips, and extension packaging.
 
 | Path | Purpose |
 | --- | --- |
-| `blender/zpm/format` | Blender-independent model, validation, codec, file I/O |
+| `blender/zpm/format` | Blender-independent model, encoder, decoder, file I/O |
 | `blender/zpm/mesh_io.py` | Blender bulk-buffer adapter |
 | `blender/zpm/operators.py` | Operators and menus |
 | `tests` | Codec and Blender integration tests |
 | `benchmarks/mesh-core` | Frozen reference, fixtures, measurements, runner |
-| `benchmarks/direct-read` | Reference reader and encoder, current measurements |
+| `runtime/csharp/Zpm` | Runtime reader: by index, no allocation |
+| `benchmarks/mesh-read` | Runtime reader measurements |
 | `docs` | Public contracts and architecture |
-| `tools` | Validation and build utilities |
+| `tools` | Validation, build and file-map utilities |
 
 [GPL-3.0-or-later](LICENSE)

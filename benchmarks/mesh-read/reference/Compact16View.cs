@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 using System.Runtime.CompilerServices;
 
-namespace Zpm.DirectRead;
+namespace Zpm.Benchmarks;
 
 /// <summary>
 /// Baseline: reads the existing RAW32 and COMPACT16 ZMC1 packets in place, without decoding.
 /// The packets store face sizes but no face offsets, so finding a mixed face walks from the start.
 /// </summary>
-public unsafe struct Compact16View : IZpmMeshReader
+public unsafe struct Compact16View : IMeshReader
 {
     const uint Magic = 0x31434D5A;
     const int HeaderBytes = 64;

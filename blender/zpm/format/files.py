@@ -1,31 +1,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Bounded, atomic file access for the one ZPM mesh layout; see direct.py."""
+"""Bounded reads and atomic writes of ZPM files."""
 
 import os
 import tempfile
 from pathlib import Path
 
-from . import direct
+from .decoder import decode
+from .encoder import encode
+from .layout import DEFAULT_MAX_BYTES
 from .model import FormatError, Mesh
-
-DEFAULT_MAX_BYTES = 512 * 1024 * 1024
-
-
-def encode(mesh: Mesh) -> bytes:
-    """Encode validated buffers; positions remain byte-for-byte exact."""
-    return direct.encode(mesh)
-
-
-def decode(data: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
-    """Expand one file into a Mesh, with strict length, range and size checks.
-
-    max_bytes limits both file size and retained expanded buffers. It is not
-    a peak process-memory limit: expanding also retains the input bytes.
-    """
-    if len(data) > max_bytes:
-        raise FormatError("File exceeds the configured size limit")
-    return direct.decode(data, max_bytes)
 
 
 def load(path: str | Path, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
@@ -38,7 +22,7 @@ def load(path: str | Path, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
 
 def save(path: str | Path, mesh: Mesh) -> None:
     """Replace a file atomically after successful encoding, in the same directory."""
-    packet = encode(mesh)
+    data = encode(mesh)
     destination = Path(path)
     temporary = None
     try:
@@ -48,7 +32,7 @@ def save(path: str | Path, mesh: Mesh) -> None:
             delete=False,
         ) as stream:
             temporary = Path(stream.name)
-            stream.write(packet)
+            stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, destination)

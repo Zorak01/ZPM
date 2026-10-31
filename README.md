@@ -1,28 +1,49 @@
 # ZPM
 
-**Zorak Portable Mesh** - an exact mesh-core codec, Python API, and Blender extension.
+**Zorak Portable Mesh** is a 3D file format being built to carry models,
+materials, rigs, and animation between Blender, engines, and other tools.
 
-Preserve vertex positions, explicit edges, and triangle/quad/n-gon topology
-without quantizing positions or triangulating authored faces.
+The goal is simple: **smaller files, faster loading, lower memory use, and more
+of your work preserved when you export.**
 
-> Experimental version 0.1. The current packet is not a frozen final format.
-> Mesh attributes and scene data are not implemented.
+ZPM is in early development. Mesh import and export work today. The wider
+feature set below is planned, not implemented yet.
 
-## Supported data
+## What ZPM will store
 
-| Data | Representation |
+| Area | What it includes | Status |
+| --- | --- | --- |
+| Mesh geometry | Vertices and their positions; edges; triangles, quads, and n-gons; original face boundaries and winding; loose edges and nonmanifold meshes | Working |
+| Surface data | Normals, tangents, sharp edges, seams, and crease values | Planned |
+| UVs | Multiple named UV sets and coordinates spanning UDIM tiles | Planned |
+| Vertex colors | Multiple named RGBA layers, stored per vertex or face corner; 8-bit or 32-bit float values | Planned |
+| Custom attributes | Named data attached to vertices, face corners, edges, or faces | Planned |
+| Materials and textures | Material assignments, material properties, texture references, and embedded texture data | Planned |
+| Objects and hierarchy | Mesh objects, empty objects, names, transforms, parenting, collections, and instances | Planned |
+| Bones and rigs | Bone head, tail, length, roll, parenting, rest transforms, pose data, and control shapes | Planned |
+| Skinning | Named vertex groups, painted weights, and bone influences | Planned |
+| Blendshapes | Named shape targets, changed vertices, values, ranges, and relative shape references | Planned |
+| Rig behavior | Constraints, drivers, and their referenced objects, bones, and properties | Planned |
+| Other objects | Lights, curves, and lattices, with their associated properties | Planned |
+| Animation | Tracks that can target any stored property, including custom attributes | Planned |
+
+Animation is intended to apply throughout the format: object transforms, bone
+poses, light settings, material values, blendshape values, and other stored
+properties should all be animatable.
+
+## What better means
+
+| Goal | What we measure |
 | --- | --- |
-| Positions | Exact Float32 XYZ, including signed zero |
-| Vertices | Original IDs and order |
-| Faces | Triangles, quads, n-gons, mixed face sizes; original winding |
-| Edges | Explicit endpoint order, loose edges and nonmanifold geometry |
-| Compact profile | UInt16 IDs through 65,536 vertices; UInt32 beyond that |
-| Uniform faces | One shared face size |
-| Reference profile | Raw UInt32 counts and IDs |
+| Speed | Encoding, decoding, and eventually complete import/load time |
+| Memory | Decoded data size, allocations, and eventually peak loading memory |
+| File size | Bytes on disk for the same data and quality |
+| Features | What survives an export/import round trip |
 
-No general-purpose compression codec is selected. UVs, vertex colors, authored
-normals, seams, creases, materials, textures, skinning, blendshapes, rigs,
-object transforms, hierarchy and animation are outside this build's scope.
+The current mesh core preserves positions and topology without quantizing,
+welding, or triangulating the model. Smaller encodings are tested against that
+baseline. Performance improvements are claims to demonstrate with public data,
+not assumptions about the format.
 
 ## Blender
 
@@ -88,7 +109,7 @@ blender --background --factory-startup --python-exit-code 1 --python tests/blend
 ```
 
 CI checks Python on Windows and Linux, benchmark integrity, Blender 4.5 round
-trips, and extension packaging. Hosted checks run after this repository is pushed.
+trips, and extension packaging.
 See [contributing](CONTRIBUTING.md) for the development workflow.
 
 ## Layout

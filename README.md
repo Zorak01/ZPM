@@ -21,14 +21,14 @@ smallest earlier experiment, which had to decode all of it first.
 | --- | --- | --- |
 | Mesh geometry | Vertices and their positions; edges; triangles, quads, and n-gons; original face boundaries and winding; loose edges and nonmanifold meshes | Working |
 | Surface data | Normals, sharp edges, flat faces, seams, and crease values | Working |
-| Tangents | Generated from UVs by the reader; stored only when authored | Planned |
+| Tangents | Stored per corner with their sign, from the first UV layer | Working |
 | UVs | Multiple named UV sets and coordinates spanning UDIM tiles | Working |
-| Vertex colors | Multiple named RGBA layers, stored per vertex or face corner; 8-bit or 32-bit float values | Planned |
+| Vertex colors | Multiple named RGBA layers, stored per vertex or face corner; 8-bit or float values | Working |
 | Custom attributes | Named data attached to vertices, face corners, edges, or faces | Planned |
 | Materials and textures | Material assignments, material properties, texture references, and textures embedded in the file when asked for | Planned |
 | Objects and hierarchy | Mesh objects, empty objects, names, transforms, parenting, collections, and instances | Planned |
 | Bones and rigs | Bone head, tail, length, roll, parenting, rest transforms, pose data, and control shapes | Planned |
-| Skinning | Named vertex groups, painted weights, and bone influences | Planned |
+| Skinning | Named vertex groups and painted weights; bone influences come with bones | Working |
 | Blendshapes | Named shape targets, changed vertices, values, ranges, and relative shape references | Planned |
 | Rig behavior | Constraints, drivers, and their referenced objects, bones, and properties | Planned |
 | Other objects | Lights, curves, and lattices, with their associated properties | Planned |
@@ -133,9 +133,8 @@ trips, and extension packaging.
 
 | Path | Purpose |
 | --- | --- |
-| `blender/zpm/format` | Blender-independent model, encoder, decoder, file I/O |
-| `blender/zpm/mesh_io.py` | Blender bulk-buffer adapter |
-| `blender/zpm/operators.py` | Operators and menus |
+| `blender/zpm/addon` | Blender operators and the mesh adapter |
+| `blender/zpm/format` | Blender-independent format: `container`, `storage`, `codec`, `processing` |
 | `tests` | Codec and Blender integration tests |
 | `benchmarks/mesh-core` | Frozen reference, fixtures, measurements, runner |
 | `runtime/csharp/Zpm` | Runtime reader: by index, no allocation |

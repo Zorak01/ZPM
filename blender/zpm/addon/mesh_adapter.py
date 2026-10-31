@@ -7,13 +7,36 @@ from array import array
 
 import bpy
 
-from .format import FormatError, Mesh
+from ..format import ColorLayer, FormatError, Mesh
+
+_MAX_TANGENT_FACE_SIZE = 4
+_BYTE_MAX = 255
 
 
-def capture(mesh: bpy.types.Mesh) -> Mesh:
+def capture_object(obj: bpy.types.Object) -> Mesh:
+    """Copy an object's base mesh with its vertex groups and weights."""
+    result = capture_mesh(obj.data)
+    result.vertex_groups = [group.name for group in obj.vertex_groups]
+    if result.vertex_groups:
+        offsets = array("I", [0])
+        groups = array("I")
+        values = array("f")
+        for vertex in obj.data.vertices:
+            for element in vertex.groups:
+                groups.append(element.group)
+                values.append(element.weight)
+            offsets.append(len(values))
+        result.weight_offsets = offsets
+        result.weight_groups = groups
+        result.weight_values = values
+    result.validate()
+    return result
+
+
+def capture_mesh(mesh: bpy.types.Mesh) -> Mesh:
     """Copy the authored mesh with Blender's bulk buffer API.
 
-    Object transforms and modifiers are intentionally outside the mesh codec.
+    Object transforms and modifiers are intentionally outside the mesh format.
     This does not triangulate, weld, reorder or evaluate the source geometry.
     """
     positions = array("f", [0]) * (len(mesh.vertices) * 3)
@@ -67,7 +90,46 @@ def _capture_surface(mesh: bpy.types.Mesh) -> dict:
         "flat_faces": array("B", [0 if flag else 1 for flag in smooth]),
         "edge_creases": _capture_crease(mesh, "crease_edge"),
         "vertex_creases": _capture_crease(mesh, "crease_vert"),
+        "corner_tangents": _capture_tangents(mesh),
+        "color_layers": _capture_colors(mesh),
     }
+
+
+def _capture_tangents(mesh: bpy.types.Mesh) -> array:
+    """Return tangents from the first UV layer. Blender cannot do this for n-gons."""
+    if not mesh.uv_layers or not len(mesh.loops):
+        return array("f")
+    sizes = array("I", [0]) * len(mesh.polygons)
+    mesh.polygons.foreach_get("loop_total", sizes)
+    if max(sizes) > _MAX_TANGENT_FACE_SIZE:
+        return array("f")
+    mesh.calc_tangents(uvmap=mesh.uv_layers[0].name)
+    tangents = array("f", [0.0]) * (len(mesh.loops) * 3)
+    signs = array("f", [0.0]) * len(mesh.loops)
+    mesh.loops.foreach_get("tangent", tangents)
+    mesh.loops.foreach_get("bitangent_sign", signs)
+    mesh.free_tangents()
+    combined = array("f")
+    for corner, sign in enumerate(signs):
+        combined.extend(tangents[corner * 3 : corner * 3 + 3])
+        combined.append(sign)
+    return combined
+
+
+def _capture_colors(mesh: bpy.types.Mesh) -> dict:
+    layers = {}
+    for attribute in mesh.color_attributes:
+        is_corner = attribute.domain == "CORNER"
+        owners = len(mesh.loops) if is_corner else len(mesh.vertices)
+        if attribute.data_type == "BYTE_COLOR":
+            values = array("f", [0.0]) * (owners * 4)
+            attribute.data.foreach_get("color_srgb", values)
+            stored = array("B", [round(value * _BYTE_MAX) for value in values])
+        else:
+            stored = array("f", [0.0]) * (owners * 4)
+            attribute.data.foreach_get("color", stored)
+        layers[attribute.name] = ColorLayer(stored, is_corner)
+    return layers
 
 
 def _apply_crease(result: bpy.types.Mesh, name: str, domain: str, values: array):
@@ -89,11 +151,37 @@ def _apply_surface(mesh: Mesh, result: bpy.types.Mesh) -> None:
         result.polygons.foreach_set("use_smooth", smooth)
     _apply_crease(result, "crease_edge", "EDGE", mesh.edge_creases)
     _apply_crease(result, "crease_vert", "POINT", mesh.vertex_creases)
+    _apply_colors(mesh, result)
     if mesh.has_custom_normals and mesh.corner_normals:
         values = mesh.corner_normals
         result.normals_split_custom_set(
             [tuple(values[at : at + 3]) for at in range(0, len(values), 3)]
         )
+
+
+def _apply_colors(mesh: Mesh, result: bpy.types.Mesh) -> None:
+    for name, layer in mesh.color_layers.items():
+        data_type = "FLOAT_COLOR" if layer.is_float else "BYTE_COLOR"
+        domain = "CORNER" if layer.is_corner else "POINT"
+        attribute = result.color_attributes.new(name, data_type, domain)
+        if layer.is_float:
+            attribute.data.foreach_set("color", layer.values)
+        else:
+            scaled = array("f", [value / _BYTE_MAX for value in layer.values])
+            attribute.data.foreach_set("color_srgb", scaled)
+
+
+def apply_vertex_groups(mesh: Mesh, obj: bpy.types.Object) -> None:
+    """Add a mesh's vertex groups and weights to the object using it."""
+    groups = [obj.vertex_groups.new(name=name) for name in mesh.vertex_groups]
+    if not mesh.weight_offsets:
+        return
+    for vertex in range(mesh.vertex_count):
+        start, end = mesh.weight_offsets[vertex], mesh.weight_offsets[vertex + 1]
+        for at in range(start, end):
+            groups[mesh.weight_groups[at]].add(
+                [vertex], mesh.weight_values[at], "REPLACE"
+            )
 
 
 def _bools(flags: array) -> array:
@@ -127,9 +215,10 @@ def _validate_geometry(mesh: Mesh) -> array:
     return corner_edges
 
 
-def create(mesh: Mesh, *, name: str) -> bpy.types.Mesh:
+def create_mesh(mesh: Mesh, *, name: str) -> bpy.types.Mesh:
     """Create a mesh datablock, leaving scene linking and selection to the caller.
 
+    Blender keeps no stored tangents, so it recalculates them from UVs when needed.
     On failure the partial datablock is removed. Existing scene data is untouched.
     """
     mesh.validate()

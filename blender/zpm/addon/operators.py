@@ -9,8 +9,8 @@ import bpy
 from bpy.props import StringProperty
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
-from . import mesh_io
-from .format import FormatError, load, save
+from ..format import FormatError, load, save
+from . import mesh_adapter
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +34,9 @@ class IMPORT_MESH_OT_zpm(bpy.types.Operator, ImportHelper):
         obj = None
         try:
             geometry = load(self.filepath)
-            mesh = mesh_io.create(geometry, name=Path(self.filepath).stem)
+            mesh = mesh_adapter.create_mesh(geometry, name=Path(self.filepath).stem)
             obj = bpy.data.objects.new(mesh.name, mesh)
+            mesh_adapter.apply_vertex_groups(geometry, obj)
             context.collection.objects.link(obj)
         except (OSError, FormatError, RuntimeError) as error:
             if obj is not None:
@@ -72,14 +73,15 @@ class EXPORT_MESH_OT_zpm(bpy.types.Operator, ExportHelper):
 
     def draw(self, context):
         box = self.layout.box()
-        box.label(text="Mesh core only", icon="MESH_DATA")
+        box.label(text="Mesh data only", icon="MESH_DATA")
         box.label(text="Active object, local coordinates, base mesh.")
         box.label(text="Positions, faces, edges, normals, UVs, sharp, seams, creases.")
-        box.label(text="Colors, materials and rig data are not exported.")
+        box.label(text="Colors, tangents, vertex groups and weights too.")
+        box.label(text="Materials and rig data are not exported yet.")
 
     def execute(self, context):
         try:
-            geometry = mesh_io.capture(context.active_object.data)
+            geometry = mesh_adapter.capture_object(context.active_object)
             save(self.filepath, geometry)
         except (OSError, FormatError, RuntimeError) as error:
             self.report({"ERROR"}, str(error))

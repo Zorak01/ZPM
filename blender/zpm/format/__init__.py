@@ -3,17 +3,19 @@
 """Public, Blender-independent mesh API.
 
 All positions are Float32. Index arrays use unsigned 16- or 32-bit integers.
-Saving may reorder elements and snap values by a tiny amount; see optimize.py.
+Saving may reorder elements and snap values by a tiny amount; see processing/.
 """
 
-from .decoder import decode
-from .encoder import encode
-from .file_map import FileRegion, map_file
+from .codec.mesh_codec import decode, encode
+from .container.file_map import FileRegion, map_file
+from .errors import FormatError
 from .files import load, save
-from .model import FormatError, Mesh
-from .optimize import same_geometry, snap_mesh
+from .mesh import ColorLayer, Mesh
+from .processing.comparison import same_geometry
+from .processing.snapping import snap_mesh
 
 __all__ = [
+    "ColorLayer",
     "FileRegion",
     "FormatError",
     "Mesh",

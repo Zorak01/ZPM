@@ -11,12 +11,11 @@ namespace Zpm;
 /// </summary>
 public unsafe struct ZpmMeshView
 {
-    uint _vertexCount, _faceCount, _cornerCount, _edgeCount, _uniqueCount, _arity, _sectionCount, _uvLayerCount;
+    uint _vertexCount, _faceCount, _cornerCount, _edgeCount, _uniqueCount, _arity, _sectionCount;
     float _gridStep;
-    bool _hasGrid, _hasCustomNormals;
+    bool _hasGrid, _hasCustomNormals, _normalsFromFaces;
     byte* _data;
     byte* _limit;
-    byte* _uvNames;
 
     bool _hasRepeats;
     ZpmBackReferences _positionIds;
@@ -40,6 +39,12 @@ public unsafe struct ZpmMeshView
     bool _hasEdgeSharp, _hasEdgeSeam, _hasEdgeCreases, _hasFaceFlat, _hasVertexCreases;
     ZpmColumn _edgeSharp, _edgeSeam, _edgeCreases, _faceFlat, _vertexCreases;
 
+    ZpmCornerStream _tangents;
+    ZpmNames _uvNames, _colorNames, _groupNames;
+    uint* _colorFormats;
+    bool _hasWeights, _hasWeightGroups, _hasWeightValues;
+    ZpmColumn _weightOffsets, _weightGroups, _weightValues;
+
     public readonly uint vertexCount => _vertexCount;
     public readonly uint faceCount => _faceCount;
     public readonly uint cornerCount => _cornerCount;
@@ -49,13 +54,22 @@ public unsafe struct ZpmMeshView
     public readonly uint arity => _arity;
 
     /// <summary>Whether the file holds a normal for every corner.</summary>
-    public readonly bool hasNormals => _normals.isBound;
+    public readonly bool hasNormals => _normals.isBound || _normalsFromFaces;
 
     /// <summary>Whether normals were authored, so an editor should keep them instead of recalculating.</summary>
     public readonly bool hasCustomNormals => _hasCustomNormals;
 
     /// <summary>How many named UV layers the file holds.</summary>
-    public readonly uint uvLayerCount => _uvLayerCount;
+    public readonly uint uvLayerCount => _uvNames.count;
+
+    /// <summary>Whether the file holds a tangent for every corner.</summary>
+    public readonly bool hasTangents => _tangents.isBound;
+
+    /// <summary>How many named color layers the file holds.</summary>
+    public readonly uint colorLayerCount => _colorNames.count;
+
+    /// <summary>How many named vertex groups the file holds.</summary>
+    public readonly uint vertexGroupCount => _groupNames.count;
 
     /// <summary>
     /// Reads the header and directory and points the view at each section, without reading mesh
@@ -94,7 +108,7 @@ public unsafe struct ZpmMeshView
                 return false;
             if (i == 0 && (ZpmSectionKind)kind != ZpmSectionKind.MeshInfo)
                 return false;
-            if (layer != 0 && !IsUvStreamKind((ZpmSectionKind)kind))
+            if (layer != 0 && !IsLayeredKind((ZpmSectionKind)kind))
                 return false;
             if (!view.TryBindSection((ZpmSectionKind)kind, flags, data + offset, limit - offset))
                 return false;
@@ -106,17 +120,45 @@ public unsafe struct ZpmMeshView
 
     static bool IsUvStreamKind(ZpmSectionKind kind) => kind >= ZpmSectionKind.UvStream && kind <= ZpmSectionKind.UvStreamLast;
 
+    static bool IsFirstColorKind(ZpmSectionKind kind) => kind >= ZpmSectionKind.ColorRedGreenStream && kind <= ZpmSectionKind.ColorRedGreenStreamLast;
+
+    static bool IsSecondColorKind(ZpmSectionKind kind) => kind >= ZpmSectionKind.ColorBlueAlphaStream && kind <= ZpmSectionKind.ColorBlueAlphaStreamLast;
+
+    static bool IsLayeredKind(ZpmSectionKind kind) => IsUvStreamKind(kind) || IsFirstColorKind(kind) || IsSecondColorKind(kind);
+
     bool TryBindSection(ZpmSectionKind kind, ZpmSectionFlags flags, byte* section, long available)
     {
-        if (IsUvStreamKind(kind))
+        if (IsLayeredKind(kind))
             return true;
+        if (kind >= ZpmSectionKind.TangentStream && kind <= ZpmSectionKind.TangentStreamLast)
+            return _tangents.TryBindRole(kind - ZpmSectionKind.TangentStream, section, flags, _cornerCount);
         if (kind >= ZpmSectionKind.NormalStream && kind <= ZpmSectionKind.NormalStreamLast)
             return _normals.TryBindRole(kind - ZpmSectionKind.NormalStream, section, flags, _cornerCount);
         switch (kind)
         {
             case ZpmSectionKind.UvNames:
-                _uvNames = section;
-                _uvLayerCount = Unsafe.ReadUnaligned<uint>(section);
+                _uvNames = ZpmNames.Bind(section);
+                return true;
+            case ZpmSectionKind.ColorNames:
+                _colorNames = ZpmNames.Bind(section);
+                return true;
+            case ZpmSectionKind.ColorFormats:
+                _colorFormats = (uint*)section;
+                return true;
+            case ZpmSectionKind.GroupNames:
+                _groupNames = ZpmNames.Bind(section);
+                return true;
+            case ZpmSectionKind.WeightOffsets:
+                _weightOffsets = ZpmColumn.Bind(section, flags);
+                _hasWeights = true;
+                return true;
+            case ZpmSectionKind.WeightGroups:
+                _weightGroups = ZpmColumn.Bind(section, flags);
+                _hasWeightGroups = true;
+                return true;
+            case ZpmSectionKind.WeightValues:
+                _weightValues = ZpmColumn.Bind(section, flags);
+                _hasWeightValues = true;
                 return true;
             case ZpmSectionKind.EdgeSharp:
                 _edgeSharp = ZpmColumn.Bind(section, flags);
@@ -257,7 +299,9 @@ public unsafe struct ZpmMeshView
         int exponent = Unsafe.ReadUnaligned<int>(info + 24);
         _hasGrid = exponent != ZpmLayout.NoGrid;
         _gridStep = _hasGrid ? MathF.ScaleB(1f, exponent) : 0f;
-        _hasCustomNormals = (Unsafe.ReadUnaligned<uint>(info + 28) & ZpmLayout.CustomNormalsFlag) != 0;
+        uint meshFlags = Unsafe.ReadUnaligned<uint>(info + 28);
+        _hasCustomNormals = (meshFlags & ZpmLayout.CustomNormalsFlag) != 0;
+        _normalsFromFaces = (meshFlags & ZpmLayout.NormalsFromFacesFlag) != 0;
         if (_uniqueCount > _vertexCount)
             return false;
         return _arity == 0 ? _cornerCount != 0 || _faceCount == 0 : (ulong)_arity * _faceCount == _cornerCount;
@@ -370,12 +414,15 @@ public unsafe struct ZpmMeshView
     {
         if (_normals.isBound && (_cornerCount == 0 || !_normals.Validate(_limit, _cornerCount, _vertexCount)))
             return false;
+        if (_normalsFromFaces && _normals.isBound)
+            return false;
         return ValidateValues(_hasEdgeSharp, _edgeSharp, _edgeCount, 2)
             && ValidateValues(_hasEdgeSeam, _edgeSeam, _edgeCount, 2)
             && ValidateValues(_hasFaceFlat, _faceFlat, _faceCount, 2)
-            && ValidateValues(_hasEdgeCreases, _edgeCreases, _edgeCount, ZpmLayout.CreaseLimit)
-            && ValidateValues(_hasVertexCreases, _vertexCreases, _vertexCount, ZpmLayout.CreaseLimit)
-            && ValidateUvLayers();
+            && ValidateValues(_hasEdgeCreases, _edgeCreases, _edgeCount, ZpmLayout.UnitLimit)
+            && ValidateValues(_hasVertexCreases, _vertexCreases, _vertexCount, ZpmLayout.UnitLimit)
+            && (!_tangents.isBound || (_cornerCount != 0 && _tangents.Validate(_limit, _cornerCount, _vertexCount)))
+            && ValidateUvLayers() && ValidateColorLayers() && ValidateWeights();
     }
 
     readonly bool ValidateValues(bool isPresent, in ZpmColumn column, uint count, ulong limit) =>
@@ -383,21 +430,125 @@ public unsafe struct ZpmMeshView
 
     readonly bool ValidateUvLayers()
     {
-        if (_uvNames == null)
-            return true;
-        byte* name = _uvNames + ZpmLayout.ColumnCountBytes;
-        for (uint layer = 0; layer < _uvLayerCount; layer++)
+        if (!_uvNames.Validate(_limit))
+            return false;
+        for (uint layer = 0; layer < _uvNames.count; layer++)
         {
-            if (name + ZpmLayout.ColumnCountBytes > _limit)
-                return false;
-            uint length = Unsafe.ReadUnaligned<uint>(name);
-            if (length > (ulong)(_limit - name) - ZpmLayout.ColumnCountBytes)
-                return false;
-            name += ZpmLayout.ColumnCountBytes + length;
             if (!TryGetUvLayer(layer, out ZpmCornerStream stream) || !stream.Validate(_limit, _cornerCount, _vertexCount))
                 return false;
         }
         return true;
+    }
+
+    readonly bool ValidateColorLayers()
+    {
+        if (!_colorNames.Validate(_limit))
+            return false;
+        uint count = _colorNames.count;
+        if (count == 0)
+            return true;
+        if (_colorFormats == null || (ulong)(_limit - (byte*)_colorFormats) < (ulong)count * ZpmLayout.ColumnCountBytes)
+            return false;
+        for (uint layer = 0; layer < count; layer++)
+        {
+            if (!TryGetColorLayer(layer, out ZpmColorLayer found) || !found.Validate(_limit, _cornerCount, _vertexCount))
+                return false;
+        }
+        return true;
+    }
+
+    /// <summary>Walks every offset: only reading them can prove they rise.</summary>
+    readonly bool ValidateWeights()
+    {
+        if (!_groupNames.Validate(_limit))
+            return false;
+        if (!_hasWeights)
+            return true;
+        if (!_hasWeightGroups || !_hasWeightValues || _weightOffsets.count != (ulong)_vertexCount + 1
+            || !_weightOffsets.ValidateLayout(_limit) || !_weightGroups.ValidateLayout(_limit) || !_weightValues.ValidateLayout(_limit))
+            return false;
+        uint total = _weightValues.count;
+        if (_weightGroups.count != total || !_weightValues.ValidateBelow(ZpmLayout.UnitLimit) || !_weightGroups.ValidateBelow(_groupNames.count))
+            return false;
+        uint previous = 0;
+        for (uint i = 0; i < _weightOffsets.count; i++)
+        {
+            uint offset = _weightOffsets.Get(i);
+            if (offset < previous || offset > total)
+                return false;
+            previous = offset;
+        }
+        return previous == total;
+    }
+
+    /// <summary>Finds one color layer by walking the directory. Returns false when it does not exist. Keep the result.</summary>
+    public readonly bool TryGetColorLayer(uint layer, out ZpmColorLayer found)
+    {
+        found = default;
+        if (layer >= _colorNames.count || _colorFormats == null)
+            return false;
+        found.SetFormat(_colorFormats[layer]);
+        for (uint i = 0; i < _sectionCount; i++)
+        {
+            byte* entry = _data + ZpmLayout.FileHeaderBytes + i * ZpmLayout.DirectoryEntryBytes;
+            var kind = (ZpmSectionKind)Unsafe.ReadUnaligned<ushort>(entry);
+            if (entry[3] != layer)
+                continue;
+            uint offset = Unsafe.ReadUnaligned<uint>(entry + 4);
+            if (IsFirstColorKind(kind) && !found.TryBindRole(false, kind - ZpmSectionKind.ColorRedGreenStream, _data + offset, (ZpmSectionFlags)entry[2], _cornerCount))
+                return false;
+            if (IsSecondColorKind(kind) && !found.TryBindRole(true, kind - ZpmSectionKind.ColorBlueAlphaStream, _data + offset, (ZpmSectionFlags)entry[2], _cornerCount))
+                return false;
+        }
+        return found.isComplete;
+    }
+
+    /// <summary>Returns one color from a layer: the corner's on a corner layer, its vertex's otherwise.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public readonly ZpmColor GetCornerColor(in ZpmColorLayer layer, uint corner) => layer.Get(corner, GetCorner(corner));
+
+    /// <summary>Returns one vertex's color from a vertex layer.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public readonly ZpmColor GetVertexColor(in ZpmColorLayer layer, uint vertex) => layer.Get(0, vertex);
+
+    /// <summary>Returns how many weights a vertex has.</summary>
+    public readonly uint GetVertexWeightCount(uint vertex) =>
+        _hasWeights ? _weightOffsets.Get(vertex + 1) - _weightOffsets.Get(vertex) : 0;
+
+    /// <summary>Fills the caller's buffers with a vertex's groups and weights. Returns how many it wrote.</summary>
+    public readonly uint GetVertexWeights(uint vertex, uint* groups, float* weights)
+    {
+        if (!_hasWeights)
+            return 0;
+        uint start = _weightOffsets.Get(vertex);
+        uint count = _weightOffsets.Get(vertex + 1) - start;
+        for (uint i = 0; i < count; i++)
+        {
+            groups[i] = _weightGroups.Get(start + i);
+            weights[i] = _weightValues.Get(start + i) / ZpmLayout.UnitMax;
+        }
+        return count;
+    }
+
+    /// <summary>Finds a vertex group's UTF-8 name. Returns false when out of range.</summary>
+    public readonly bool TryGetVertexGroupName(uint group, out byte* utf8, out uint length) =>
+        _groupNames.TryGet(group, out utf8, out length);
+
+    /// <summary>Finds a UV layer's UTF-8 name. Returns false when out of range.</summary>
+    public readonly bool TryGetUvLayerName(uint layer, out byte* utf8, out uint length) =>
+        _uvNames.TryGet(layer, out utf8, out length);
+
+    /// <summary>Finds a color layer's UTF-8 name. Returns false when out of range.</summary>
+    public readonly bool TryGetColorLayerName(uint layer, out byte* utf8, out uint length) =>
+        _colorNames.TryGet(layer, out utf8, out length);
+
+    /// <summary>Returns one corner's tangent. The file must have tangents.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public readonly ZpmTangent GetCornerTangent(uint corner)
+    {
+        _tangents.GetPair(corner, GetCorner(corner), out uint a, out uint b);
+        ZpmNormal direction = DecodeDirection(a, b & (ZpmLayout.TangentSignBit - 1));
+        return new ZpmTangent(direction.x, direction.y, direction.z, (b & ZpmLayout.TangentSignBit) != 0 ? -1f : 1f);
     }
 
     /// <summary>
@@ -420,7 +571,7 @@ public unsafe struct ZpmMeshView
         return stream.isBound;
     }
 
-    /// <summary>Gets the stream of 12-bit normal values. Returns false when the file has no normals.</summary>
+    /// <summary>Gets the stream of 12-bit normal values. Returns false when the file stores none.</summary>
     public readonly bool TryGetNormalStream(out ZpmCornerStream stream)
     {
         stream = _normals;
@@ -431,7 +582,15 @@ public unsafe struct ZpmMeshView
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public readonly ZpmNormal GetCornerNormal(uint corner)
     {
+        if (_normalsFromFaces)
+            return GetFaceNormalAtCorner(corner);
         _normals.GetPair(corner, GetCorner(corner), out uint a, out uint b);
+        return DecodeDirection(a, b);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static ZpmNormal DecodeDirection(uint a, uint b)
+    {
         float u = a / ZpmLayout.NormalMax * 2f - 1f;
         float v = b / ZpmLayout.NormalMax * 2f - 1f;
         float z = 1f - MathF.Abs(u) - MathF.Abs(v);
@@ -443,6 +602,25 @@ public unsafe struct ZpmMeshView
         }
         float scale = 1f / MathF.Sqrt(u * u + v * v + z * z);
         return new ZpmNormal(u * scale, v * scale, z * scale);
+    }
+
+    /// <summary>Calculates the normal of the face holding this corner, from its corners' positions.</summary>
+    readonly ZpmNormal GetFaceNormalAtCorner(uint corner)
+    {
+        uint start = _arity != 0 ? corner - corner % _arity : _faceStarts.GetLastSetAtOrBefore(corner);
+        uint size = _arity != 0 ? _arity : _faceStarts.GetNextSet(start) - start;
+        ZpmVertex previous = GetVertex(GetCorner(start + size - 1));
+        double x = 0, y = 0, z = 0;
+        for (uint i = 0; i < size; i++)
+        {
+            ZpmVertex current = GetVertex(GetCorner(start + i));
+            x += ((double)previous.y - current.y) * ((double)previous.z + current.z);
+            y += ((double)previous.z - current.z) * ((double)previous.x + current.x);
+            z += ((double)previous.x - current.x) * ((double)previous.y + current.y);
+            previous = current;
+        }
+        double length = Math.Sqrt(x * x + y * y + z * z);
+        return length > 0 ? new ZpmNormal((float)(x / length), (float)(y / length), (float)(z / length)) : default;
     }
 
     /// <summary>Returns one corner's UV from a layer got with TryGetUvLayer.</summary>
@@ -463,10 +641,10 @@ public unsafe struct ZpmMeshView
     public readonly bool IsFaceFlat(uint face) => _hasFaceFlat && _faceFlat.Get(face) != 0;
 
     /// <summary>Returns an edge's crease from 0 to 1.</summary>
-    public readonly float GetEdgeCrease(uint edge) => _hasEdgeCreases ? _edgeCreases.Get(edge) / ZpmLayout.CreaseMax : 0f;
+    public readonly float GetEdgeCrease(uint edge) => _hasEdgeCreases ? _edgeCreases.Get(edge) / ZpmLayout.UnitMax : 0f;
 
     /// <summary>Returns a vertex's crease from 0 to 1.</summary>
-    public readonly float GetVertexCrease(uint vertex) => _hasVertexCreases ? _vertexCreases.Get(vertex) / ZpmLayout.CreaseMax : 0f;
+    public readonly float GetVertexCrease(uint vertex) => _hasVertexCreases ? _vertexCreases.Get(vertex) / ZpmLayout.UnitMax : 0f;
 
     /// <summary>Returns one vertex position. Touches only the blocks that hold it.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

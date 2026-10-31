@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "blender"))
 
 from zpm.format import (
+    ColorLayer,
     FormatError,
     Mesh,
     decode,
@@ -23,8 +24,8 @@ from zpm.format import (
     save,
     snap_mesh,
 )
-from zpm.format.layout import DIRECTORY_ENTRY, FILE_HEADER, SectionKind
-from zpm.format.surface_values import decode_normal, encode_normal
+from zpm.format.codec.quantize import decode_normal, encode_normal
+from zpm.format.container.layout import DIRECTORY_ENTRY, FILE_HEADER, SectionKind
 
 
 def triangle() -> Mesh:
@@ -218,6 +219,77 @@ class CodecTests(unittest.TestCase):
         self.assertEqual(sorted(decoded.uv_layers), ["Detail", "UVMap"])
         self.assertTrue(decoded.has_custom_normals)
         self.assertEqual(sum(decoded.sharp_edges), sum(source.sharp_edges))
+
+    def test_flat_normals_are_calculated_not_stored(self):
+        mesh = grid_mesh(20)
+        faces = len(mesh.corners)
+        mesh.corner_normals = array("f", [0.0, 0.0, -1.0] * faces)
+        names = {region.name for region in map_file(encode(mesh))}
+        self.assertFalse(any(name.startswith("NORMAL_") for name in names))
+        decoded = decode(encode(mesh))
+        self.assertEqual(list(decoded.corner_normals[:3]), [0.0, 0.0, -1.0])
+        mesh.corner_normals = array("f", [0.0, 0.6, -0.8] * faces)
+        names = {region.name for region in map_file(encode(mesh))}
+        self.assertTrue(any(name.startswith("NORMAL_") for name in names))
+        mesh.corner_normals = array("f", [0.0, 0.0, -1.0] * faces)
+        mesh.has_custom_normals = True
+        names = {region.name for region in map_file(encode(mesh))}
+        self.assertTrue(any(name.startswith("NORMAL_") for name in names))
+
+    def test_colors_tangents_and_weights_round_trip(self):
+        source = surface_mesh()
+        source.color_layers = {
+            "Paint": ColorLayer(
+                array("B", [i % 256 for i in range(len(source.corners) * 4)]), True
+            ),
+            "Heat": ColorLayer(
+                array("f", [i * 0.5 for i in range(source.vertex_count * 4)]), False
+            ),
+        }
+        source.corner_tangents = array(
+            "f",
+            [
+                part
+                for i in range(len(source.corners))
+                for part in (1.0, 0.0, 0.0, -1.0 if i % 2 else 1.0)
+            ],
+        )
+        source.vertex_groups = ["Head", "Arm"]
+        offsets = array("I", [0])
+        groups = array("I")
+        values = array("f")
+        for vertex in range(source.vertex_count):
+            for influence in range(vertex % 3):
+                groups.append(influence % 2)
+                values.append(0.25 * (influence + 1))
+            offsets.append(len(values))
+        source.weight_offsets = offsets
+        source.weight_groups = groups
+        source.weight_values = values
+        decoded = decode(encode(source))
+        self.assertTrue(same_geometry(snap_mesh(source), decoded))
+        self.assertEqual(decoded.color_layers["Paint"].values.typecode, "B")
+        self.assertTrue(decoded.color_layers["Heat"].is_float)
+        self.assertEqual(decoded.vertex_groups, ["Head", "Arm"])
+        self.assertEqual(len(decoded.weight_values), len(values))
+
+    def test_identical_weights_compress_and_still_read(self):
+        mesh = grid_mesh(60)
+        mesh.vertex_groups = ["All"]
+        mesh.weight_offsets = array("I", range(mesh.vertex_count + 1))
+        mesh.weight_groups = array("I", [0]) * mesh.vertex_count
+        mesh.weight_values = array("f", [1.0]) * mesh.vertex_count
+        decoded = decode(encode(mesh))
+        self.assertEqual(len(decoded.weight_values), mesh.vertex_count)
+        self.assertEqual(set(decoded.weight_values), {1.0})
+
+    def test_weights_without_groups_are_refused(self):
+        mesh = triangle()
+        mesh.weight_offsets = array("I", [0, 1, 1, 1])
+        mesh.weight_groups = array("I", [0])
+        mesh.weight_values = array("f", [1.0])
+        with self.assertRaises(FormatError):
+            encode(mesh)
 
     def test_normal_error_stays_tiny(self):
         worst = 0.0

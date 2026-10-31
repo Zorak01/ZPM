@@ -15,6 +15,7 @@ static unsafe class Program
 {
     const int MaxFlips = 8;
     const uint MaxFuzzCount = 1 << 24;
+    const uint MaxFuzzWeights = 1 << 22;
 
     static int Main(string[] arguments)
     {
@@ -141,6 +142,46 @@ static unsafe class Program
                 Require(view.IsFaceFlat(f) == (reader.ReadByte() != 0), "flat face");
             for (uint v = 0; v < view.vertexCount; v++)
                 Require(MathF.Abs(view.GetVertexCrease(v) - reader.ReadSingle()) < Tolerance, "vertex crease");
+            VerifyTangentsColorsWeights(view, reader);
+        }
+    }
+
+    static void VerifyTangentsColorsWeights(in ZpmMeshView view, BinaryReader reader)
+    {
+        const float Tolerance = 1e-5f;
+        Require((reader.ReadUInt32() != 0) == view.hasTangents, "has tangents");
+        for (uint c = 0; view.hasTangents && c < view.cornerCount; c++)
+        {
+            ZpmTangent tangent = view.GetCornerTangent(c);
+            Require(MathF.Abs(tangent.x - reader.ReadSingle()) < Tolerance && MathF.Abs(tangent.y - reader.ReadSingle()) < Tolerance
+                && MathF.Abs(tangent.z - reader.ReadSingle()) < Tolerance && tangent.w == reader.ReadSingle(), "tangent");
+        }
+        uint layers = reader.ReadUInt32();
+        Require(layers == view.colorLayerCount, "color layer count");
+        for (uint layer = 0; layer < layers; layer++)
+        {
+            Require(view.TryGetColorLayer(layer, out ZpmColorLayer colors), "color layer");
+            uint owners = colors.isCorner ? view.cornerCount : view.vertexCount;
+            for (uint i = 0; i < owners; i++)
+            {
+                ZpmColor color = colors.isCorner ? view.GetCornerColor(colors, i) : view.GetVertexColor(colors, i);
+                Require(MathF.Abs(color.r - reader.ReadSingle()) < Tolerance && MathF.Abs(color.g - reader.ReadSingle()) < Tolerance
+                    && MathF.Abs(color.b - reader.ReadSingle()) < Tolerance && MathF.Abs(color.a - reader.ReadSingle()) < Tolerance, "color");
+            }
+        }
+        Require(reader.ReadUInt32() == view.vertexGroupCount, "vertex group count");
+        var groups = new uint[view.vertexGroupCount * 4 + 64];
+        var weights = new float[view.vertexGroupCount * 4 + 64];
+        fixed (uint* g = groups)
+        fixed (float* w = weights)
+        {
+            for (uint v = 0; v < view.vertexCount; v++)
+            {
+                uint count = view.GetVertexWeights(v, g, w);
+                Require(count == reader.ReadUInt32() && count == view.GetVertexWeightCount(v), "weight count");
+                for (uint i = 0; i < count; i++)
+                    Require(g[i] == reader.ReadUInt32() && MathF.Abs(w[i] - reader.ReadSingle()) < Tolerance, "weight");
+            }
         }
     }
 
@@ -341,6 +382,25 @@ static unsafe class Program
                 throw new InvalidDataException("Validated file read a bad edge ID");
             view.IsEdgeSharp(i);
             view.GetEdgeCrease(i);
+        }
+        for (uint c = 0; view.hasTangents && c < view.cornerCount; c++)
+            view.GetCornerTangent(c);
+        for (uint layer = 0; layer < view.colorLayerCount; layer++)
+        {
+            if (view.TryGetColorLayer(layer, out ZpmColorLayer colors))
+            {
+                for (uint c = 0; colors.isCorner && c < view.cornerCount; c++)
+                    view.GetCornerColor(colors, c);
+                for (uint v = 0; !colors.isCorner && v < view.vertexCount; v++)
+                    view.GetVertexColor(colors, v);
+            }
+        }
+        for (uint v = 0; v < view.vertexCount; v++)
+        {
+            uint weightCount = view.GetVertexWeightCount(v);
+            if (weightCount > MaxFuzzWeights)
+                throw new InvalidDataException("Fuzzed vertex has too many weights to test");
+            view.GetVertexWeights(v, output, (float*)(output + MaxFuzzWeights));
         }
         for (uint c = 0; view.hasNormals && c < view.cornerCount; c++)
             view.GetCornerNormal(c);

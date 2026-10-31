@@ -40,6 +40,18 @@ public enum ZpmSectionKind : ushort
     UvNames = 79,
     UvStream = 80,
     UvStreamLast = 88,
+    TangentStream = 96,
+    TangentStreamLast = 104,
+    ColorNames = 110,
+    ColorFormats = 111,
+    ColorRedGreenStream = 112,
+    ColorRedGreenStreamLast = 120,
+    ColorBlueAlphaStream = 128,
+    ColorBlueAlphaStreamLast = 136,
+    GroupNames = 144,
+    WeightOffsets = 145,
+    WeightGroups = 146,
+    WeightValues = 147,
 }
 
 /// <summary>A section's place in a corner stream, added to the stream's first kind.</summary>
@@ -81,7 +93,9 @@ public static class ZpmLayout
     public const int NoGrid = int.MinValue;
     public const float NormalMax = 4095f;
     public const float UvGridScale = 1048576f;
-    public const float CreaseMax = 65535f;
-    public const uint CreaseLimit = 65536;
+    public const float UnitMax = 65535f;
+    public const uint UnitLimit = 65536;
+    public const uint TangentSignBit = 4096;
     public const uint CustomNormalsFlag = 1;
+    public const uint NormalsFromFacesFlag = 2;
 }

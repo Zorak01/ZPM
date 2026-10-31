@@ -7,7 +7,7 @@ Within a block, value[j] = base + slope * j + residual[j], in wrapping arithmeti
 
 from array import array
 
-from .layout import (
+from ..container.layout import (
     BLOCK_SIZE,
     BLOCKS_PER_GROUP,
     COLUMN_COUNT,
@@ -17,7 +17,7 @@ from .layout import (
     SectionFlags,
     align,
 )
-from .model import FormatError
+from ..errors import FormatError
 
 _OVER_WIDTH = MAX_WIDTH + 1
 

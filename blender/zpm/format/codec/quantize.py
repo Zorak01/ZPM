@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Stored forms of surface values: 12-bit normal directions and grid UVs."""
+"""Stored forms of values: directions, UVs, colors, creases and weights."""
 
 import math
 
-from .layout import CREASE_MAX, NORMAL_BITS, UV_GRID_BITS
+from ..container.layout import COLOR_GRID_BITS, NORMAL_BITS, UNIT_MAX, UV_GRID_BITS
 
 _NORMAL_MAX = (1 << NORMAL_BITS) - 1
 _UV_SCALE = 1 << UV_GRID_BITS
+_COLOR_SCALE = 1 << COLOR_GRID_BITS
+_TANGENT_SIGN_BIT = 1 << NORMAL_BITS
 _INT32_MAX = 2**31 - 1
 
 
@@ -52,12 +54,34 @@ def decode_uv(stored: int) -> float:
     return stored / _UV_SCALE
 
 
-def encode_crease(value: float) -> int:
-    """Return a crease as 16 bits. Non-finite values become 0; range is 0 to 1."""
+def encode_unit(value: float) -> int:
+    """Return a 0 to 1 value, like a crease or weight, as 16 bits."""
     if not math.isfinite(value):
         return 0
-    return max(0, min(CREASE_MAX, round(value * CREASE_MAX)))
+    return max(0, min(UNIT_MAX, round(value * UNIT_MAX)))
 
 
-def decode_crease(stored: int) -> float:
-    return stored / CREASE_MAX
+def decode_unit(stored: int) -> float:
+    return stored / UNIT_MAX
+
+
+def encode_tangent(x: float, y: float, z: float, sign: float) -> tuple:
+    """Return a tangent as a direction, with its sign above the second value."""
+    a, b = encode_normal(x, y, z)
+    return a, b | (_TANGENT_SIGN_BIT if sign < 0 else 0)
+
+
+def decode_tangent(a: int, b: int) -> tuple:
+    sign = -1.0 if b & _TANGENT_SIGN_BIT else 1.0
+    return (*decode_normal(a, b & (_TANGENT_SIGN_BIT - 1)), sign)
+
+
+def encode_color_channel(value: float) -> int:
+    """Return a float color channel on a grid of 1 / 2^16. Allows values above 1."""
+    if not math.isfinite(value):
+        return 0
+    return max(-_INT32_MAX, min(_INT32_MAX, round(value * _COLOR_SCALE)))
+
+
+def decode_color_channel(stored: int) -> float:
+    return stored / _COLOR_SCALE

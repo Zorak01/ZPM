@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Write the largest mesh of each GLB as a ZMS1 fixture plus NAME.surface.
 
-blender --background --factory-startup --python blender_to_zms.py -- OUT a.glb ...
+blender --background --factory-startup --python blender_to_zms.py -- OUT a.glb b.obj ...
 """
 
 import struct
@@ -54,7 +54,10 @@ def main():
     for name in arguments[1:]:
         source = Path(name)
         bpy.ops.wm.read_factory_settings(use_empty=True)
-        bpy.ops.import_scene.gltf(filepath=str(source))
+        if source.suffix.lower() == ".obj":
+            bpy.ops.wm.obj_import(filepath=str(source))
+        else:
+            bpy.ops.import_scene.gltf(filepath=str(source))
         meshes = [mesh for mesh in bpy.data.meshes if mesh.vertices]
         if not meshes:
             print(f"{source.name}: no mesh", flush=True)

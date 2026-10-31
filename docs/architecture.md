@@ -5,21 +5,19 @@ reader, and nothing depends on benchmarks.
 
 | Path | Responsibility |
 | --- | --- |
-| `blender/zpm/operators.py` | File selection, user reports, scene linking and menus |
-| `blender/zpm/mesh_io.py` | Converts between Blender meshes and `Mesh`, and holds Blender-only rules |
-| `blender/zpm/format/model.py` | `Mesh` and `FormatError` |
-| `blender/zpm/format/layout.py` | Byte layout constants and section kinds |
-| `blender/zpm/format/column.py`, `rank_mask.py`, `select_bits.py` | The three storage types |
-| `blender/zpm/format/encoder.py`, `decoder.py` | `Mesh` to bytes and back |
-| `blender/zpm/format/optimize.py` | Position snapping, reordering, and the geometry check |
-| `blender/zpm/format/surface_values.py` | Stored forms of normals, UVs and creases |
-| `blender/zpm/format/topology.py` | Face facts both directions share |
-| `blender/zpm/format/files.py` | Bounded reads and atomic writes |
-| `blender/zpm/format/file_map.py` | Names every byte of a file |
+| `blender/zpm/addon/operators.py` | File selection, user reports, scene linking and menus |
+| `blender/zpm/addon/mesh_adapter.py` | Converts between Blender objects and `Mesh`, and holds Blender-only rules |
+| `blender/zpm/format/__init__.py` | The public API: `load`, `save`, `encode`, `decode`, `Mesh` |
+| `blender/zpm/format/mesh.py`, `errors.py`, `files.py` | The data model, the one error type, bounded reads and atomic writes |
+| `blender/zpm/format/container/` | The file's outer structure: layout constants, labelled sections, the byte map |
+| `blender/zpm/format/storage/` | Storage types readable by index: columns, rank masks, select bits, back references, corner streams, name tables |
+| `blender/zpm/format/codec/` | One module per kind of data, holding both directions: positions, corners, edges, surface, colors, weights |
+| `blender/zpm/format/processing/` | Whole-mesh changes and checks: snapping, reordering, comparison, face facts |
 | `runtime/csharp/Zpm/` | Runtime reader: by index, no allocation |
 | `tools/zpm_map.py` | Prints a file's byte map |
 | `benchmarks/mesh-core/` | Frozen earlier codec, kept as the comparison |
 | `benchmarks/mesh-read/` | Measures the runtime reader next to that codec |
+| `benchmarks/format-compare/` | Measures ZPM against Draco and meshoptimizer |
 
 `zpm.format` is the portable entry point and never imports `bpy`. It runs in ordinary Python.
 

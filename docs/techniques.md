@@ -157,6 +157,15 @@ improved it, because Blender's own values carry about 0.03° of error, so it cos
 
 **Prior art:** octahedral normals are common in engines and formats.
 
+### Flat normals are not stored at all
+
+**Problem:** On flat-shaded meshes, like scans and hard surfaces, every corner's normal equals its face's.
+Other formats store them anyway.
+
+**Technique:** If normals were not authored and each is within 0.1° of its face's, the file stores none.
+A reader calculates a normal from the face's corners when asked, using no extra memory, at the cost
+of reading those corners.
+
 ### Two ways to store per-corner data
 
 **Problem:** A normal or UV exists per corner, which is far more than per vertex.
@@ -178,6 +187,27 @@ Reading is one divide. Layers keep their names, and tiles beyond 0-1 work.
 
 **Technique:** Sharp, seam and flat flags are ordinary columns, so an all-zero block stores no data at all,
 and a flag that is never set has no section. Creases are 16 bits.
+
+### Colors that stay exact, and float colors on a grid
+
+**Technique:** Color layers can be per vertex or per corner, as Blender holds them. An RGBA8 color packs into
+one pair of 16-bit values, so it uses the same stream as normals and UVs and stays exact. Float colors keep
+values above 1, on a grid of 1 / 2^16, and take two streams.
+
+### Tangents with their sign in a spare bit
+
+**Technique:** A tangent is a 12-bit direction like a normal, and the sign needs one bit, so it sits just
+above the second value. Tangents come from the first UV layer. Blender can't calculate them for n-gons, so
+those meshes store none. This adds real size for now: about 20% on `DamagedHelmet`.
+
+### Vertex groups and weights with no padding
+
+**Problem:** Most formats give every vertex a fixed four or eight weight slots, whether it needs them or not.
+
+**Technique:** Any number of weights per vertex, nothing padded. A column of offsets says where each vertex's
+weights start, and because offsets climb steadily, they compress well. A vertex's weights are one lookup
+away. **Not optimized yet:** weights are the largest part of `CesiumMan` and `werewolf`, so they're a clear
+target for the optimize round.
 
 ## The file itself
 
@@ -209,6 +239,10 @@ reads thousands of deliberately corrupted files: one early run caught a real cra
 | 16-bit position grid | Under 1% over 20-bit | 16x larger error for almost nothing |
 | 14-bit normals | No real accuracy gain over 12-bit | Blender's values already carry 0.03° error |
 | Storing every normal per corner | 3x larger on smooth meshes | One value per vertex is far smaller |
+| Restarting neighbour prediction every 64 or 256 faces | Positions up to 3x larger | Restarts throw away too much |
+| Tighter face walks: buckets, depth first, greedy | Best on bunny only, 1.1x | Today's walk wins on 5 of 6 meshes |
+| Outlier patches on corner distances | Under 3% | Distances are large everywhere, not just a few |
+| Merging exact duplicate vertices | 1.31x on samurai | Vertices must stay as Blender has them |
 
 ## What we can and can't claim
 

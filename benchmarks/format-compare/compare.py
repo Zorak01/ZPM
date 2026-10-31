@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Compare ZPM with Draco and meshoptimizer on the same data, at the same precision.
 
-python compare.py --zpm-run RUN_DIR --meshopt NODE_MODULES/meshoptimizer
+python compare.py --fixtures DIR --meshopt NODE_MODULES/meshoptimizer
 
 Needs DracoPy and zstandard installed, and a built mesh-read benchmark. Each mesh
 comes from a mesh-read run's surface.zpm, so every format holds what ZPM kept.
@@ -11,6 +11,7 @@ Only triangle meshes are compared, because Draco and meshoptimizer store only tr
 import argparse
 import base64
 import datetime as dt
+import importlib.util
 import json
 import math
 import shutil
@@ -27,8 +28,8 @@ import zstandard
 ROOT = Path(__file__).resolve().parent
 REPOSITORY = ROOT.parents[1]
 READER = REPOSITORY / "benchmarks/mesh-read/reference/bin/Release/net10.0/MeshRead.dll"
-ROUNDS = 9
-RUNS_PER_ROUND = 25
+ROUNDS = 5
+RUNS_PER_ROUND = 3
 POSITION_BITS = 20
 NORMAL_BITS = 12
 UV_BITS = 20
@@ -38,13 +39,30 @@ EDGE_REGIONS = ("EDGE_",)
 
 sys.path.insert(0, str(REPOSITORY / "blender"))
 
-from zpm.format import decode, map_file  # noqa: E402
-from zpm.format.optimize import grid_exponent  # noqa: E402
-from zpm.format.surface_values import decode_normal, encode_normal  # noqa: E402
+from zpm.format import decode, encode, map_file  # noqa: E402
+from zpm.format.codec.quantize import decode_normal, encode_normal  # noqa: E402
+from zpm.format.container.layout import MESH_INFO  # noqa: E402
+from zpm.format.processing.snapping import grid_exponent  # noqa: E402
 
 
-def to_vertices(mesh) -> dict:
-    """Merge corners into the unique vertices Draco and meshoptimizer expect."""
+def fan_triangles(mesh) -> list:
+    """Return the corner indices of each face split into triangles."""
+    sizes = [mesh.arity] * mesh.face_count if mesh.arity else mesh.face_sizes
+    triangles = []
+    at = 0
+    for size in sizes:
+        for offset in range(1, size - 1):
+            triangles += (at, at + offset, at + offset + 1)
+        at += size
+    return triangles
+
+
+def to_vertices(mesh, keep_vertices: bool) -> dict:
+    """Build the vertices Draco and meshoptimizer expect.
+
+    Corners merge when they hold the same values. With keep_vertices they must also be
+    the same Blender vertex, so these formats hold every vertex ZPM holds.
+    """
     exponent = grid_exponent(mesh.positions)
     step = math.ldexp(1.0, exponent)
     uv_name = sorted(mesh.uv_layers)[0] if mesh.uv_layers else None
@@ -52,7 +70,7 @@ def to_vertices(mesh) -> dict:
     normals = mesh.corner_normals
     known = {}
     rows = []
-    indices = []
+    corner_indices = {}
     for corner, vertex in enumerate(mesh.corners):
         point = tuple(
             round(mesh.positions[vertex * 3 + axis] / step) for axis in range(3)
@@ -63,12 +81,13 @@ def to_vertices(mesh) -> dict:
             if uvs
             else ()
         )
-        key = (point, normal, uv)
+        key = (point, normal, uv, vertex if keep_vertices else 0)
         index = known.get(key)
         if index is None:
             index = known[key] = len(rows)
             rows.append(key)
-        indices.append(index)
+        corner_indices[corner] = index
+    indices = [corner_indices[corner] for corner in fan_triangles(mesh)]
     return {
         "positions": np.array([row[0] for row in rows], dtype=np.int32),
         "normals": np.array([row[1] for row in rows], dtype=np.uint16),
@@ -76,6 +95,21 @@ def to_vertices(mesh) -> dict:
         "indices": np.array(indices, dtype=np.uint32),
         "step": step,
     }
+
+
+def load_mesh_read_module():
+    """Reuse the fixture loaders of the mesh-read benchmark."""
+    spec = importlib.util.spec_from_file_location(
+        "mesh_read_run", REPOSITORY / "benchmarks/mesh-read/run.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_mesh_read = load_mesh_read_module()
+load_fixture = _mesh_read.load_fixture
+load_surface = _mesh_read.load_surface
 
 
 def median_time_us(work) -> float:
@@ -115,6 +149,26 @@ def measure_draco(vertices: dict) -> dict:
     }
 
 
+def sections_mesh_info(data: bytes) -> bytes:
+    region = next(r for r in map_file(data) if r.name == "MESH_INFO")
+    return data[region.offset : region.offset + region.length]
+
+
+def measure_draco_geometry(mesh) -> int:
+    """Draco holding only positions and triangles, to match computed normals."""
+    positions = np.array(mesh.positions, dtype=np.float32).reshape(-1, 3)
+    corners = np.array(mesh.corners, dtype=np.uint32)
+    triangles = corners[fan_triangles(mesh)].reshape(-1, 3)
+    return len(
+        DracoPy.encode(
+            positions,
+            triangles,
+            quantization_bits=POSITION_BITS,
+            compression_level=10,
+        )
+    )
+
+
 def measure_meshopt(vertices: dict, package: Path, work: Path, node: str) -> dict:
     path = work / "mesh.bin"
     header = struct.pack(
@@ -145,7 +199,7 @@ def measure_meshopt(vertices: dict, package: Path, work: Path, node: str) -> dic
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--zpm-run", type=Path, required=True)
+    parser.add_argument("--fixtures", type=Path, required=True, nargs="+")
     parser.add_argument("--meshopt", type=Path, required=True)
     args = parser.parse_args()
     node = shutil.which("node")
@@ -155,12 +209,21 @@ def main():
     work = ROOT / "runs" / run_id
     work.mkdir(parents=True)
     rows = []
-    for path in sorted(args.zpm_run.glob("packets/*/surface.zpm")):
-        data = path.read_bytes()
-        mesh = decode(data)
-        if mesh.arity != 3 and any(size != 3 for size in mesh.face_sizes):
+    fixtures = [
+        path for folder in args.fixtures for path in sorted(folder.glob("*.zms"))
+    ]
+    for fixture in fixtures:
+        source = load_surface(fixture.with_suffix(".surface"), load_fixture(fixture))
+        if source is None or not source.corners:
             continue
-        vertices = to_vertices(mesh)
+        clock = time.perf_counter()
+        data = encode(source)
+        encode_seconds = time.perf_counter() - clock
+        path = work / f"{fixture.stem}.zpm"
+        path.write_bytes(data)
+        mesh = decode(data)
+        vertices = to_vertices(mesh, False)
+        same_vertices = to_vertices(mesh, True)
         edge_bytes = sum(
             region.length
             for region in map_file(data)
@@ -177,7 +240,10 @@ def main():
         )
         rows.append(
             {
-                "mesh": path.parent.name,
+                "mesh": fixture.stem,
+                "encode_seconds": encode_seconds,
+                "faces": mesh.face_count,
+                "kept_vertices": mesh.vertex_count,
                 "corners": len(mesh.corners),
                 "merged_vertices": len(vertices["positions"]),
                 "has_uvs": vertices["uvs"] is not None,
@@ -185,15 +251,22 @@ def main():
                 "zpm_bytes_without_edges": len(data) - edge_bytes,
                 "zpm_zstd_bytes": len(zstd.compress(data)),
                 **reads,
+                "normals_from_faces": bool(
+                    MESH_INFO.unpack(sections_mesh_info(data))[7] & 2
+                ),
                 "draco": measure_draco(vertices),
+                "draco_geometry_only": measure_draco_geometry(mesh),
                 "meshopt": measure_meshopt(vertices, args.meshopt, work, node),
+                "draco_same_vertices": measure_draco(same_vertices),
+                "meshopt_same_vertices": measure_meshopt(
+                    same_vertices, args.meshopt, work, node
+                ),
             }
         )
-        print(f"Measured {path.parent.name}", flush=True)
+        print(f"Measured {fixture.stem}", flush=True)
     metadata = {
         "run_id": run_id,
         "started_utc": started.isoformat(),
-        "source_run": args.zpm_run.name,
         "draco": DracoPy.__name__,
         "position_bits": POSITION_BITS,
         "normal_bits": NORMAL_BITS,

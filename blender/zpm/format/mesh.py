@@ -5,9 +5,7 @@
 from array import array
 from dataclasses import dataclass, field
 
-
-class FormatError(ValueError):
-    """A mesh or file does not satisfy the supported format contract."""
+from .errors import FormatError
 
 
 def _empty_floats() -> array:
@@ -16,6 +14,25 @@ def _empty_floats() -> array:
 
 def _empty_flags() -> array:
     return array("B")
+
+
+def _empty_indices() -> array:
+    return array("I")
+
+
+@dataclass(slots=True)
+class ColorLayer:
+    """One named color layer: four channels per vertex, or per corner when is_corner.
+
+    values holds bytes for RGBA8, or Float32 for RGBA32F.
+    """
+
+    values: array
+    is_corner: bool
+
+    @property
+    def is_float(self) -> bool:
+        return self.values.typecode == "f"
 
 
 @dataclass(slots=True)
@@ -35,6 +52,11 @@ class Mesh:
     sharp_edges, seam_edges: one 0 or 1 byte per edge.
     flat_faces: one 0 or 1 byte per face.
     edge_creases, vertex_creases: one Float32 from 0 to 1 per edge or vertex.
+    corner_tangents: flat XYZW Float32, one per corner; W is the bitangent sign.
+    color_layers: layer name to ColorLayer.
+    vertex_groups: group names; a weight's group is an index into this list.
+    weight_offsets: where each vertex's weights start, plus one final total.
+    weight_groups, weight_values: one group index and one Float32 per weight.
 
     Arrays remain mutable and are owned by the caller. Call validate after edits.
     """
@@ -52,6 +74,12 @@ class Mesh:
     flat_faces: array = field(default_factory=_empty_flags)
     edge_creases: array = field(default_factory=_empty_floats)
     vertex_creases: array = field(default_factory=_empty_floats)
+    corner_tangents: array = field(default_factory=_empty_floats)
+    color_layers: dict = field(default_factory=dict)
+    vertex_groups: list = field(default_factory=list)
+    weight_offsets: array = field(default_factory=_empty_indices)
+    weight_groups: array = field(default_factory=_empty_indices)
+    weight_values: array = field(default_factory=_empty_floats)
 
     @property
     def vertex_count(self) -> int:
@@ -106,6 +134,8 @@ class Mesh:
             ("Flat faces", self.flat_faces, self.face_count),
             ("Edge creases", self.edge_creases, self.edge_count),
             ("Vertex creases", self.vertex_creases, self.vertex_count),
+            ("Corner tangents", self.corner_tangents, len(self.corners) * 4),
+            ("Weight offsets", self.weight_offsets, self.vertex_count + 1),
         )
         for name, buffer, length in expected:
             if buffer and len(buffer) != length:
@@ -113,3 +143,22 @@ class Mesh:
         for name, layer in self.uv_layers.items():
             if len(layer) != len(self.corners) * 2:
                 raise FormatError(f"UV layer {name} does not match the corner count")
+        for name, layer in self.color_layers.items():
+            owners = len(self.corners) if layer.is_corner else self.vertex_count
+            if len(layer.values) != owners * 4:
+                raise FormatError(f"Color layer {name} does not match the mesh")
+        self._validate_weights()
+
+    def _validate_weights(self) -> None:
+        if len(self.weight_groups) != len(self.weight_values):
+            raise FormatError("Weight groups and values do not match")
+        if self.weight_offsets:
+            offsets = self.weight_offsets
+            if offsets[0] != 0 or offsets[-1] != len(self.weight_values):
+                raise FormatError("Weight offsets do not cover every weight")
+            if any(a > b for a, b in zip(offsets, offsets[1:], strict=False)):
+                raise FormatError("Weight offsets must rise")
+        elif self.weight_values:
+            raise FormatError("Weights have no offsets")
+        if self.weight_groups and max(self.weight_groups) >= len(self.vertex_groups):
+            raise FormatError("A weight references a missing vertex group")

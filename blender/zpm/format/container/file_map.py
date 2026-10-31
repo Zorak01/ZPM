@@ -2,10 +2,11 @@
 
 """Names every byte of a ZPM file, so a file can be inspected and its layout proven."""
 
-import struct
 from dataclasses import dataclass
 
-from .column import column_length
+from ..errors import FormatError
+from ..storage.column import column_length
+from ..storage.names import names_length
 from .layout import (
     DIRECTORY_ENTRY,
     FILE_HEADER,
@@ -15,7 +16,6 @@ from .layout import (
     SectionKind,
     align,
 )
-from .model import FormatError
 
 _CONSTANT_BYTES = 4
 _FIXED_LENGTHS = {
@@ -34,7 +34,15 @@ _RAW_KINDS = {
     SectionKind.NORMAL_EXCEPTION_MASK,
     SectionKind.UV_REPEAT_MASK,
     SectionKind.UV_EXCEPTION_MASK,
+    SectionKind.TANGENT_REPEAT_MASK,
+    SectionKind.TANGENT_EXCEPTION_MASK,
+    SectionKind.COLOR_FORMATS,
+    SectionKind.COLOR_RG_REPEAT_MASK,
+    SectionKind.COLOR_RG_EXCEPTION_MASK,
+    SectionKind.COLOR_BA_REPEAT_MASK,
+    SectionKind.COLOR_BA_EXCEPTION_MASK,
 }
+_NAME_KINDS = {SectionKind.UV_NAMES, SectionKind.COLOR_NAMES, SectionKind.GROUP_NAMES}
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,19 +55,11 @@ class FileRegion:
     flags: SectionFlags = SectionFlags.NONE
 
 
-def _names_length(section: bytes) -> int:
-    count = struct.unpack_from("<I", section)[0]
-    at = 4
-    for _ in range(count):
-        at += 4 + struct.unpack_from("<I", section, at)[0]
-    return at
-
-
 def _used_length(kind: SectionKind, flags: SectionFlags, section: bytes) -> int:
     if kind in _RAW_KINDS:
         return len(section)
-    if kind is SectionKind.UV_NAMES:
-        return _names_length(section)
+    if kind in _NAME_KINDS:
+        return names_length(section)
     if kind in _FIXED_LENGTHS:
         return _FIXED_LENGTHS[kind]
     return column_length(section, flags)

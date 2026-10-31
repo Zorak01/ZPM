@@ -6,10 +6,10 @@ import os
 import tempfile
 from pathlib import Path
 
-from .decoder import decode
-from .encoder import encode
-from .layout import DEFAULT_MAX_BYTES
-from .model import FormatError, Mesh
+from .codec.mesh_codec import decode, encode
+from .container.layout import DEFAULT_MAX_BYTES
+from .errors import FormatError
+from .mesh import Mesh
 
 
 def load(path: str | Path, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:

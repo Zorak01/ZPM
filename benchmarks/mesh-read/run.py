@@ -111,6 +111,24 @@ def write_surface(mesh: Mesh, path: Path) -> None:
         stream.write(bytes(flat))
         creases = mesh.vertex_creases or array("f", [0.0]) * mesh.vertex_count
         stream.write(creases.tobytes())
+        stream.write(struct.pack("<I", 1 if mesh.corner_tangents else 0))
+        stream.write(mesh.corner_tangents.tobytes())
+        stream.write(struct.pack("<I", len(mesh.color_layers)))
+        for name in sorted(mesh.color_layers):
+            layer = mesh.color_layers[name]
+            values = layer.values
+            if not layer.is_float:
+                values = array("f", [value / 255 for value in values])
+            stream.write(values.tobytes())
+        stream.write(struct.pack("<I", len(mesh.vertex_groups)))
+        for vertex in range(mesh.vertex_count):
+            start = mesh.weight_offsets[vertex] if mesh.weight_offsets else 0
+            end = mesh.weight_offsets[vertex + 1] if mesh.weight_offsets else 0
+            stream.write(struct.pack("<I", end - start))
+            for at in range(start, end):
+                stream.write(
+                    struct.pack("<If", mesh.weight_groups[at], mesh.weight_values[at])
+                )
 
 
 def write_fixture(mesh: Mesh, path: Path) -> None:

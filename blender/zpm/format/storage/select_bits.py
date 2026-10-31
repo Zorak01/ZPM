@@ -4,7 +4,7 @@
 
 import struct
 
-from .model import FormatError
+from ..errors import FormatError
 
 _BITS_PER_WORD = 64
 _SET_BITS_PER_SELECT = 64

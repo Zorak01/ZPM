@@ -12,9 +12,11 @@ bytes, with no decode step, no allocation and nothing else touched.
 
 The file holds the same shape, not always the same bytes as the source.
 
-- **Normals become 12-bit directions.** The largest error measured was about 0.06°.
+- **Normals become 12-bit directions.** The largest error measured was about 0.06°. Normals that were
+  not authored, and are within 0.1° of their own face's, are not stored: readers calculate them.
 - **UVs snap to a grid of 1 / 2^20**, about 1/256 of a texel on a 4K texture. Non-finite values become 0.
-- **Creases become 16 bits.**
+- **Creases and weights become 16 bits.** Float colors snap to a grid of 1 / 2^16. RGBA8 colors stay exact.
+- **Tangents become 12-bit directions,** with their sign kept. Blender recalculates its own on import.
 - **Positions snap to a grid.** The step is a power of two, at most 1 / 2^20 of the model's largest
   size, so no point moves more than 1 / 2^21 of it: about 1 micron on a 2 m character. Equal
   positions stay equal, so shared points cannot crack apart. Snapping twice changes nothing. A mesh
@@ -47,7 +49,7 @@ Flag values: `1` the column stores slopes, `2` a palette index holds a sign in i
 
 | Kind | Name | Type | Holds |
 | ---: | --- | --- | --- |
-| 1 | `MESH_INFO` | 8 × 32-bit | Vertex, face, corner, edge and unique-position counts; shared face size or 0; position grid exponent; flags (1 = authored normals) |
+| 1 | `MESH_INFO` | 8 × 32-bit | Vertex, face, corner, edge and unique-position counts; shared face size or 0; position grid exponent; flags (1 = authored normals, 2 = normals calculated from faces) |
 | 2 | `POSITION_REPEAT_MASK` | Rank mask | Marks vertices that repeat an earlier position |
 | 3 | `POSITION_BACK_DISTANCES` | Column | How far each marked vertex reaches back from the newest unique position |
 | 12–14 | `POSITION_GRID_X/Y/Z` | Column | Position as a whole number of grid steps |
@@ -75,6 +77,14 @@ Flag values: `1` the column stores slopes, `2` a palette index holds a sign in i
 | 64–72 | `NORMAL_*` | Corner stream | Two 12-bit values per corner |
 | 79 | `UV_NAMES` | UInt32 count, then length + UTF-8 | Layer names; a name's position is its layer number |
 | 80–88 | `UV_*` | Corner stream, one per layer | Two grid integers per corner |
+| 96–104 | `TANGENT_*` | Corner stream | A 12-bit direction per corner, with the bitangent sign as bit 12 of the second value |
+| 110 | `COLOR_NAMES` | Name table | Layer names; a name's position is its layer number |
+| 111 | `COLOR_FORMATS` | UInt32 per layer | 1 = per corner, 2 = float channels |
+| 112–120 | `COLOR_RG_*` | Corner stream, one per layer | RGBA8: red + green and blue + alpha, as two 16-bit values. Float: red and green |
+| 128–136 | `COLOR_BA_*` | Corner stream, one per float layer | Float blue and alpha |
+| 144 | `GROUP_NAMES` | Name table | Vertex group names; a weight's group is an index here |
+| 145 | `WEIGHT_OFFSETS` | Column | Where each vertex's weights start, plus a final total |
+| 146–147 | `WEIGHT_GROUPS`, `WEIGHT_VALUES` | Column | A group index and a 16-bit value per weight |
 
 Unknown kinds are refused. Each axis uses grid integers, a constant, a palette with indices, or bits.
 Sections for data a mesh lacks, or that is all zero, are absent.
@@ -90,6 +100,8 @@ block), slopes (Int8 per block, if flagged), widths (byte per block, 0–32), pa
 UInt32 payload offset per 8 blocks, then residuals packed low bit first. A full block's payload is
 exactly `width × 8` bytes, so a block's offset is its group's offset plus the widths before it,
 which one 64-bit multiply sums.
+
+**Name table.** A UInt32 count, then a UInt32 length and UTF-8 bytes per name.
 
 **Rank mask.** One UInt64 per 64 elements, then one UInt32 per word counting unmarked elements
 before it. A popcount gives any element's rank in constant time.
@@ -129,11 +141,10 @@ them. The benchmark fuzzes this on every run.
 
 | Code | Does |
 | --- | --- |
-| `blender/zpm/format/encoder.py` | The one writer |
-| `blender/zpm/format/optimize.py` | Position snapping, reordering, and the geometry check |
-| `blender/zpm/format/decoder.py` | Expands a whole file into a `Mesh`, for editing tools |
-| `blender/zpm/format/file_map.py` | Names every byte of a file |
-| `blender/zpm/format/surface_values.py` | Stored forms of normals, UVs and creases |
+| `blender/zpm/format/codec/mesh_codec.py` | The one writer, and expanding a file into a `Mesh` for editing |
+| `blender/zpm/format/processing/` | Snapping, reordering and the geometry check |
+| `blender/zpm/format/container/file_map.py` | Names every byte of a file |
+| `blender/zpm/format/codec/quantize.py` | Stored forms of directions, UVs, colors, creases and weights |
 | `runtime/csharp/Zpm/ZpmMeshView.cs` | Runtime reader: by index, no allocation |
 
 ## Limits

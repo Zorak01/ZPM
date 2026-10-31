@@ -4,7 +4,7 @@ recursive-include tests *.py
 recursive-include tools *.py *.ps1
 recursive-include benchmarks/mesh-core/reference *.cs *.csproj *.json *.Config
 recursive-include benchmarks/mesh-core/fixtures *.json *.zms
-recursive-include benchmarks/mesh-core/results *.json *.csv *.cs *.svg *.html
+recursive-include benchmarks/mesh-core/results *.json *.csv *.cs *.svg
 include benchmarks/mesh-core/README.md benchmarks/mesh-core/run.py
 global-exclude *.py[cod]
 prune benchmarks/mesh-core/reference/bin

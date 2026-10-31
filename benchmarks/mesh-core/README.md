@@ -3,7 +3,7 @@
 Measured **2026-10-30, 23:32:20 EDT** (run `20261031T033106Z`).
 Published with the original run date; reorganizing the repository is not a new run.
 
-[Interactive charts](results/index.html) (download and open locally) |
+[Storage chart](results/storage.svg) |
 [Raw JSON](results/20261031T033106Z.json) |
 [CSV](results/20261031T033106Z.csv) |
 [Measured source](results/20261031T033106Z.cs)
@@ -73,8 +73,6 @@ reader or Blender extension.
   amortized timing overhead. Neither is peak process RAM.
 - Profiles ran in fixed order, without randomized trials or confidence intervals.
   Tiny timings are sensitive to the host and should not be treated as guarantees.
-- The fastest eligible profile in the interactive chart is selected after
-  measurement; that chart is exploratory, not an independent speed prediction.
 
 The GLB-derived fixture contains positions and ordered triangle indices from
 Zorak's mesh asset, with a derived edge list. It excludes UVs, colors, normals,
@@ -113,7 +111,7 @@ python tools/render_benchmark_chart.py
 | `fixtures/*.zms` | Exact benchmark inputs, approximately 7.9 MB total |
 | `results/*.json`, `*.csv` | Public measurements and captured environment |
 | `results/*.cs` | Exact measured source snapshots |
-| `results/index.html` | Offline interactive size, time and memory charts |
+| `results/storage.svg` | Static stored-size chart generated from the measurements |
 
 Fixtures and reference code are provided under the repository's GPL-3.0-or-later
 license. The source asset hash is recorded in the manifest; no external download

@@ -82,7 +82,7 @@ See the [packet contract](docs/mesh-core.md) and [architecture](docs/architectur
 ## Public benchmarks
 
 [Results and methodology](benchmarks/mesh-core/README.md) |
-[Interactive charts](benchmarks/mesh-core/results/index.html) (open locally) |
+[Storage chart](benchmarks/mesh-core/results/storage.svg) |
 [Raw measurements](benchmarks/mesh-core/results/20261031T033106Z.json)
 
 The published run covers **11 fixtures x 10 profiles**. Exact reconstruction is

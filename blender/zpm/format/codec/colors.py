@@ -82,6 +82,8 @@ def encode_colors(mesh: Mesh) -> list:
             stored |= ColorFormat.CORNER
         if layer_data.is_float:
             stored |= ColorFormat.FLOAT
+        if layer_data.is_srgb:
+            stored |= ColorFormat.SRGB
         formats.append(stored)
         sections += _encode_layer(layer_data, mesh, layer)
     sections.append(Section(SectionKind.COLOR_FORMATS, formats.tobytes()))
@@ -96,6 +98,7 @@ def _read_stream(sections, first_kind, stored_format, corners, layer) -> list:
 
 def _read_layer(sections, stored_format, corners, layer) -> ColorLayer:
     is_corner = bool(stored_format & ColorFormat.CORNER)
+    is_srgb = bool(stored_format & ColorFormat.SRGB)
     first = _read_stream(
         sections, SectionKind.COLOR_RG_REPEAT_MASK, stored_format, corners, layer
     )
@@ -110,7 +113,7 @@ def _read_layer(sections, stored_format, corners, layer) -> ColorLayer:
                 b & _BYTE_MASK,
                 b >> _BYTE_BITS,
             )
-        return ColorLayer(array("B", channels), is_corner)
+        return ColorLayer(array("B", channels), is_corner, is_srgb)
     second = _read_stream(
         sections, SectionKind.COLOR_BA_REPEAT_MASK, stored_format, corners, layer
     )
@@ -124,6 +127,7 @@ def _read_layer(sections, stored_format, corners, layer) -> ColorLayer:
             ],
         ),
         is_corner,
+        is_srgb,
     )
 
 

@@ -26,6 +26,7 @@ from zpm.format import (
 )
 from zpm.format.codec.quantize import decode_normal, encode_normal
 from zpm.format.container.layout import DIRECTORY_ENTRY, FILE_HEADER, SectionKind
+from zpm.format.processing.reordering import reorder_mesh
 
 
 def triangle() -> Mesh:
@@ -99,6 +100,40 @@ def surface_mesh() -> Mesh:
     mesh.edge_creases = array("f", [(i % 5) / 4 for i in range(mesh.edge_count)])
     mesh.vertex_creases = array("f", [(i % 3) / 2 for i in range(mesh.vertex_count)])
     return mesh
+
+
+def authored_mesh() -> Mesh:
+    """Materials, per-layer data and marks that only some applications author."""
+    mesh = surface_mesh()
+    corners = len(mesh.corners)
+    mesh.material_slots = ["Skin", "", "Metal"]
+    mesh.face_materials = array("I", [(i // 9) % 3 for i in range(mesh.face_count)])
+    mesh.uv_seams = {"Detail": array("B", [i % 5 == 0 for i in range(mesh.edge_count)])}
+    mesh.tangent_layers = {
+        name: array("f", [1.0, 0.0, 0.0, 1.0] * corners) for name in mesh.uv_layers
+    }
+    mesh.sharp_corners = array("B", [i % 13 == 0 for i in range(corners)])
+    mesh.smoothing_groups = array("I", [i // 16 for i in range(corners)])
+    mesh.crease_chain_offsets = array("I", [0, 2, 4])
+    mesh.crease_chain_vertices = array("I", mesh.edges[:4])
+    mesh.color_layers = {
+        "Paint": ColorLayer(array("B", [7] * corners * 4), True, True),
+        "Heat": ColorLayer(array("f", [0.5] * mesh.vertex_count * 4), False),
+    }
+    return mesh
+
+
+def holed_mesh() -> Mesh:
+    """A square with a triangular hole, beside a plain triangle."""
+    positions = [0, 0, 0, 4, 0, 0, 4, 4, 0, 0, 4, 0, 1, 1, 0, 1, 3, 0, 3, 3, 0, 9, 9, 0]
+    return Mesh(
+        array("f", positions),
+        array("I", [7, 3]),
+        array("I", [0, 1, 2, 3, 4, 5, 6, 0, 1, 7]),
+        array("I", [0, 1, 1, 2, 2, 3, 0, 3, 4, 5, 5, 6, 4, 6, 1, 7, 0, 7]),
+        corner_normals=array("f", [0.0, 0.0, 1.0] * 10),
+        hole_starts=array("I", [4]),
+    )
 
 
 def empty_mesh() -> Mesh:
@@ -246,14 +281,16 @@ class CodecTests(unittest.TestCase):
                 array("f", [i * 0.5 for i in range(source.vertex_count * 4)]), False
             ),
         }
-        source.corner_tangents = array(
-            "f",
-            [
-                part
-                for i in range(len(source.corners))
-                for part in (1.0, 0.0, 0.0, -1.0 if i % 2 else 1.0)
-            ],
-        )
+        source.tangent_layers = {
+            "UVMap": array(
+                "f",
+                [
+                    part
+                    for i in range(len(source.corners))
+                    for part in (1.0, 0.0, 0.0, -1.0 if i % 2 else 1.0)
+                ],
+            )
+        }
         source.vertex_groups = ["Head", "Arm"]
         offsets = array("I", [0])
         groups = array("I")
@@ -291,6 +328,56 @@ class CodecTests(unittest.TestCase):
         with self.assertRaises(FormatError):
             encode(mesh)
 
+    def test_materials_and_authored_marks_round_trip(self):
+        source = authored_mesh()
+        decoded = decode(encode(source))
+        self.assertTrue(same_geometry(snap_mesh(source), decoded))
+        self.assertEqual(decoded.material_slots, ["Skin", "", "Metal"])
+        self.assertEqual(sorted(decoded.tangent_layers), ["Detail", "UVMap"])
+        self.assertTrue(decoded.color_layers["Paint"].is_srgb)
+        self.assertFalse(decoded.color_layers["Heat"].is_srgb)
+
+    def test_reordering_keeps_each_material_together(self):
+        source = grid_mesh(40)
+        source.material_slots = ["A", "B"]
+        source.face_materials = array("I", [i % 2 for i in range(source.face_count)])
+        slots = reorder_mesh(snap_mesh(source)).face_materials
+        changes = sum(a != b for a, b in zip(slots, slots[1:], strict=False))
+        self.assertEqual(changes, 1)
+
+    def test_seams_matching_the_mesh_store_nothing(self):
+        source = surface_mesh()
+        source.uv_seams = {"Detail": array("B", source.seam_edges)}
+        names = {region.name for region in map_file(encode(source))}
+        self.assertFalse(any(name.startswith("UV_SEAMS") for name in names))
+        self.assertEqual(decode(encode(source)).uv_seams, {})
+
+    def test_holes_round_trip_with_stored_normals_and_endpoint_edges(self):
+        source = holed_mesh()
+        data = encode(source)
+        decoded = decode(data)
+        self.assertTrue(same_geometry(snap_mesh(source), decoded))
+        self.assertEqual(len(decoded.hole_starts), 1)
+        names = {region.name for region in map_file(data)}
+        self.assertIn("EDGE_FIRST", names)
+        self.assertTrue(any(name.startswith("NORMAL_") for name in names))
+
+    def test_invalid_rings_chains_and_slots_are_refused(self):
+        too_few = holed_mesh()
+        too_few.hole_starts = array("I", [5])
+        at_face_start = holed_mesh()
+        at_face_start.hole_starts = array("I", [0])
+        outside = holed_mesh()
+        outside.hole_starts = array("I", [4, 99])
+        no_edge = grid_mesh(4)
+        no_edge.crease_chain_offsets = array("I", [0, 2])
+        no_edge.crease_chain_vertices = array("I", [0, 15])
+        no_slot = triangle()
+        no_slot.face_materials = array("I", [1])
+        for mesh in (too_few, at_face_start, outside, no_edge, no_slot):
+            with self.assertRaises(FormatError):
+                encode(mesh)
+
     def test_normal_error_stays_tiny(self):
         worst = 0.0
         for i in range(2000):
@@ -306,7 +393,15 @@ class CodecTests(unittest.TestCase):
         self.assertTrue(same_geometry(once, snap_mesh(once)))
 
     def test_every_byte_is_named_exactly_once(self):
-        meshes = (triangle(), mixed_mesh(), grid_mesh(), empty_mesh(), surface_mesh())
+        meshes = (
+            triangle(),
+            mixed_mesh(),
+            grid_mesh(),
+            empty_mesh(),
+            surface_mesh(),
+            authored_mesh(),
+            holed_mesh(),
+        )
         for mesh in meshes:
             data = encode(mesh)
             at = 0

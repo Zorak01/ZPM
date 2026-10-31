@@ -42,7 +42,12 @@ _RAW_KINDS = {
     SectionKind.COLOR_BA_REPEAT_MASK,
     SectionKind.COLOR_BA_EXCEPTION_MASK,
 }
-_NAME_KINDS = {SectionKind.UV_NAMES, SectionKind.COLOR_NAMES, SectionKind.GROUP_NAMES}
+_NAME_KINDS = {
+    SectionKind.UV_NAMES,
+    SectionKind.COLOR_NAMES,
+    SectionKind.GROUP_NAMES,
+    SectionKind.MATERIAL_SLOT_NAMES,
+}
 
 
 @dataclass(frozen=True, slots=True)

@@ -111,14 +111,22 @@ def write_surface(mesh: Mesh, path: Path) -> None:
         stream.write(bytes(flat))
         creases = mesh.vertex_creases or array("f", [0.0]) * mesh.vertex_count
         stream.write(creases.tobytes())
-        stream.write(struct.pack("<I", 1 if mesh.corner_tangents else 0))
-        stream.write(mesh.corner_tangents.tobytes())
+        names = sorted(mesh.uv_layers)
+        stream.write(struct.pack("<I", len(names)))
+        for name in names:
+            tangents = mesh.tangent_layers.get(name, array("f"))
+            stream.write(struct.pack("<I", 1 if tangents else 0))
+            stream.write(tangents.tobytes())
+            seams = mesh.uv_seams.get(name, array("B"))
+            stream.write(struct.pack("<I", 1 if seams else 0))
+            stream.write(bytes(seams))
         stream.write(struct.pack("<I", len(mesh.color_layers)))
         for name in sorted(mesh.color_layers):
             layer = mesh.color_layers[name]
             values = layer.values
             if not layer.is_float:
                 values = array("f", [value / 255 for value in values])
+            stream.write(struct.pack("<I", 1 if layer.is_srgb else 0))
             stream.write(values.tobytes())
         stream.write(struct.pack("<I", len(mesh.vertex_groups)))
         for vertex in range(mesh.vertex_count):
@@ -129,6 +137,17 @@ def write_surface(mesh: Mesh, path: Path) -> None:
                 stream.write(
                     struct.pack("<If", mesh.weight_groups[at], mesh.weight_values[at])
                 )
+        stream.write(struct.pack("<I", len(mesh.material_slots)))
+        face_materials = mesh.face_materials or array("I", [0]) * mesh.face_count
+        stream.write(array("I", face_materials).tobytes())
+        stream.write(bytes(mesh.sharp_corners or bytes(len(mesh.corners))))
+        groups = mesh.smoothing_groups or array("I", [0]) * len(mesh.corners)
+        stream.write(array("I", groups).tobytes())
+        stream.write(struct.pack("<I", len(mesh.crease_chain_offsets)))
+        stream.write(array("I", mesh.crease_chain_offsets).tobytes())
+        stream.write(array("I", mesh.crease_chain_vertices).tobytes())
+        stream.write(struct.pack("<I", len(mesh.hole_starts)))
+        stream.write(array("I", mesh.hole_starts).tobytes())
 
 
 def write_fixture(mesh: Mesh, path: Path) -> None:

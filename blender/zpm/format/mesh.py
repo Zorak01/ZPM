@@ -5,6 +5,7 @@
 from array import array
 from dataclasses import dataclass, field
 
+from .container.layout import MIN_RING_CORNERS
 from .errors import FormatError
 
 
@@ -24,11 +25,13 @@ def _empty_indices() -> array:
 class ColorLayer:
     """One named color layer: four channels per vertex, or per corner when is_corner.
 
-    values holds bytes for RGBA8, or Float32 for RGBA32F.
+    values holds bytes for RGBA8, or Float32 for RGBA32F. is_srgb says the color
+    channels are sRGB encoded, not linear; alpha is always linear.
     """
 
     values: array
     is_corner: bool
+    is_srgb: bool = False
 
     @property
     def is_float(self) -> bool:
@@ -52,7 +55,19 @@ class Mesh:
     sharp_edges, seam_edges: one 0 or 1 byte per edge.
     flat_faces: one 0 or 1 byte per face.
     edge_creases, vertex_creases: one Float32 from 0 to 1 per edge or vertex.
-    corner_tangents: flat XYZW Float32, one per corner; W is the bitangent sign.
+    uv_seams: UV layer name to one 0 or 1 byte per edge, only for a layer whose seams
+        differ from seam_edges.
+    tangent_layers: UV layer name to flat XYZW Float32, one per corner; W is the
+        bitangent sign.
+    sharp_corners: one 0 or 1 byte per corner.
+    smoothing_groups: one group per corner; corners in different groups share no
+        smooth shading. 0 means no group.
+    crease_chain_offsets: where each chain's vertices start, plus one final total.
+    crease_chain_vertices: vertex IDs along each chain; neighbours share an edge.
+    material_slots: slot names; an empty name is an empty slot.
+    face_materials: one slot index per face. Empty means every face uses slot 0.
+    hole_starts: rising corner indices, each the first corner of a hole ring. A face's
+        corners are its outer ring, then each hole ring. Each ring closes on itself.
     color_layers: layer name to ColorLayer.
     vertex_groups: group names; a weight's group is an index into this list.
     weight_offsets: where each vertex's weights start, plus one final total.
@@ -74,7 +89,15 @@ class Mesh:
     flat_faces: array = field(default_factory=_empty_flags)
     edge_creases: array = field(default_factory=_empty_floats)
     vertex_creases: array = field(default_factory=_empty_floats)
-    corner_tangents: array = field(default_factory=_empty_floats)
+    uv_seams: dict = field(default_factory=dict)
+    tangent_layers: dict = field(default_factory=dict)
+    sharp_corners: array = field(default_factory=_empty_flags)
+    smoothing_groups: array = field(default_factory=_empty_indices)
+    crease_chain_offsets: array = field(default_factory=_empty_indices)
+    crease_chain_vertices: array = field(default_factory=_empty_indices)
+    material_slots: list = field(default_factory=list)
+    face_materials: array = field(default_factory=_empty_indices)
+    hole_starts: array = field(default_factory=_empty_indices)
     color_layers: dict = field(default_factory=dict)
     vertex_groups: list = field(default_factory=list)
     weight_offsets: array = field(default_factory=_empty_indices)
@@ -134,7 +157,9 @@ class Mesh:
             ("Flat faces", self.flat_faces, self.face_count),
             ("Edge creases", self.edge_creases, self.edge_count),
             ("Vertex creases", self.vertex_creases, self.vertex_count),
-            ("Corner tangents", self.corner_tangents, len(self.corners) * 4),
+            ("Sharp corners", self.sharp_corners, len(self.corners)),
+            ("Smoothing groups", self.smoothing_groups, len(self.corners)),
+            ("Face materials", self.face_materials, self.face_count),
             ("Weight offsets", self.weight_offsets, self.vertex_count + 1),
         )
         for name, buffer, length in expected:
@@ -143,11 +168,60 @@ class Mesh:
         for name, layer in self.uv_layers.items():
             if len(layer) != len(self.corners) * 2:
                 raise FormatError(f"UV layer {name} does not match the corner count")
+        for name, flags in self.uv_seams.items():
+            if name not in self.uv_layers or len(flags) != self.edge_count:
+                raise FormatError(f"Seams of UV layer {name} do not match the mesh")
+        for name, layer in self.tangent_layers.items():
+            if name not in self.uv_layers or len(layer) != len(self.corners) * 4:
+                raise FormatError(f"Tangents of UV layer {name} do not match the mesh")
         for name, layer in self.color_layers.items():
             owners = len(self.corners) if layer.is_corner else self.vertex_count
             if len(layer.values) != owners * 4:
                 raise FormatError(f"Color layer {name} does not match the mesh")
+        if self.face_materials and max(self.face_materials) >= len(self.material_slots):
+            raise FormatError("A face references a missing material slot")
         self._validate_weights()
+        self._validate_crease_chains()
+        self._validate_holes()
+
+    def _validate_crease_chains(self) -> None:
+        offsets, vertices = self.crease_chain_offsets, self.crease_chain_vertices
+        if not offsets:
+            if vertices:
+                raise FormatError("Crease chains have no offsets")
+            return
+        if offsets[0] != 0 or offsets[-1] != len(vertices) or len(offsets) < 2:
+            raise FormatError("Crease chain offsets do not cover every vertex")
+        edges = {
+            frozenset(self.edges[at : at + 2]) for at in range(0, len(self.edges), 2)
+        }
+        for start, end in zip(offsets, offsets[1:], strict=False):
+            if end < start + 2:
+                raise FormatError("A crease chain needs at least two vertices")
+            for at in range(start, end - 1):
+                if frozenset(vertices[at : at + 2]) not in edges:
+                    raise FormatError("A crease chain follows a missing edge")
+
+    def _validate_holes(self) -> None:
+        if not self.hole_starts:
+            return
+        holes = self.hole_starts
+        sizes = [self.arity] * self.face_count if self.arity else self.face_sizes
+        next_hole = 0
+        at = 0
+        for size in sizes:
+            end = at + size
+            ring = at
+            while next_hole < len(holes) and holes[next_hole] < end:
+                if holes[next_hole] - ring < MIN_RING_CORNERS:
+                    raise FormatError("A face ring has too few corners")
+                ring = holes[next_hole]
+                next_hole += 1
+            if end - ring < MIN_RING_CORNERS:
+                raise FormatError("A face ring has too few corners")
+            at = end
+        if next_hole != len(holes):
+            raise FormatError("A hole starts outside its face")
 
     def _validate_weights(self) -> None:
         if len(self.weight_groups) != len(self.weight_values):

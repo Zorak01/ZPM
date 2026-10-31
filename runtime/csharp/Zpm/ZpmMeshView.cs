@@ -39,8 +39,10 @@ public unsafe struct ZpmMeshView
     bool _hasEdgeSharp, _hasEdgeSeam, _hasEdgeCreases, _hasFaceFlat, _hasVertexCreases;
     ZpmColumn _edgeSharp, _edgeSeam, _edgeCreases, _faceFlat, _vertexCreases;
 
-    ZpmCornerStream _tangents;
-    ZpmNames _uvNames, _colorNames, _groupNames;
+    bool _hasTangents;
+    ZpmNames _uvNames, _colorNames, _groupNames, _materialSlots;
+    bool _hasFaceMaterials, _hasHoles, _hasCornerSharp, _hasSmoothingGroups, _hasCreaseChains, _hasCreaseChainVertices;
+    ZpmColumn _faceMaterials, _holeStarts, _cornerSharp, _smoothingGroups, _creaseChainOffsets, _creaseChainVertices;
     uint* _colorFormats;
     bool _hasWeights, _hasWeightGroups, _hasWeightValues;
     ZpmColumn _weightOffsets, _weightGroups, _weightValues;
@@ -62,8 +64,17 @@ public unsafe struct ZpmMeshView
     /// <summary>How many named UV layers the file holds.</summary>
     public readonly uint uvLayerCount => _uvNames.count;
 
-    /// <summary>Whether the file holds a tangent for every corner.</summary>
-    public readonly bool hasTangents => _tangents.isBound;
+    /// <summary>Whether any UV layer has tangents. TryGetTangentLayer says which.</summary>
+    public readonly bool hasTangents => _hasTangents;
+
+    /// <summary>How many material slots the file names.</summary>
+    public readonly uint materialSlotCount => _materialSlots.count;
+
+    /// <summary>Whether any face has holes. GetFaceRings reads them.</summary>
+    public readonly bool hasHoles => _hasHoles;
+
+    /// <summary>How many crease chains the file holds.</summary>
+    public readonly uint creaseChainCount => _hasCreaseChains ? _creaseChainOffsets.count - 1 : 0;
 
     /// <summary>How many named color layers the file holds.</summary>
     public readonly uint colorLayerCount => _colorNames.count;
@@ -124,14 +135,18 @@ public unsafe struct ZpmMeshView
 
     static bool IsSecondColorKind(ZpmSectionKind kind) => kind >= ZpmSectionKind.ColorBlueAlphaStream && kind <= ZpmSectionKind.ColorBlueAlphaStreamLast;
 
-    static bool IsLayeredKind(ZpmSectionKind kind) => IsUvStreamKind(kind) || IsFirstColorKind(kind) || IsSecondColorKind(kind);
+    static bool IsTangentStreamKind(ZpmSectionKind kind) => kind >= ZpmSectionKind.TangentStream && kind <= ZpmSectionKind.TangentStreamLast;
+
+    static bool IsLayeredKind(ZpmSectionKind kind) =>
+        IsUvStreamKind(kind) || IsTangentStreamKind(kind) || IsFirstColorKind(kind) || IsSecondColorKind(kind) || kind == ZpmSectionKind.UvSeams;
 
     bool TryBindSection(ZpmSectionKind kind, ZpmSectionFlags flags, byte* section, long available)
     {
         if (IsLayeredKind(kind))
+        {
+            _hasTangents |= IsTangentStreamKind(kind);
             return true;
-        if (kind >= ZpmSectionKind.TangentStream && kind <= ZpmSectionKind.TangentStreamLast)
-            return _tangents.TryBindRole(kind - ZpmSectionKind.TangentStream, section, flags, _cornerCount);
+        }
         if (kind >= ZpmSectionKind.NormalStream && kind <= ZpmSectionKind.NormalStreamLast)
             return _normals.TryBindRole(kind - ZpmSectionKind.NormalStream, section, flags, _cornerCount);
         switch (kind)
@@ -159,6 +174,33 @@ public unsafe struct ZpmMeshView
             case ZpmSectionKind.WeightValues:
                 _weightValues = ZpmColumn.Bind(section, flags);
                 _hasWeightValues = true;
+                return true;
+            case ZpmSectionKind.MaterialSlotNames:
+                _materialSlots = ZpmNames.Bind(section);
+                return true;
+            case ZpmSectionKind.FaceMaterials:
+                _faceMaterials = ZpmColumn.Bind(section, flags);
+                _hasFaceMaterials = true;
+                return true;
+            case ZpmSectionKind.FaceHoleStarts:
+                _holeStarts = ZpmColumn.Bind(section, flags);
+                _hasHoles = true;
+                return true;
+            case ZpmSectionKind.CornerSharp:
+                _cornerSharp = ZpmColumn.Bind(section, flags);
+                _hasCornerSharp = true;
+                return true;
+            case ZpmSectionKind.CornerSmoothingGroups:
+                _smoothingGroups = ZpmColumn.Bind(section, flags);
+                _hasSmoothingGroups = true;
+                return true;
+            case ZpmSectionKind.CreaseChainOffsets:
+                _creaseChainOffsets = ZpmColumn.Bind(section, flags);
+                _hasCreaseChains = true;
+                return true;
+            case ZpmSectionKind.CreaseChainVertices:
+                _creaseChainVertices = ZpmColumn.Bind(section, flags);
+                _hasCreaseChainVertices = true;
                 return true;
             case ZpmSectionKind.EdgeSharp:
                 _edgeSharp = ZpmColumn.Bind(section, flags);
@@ -338,7 +380,7 @@ public unsafe struct ZpmMeshView
     /// </summary>
     public readonly bool Validate()
     {
-        return ValidatePositions() && ValidateCorners() && ValidateEdges() && ValidateSurface();
+        return ValidatePositions() && ValidateCorners() && ValidateEdges() && ValidateHoles() && ValidateSurface();
     }
 
     readonly bool ValidatePositions()
@@ -376,6 +418,33 @@ public unsafe struct ZpmMeshView
         offsets.count == _faceCount && offsets.ValidateLayout(_limit) && offsets.ValidateSumBelow(_corners, _vertexCount);
 
     readonly bool ValidateFaceStarts() => _faceStarts.Validate(_limit, _faceCount) && _faceStarts.IsSet(0);
+
+    /// <summary>Walks every hole: only reading them can prove each ring has enough corners.</summary>
+    readonly bool ValidateHoles()
+    {
+        if (!_hasHoles)
+            return true;
+        uint count = _holeStarts.count;
+        if (count == 0 || _cornerCount == 0 || !_holeStarts.ValidateLayout(_limit) || !_holeStarts.ValidateBelow(_cornerCount))
+            return false;
+        // Edge references and face normals both assume a face is one ring.
+        if (_normalsFromFaces || (_edgeCount != 0 && !_hasEndpoints))
+            return false;
+        uint previous = 0;
+        for (uint i = 0; i < count; i++)
+        {
+            uint start = _holeStarts.Get(i);
+            uint faceStart = _arity != 0 ? start - start % _arity : _faceStarts.GetLastSetAtOrBefore(start);
+            uint ringStart = i != 0 && previous >= faceStart ? previous : faceStart;
+            if (start < ringStart + ZpmLayout.MinRingCorners)
+                return false;
+            uint faceEnd = _arity != 0 ? faceStart + _arity : _faceStarts.GetNextSet(start);
+            if (faceEnd - start < ZpmLayout.MinRingCorners)
+                return false;
+            previous = start;
+        }
+        return true;
+    }
 
     readonly bool ValidateEdges()
     {
@@ -419,9 +488,13 @@ public unsafe struct ZpmMeshView
         return ValidateValues(_hasEdgeSharp, _edgeSharp, _edgeCount, 2)
             && ValidateValues(_hasEdgeSeam, _edgeSeam, _edgeCount, 2)
             && ValidateValues(_hasFaceFlat, _faceFlat, _faceCount, 2)
+            && ValidateValues(_hasCornerSharp, _cornerSharp, _cornerCount, 2)
+            && ValidateValues(_hasSmoothingGroups, _smoothingGroups, _cornerCount, ulong.MaxValue)
+            && _materialSlots.Validate(_limit)
+            && ValidateValues(_hasFaceMaterials, _faceMaterials, _faceCount, _materialSlots.count)
+            && ValidateCreaseChains()
             && ValidateValues(_hasEdgeCreases, _edgeCreases, _edgeCount, ZpmLayout.UnitLimit)
             && ValidateValues(_hasVertexCreases, _vertexCreases, _vertexCount, ZpmLayout.UnitLimit)
-            && (!_tangents.isBound || (_cornerCount != 0 && _tangents.Validate(_limit, _cornerCount, _vertexCount)))
             && ValidateUvLayers() && ValidateColorLayers() && ValidateWeights();
     }
 
@@ -436,8 +509,33 @@ public unsafe struct ZpmMeshView
         {
             if (!TryGetUvLayer(layer, out ZpmCornerStream stream) || !stream.Validate(_limit, _cornerCount, _vertexCount))
                 return false;
+            if (TryGetTangentLayer(layer, out ZpmCornerStream tangents) && !tangents.Validate(_limit, _cornerCount, _vertexCount))
+                return false;
+            if (TryGetUvSeamLayer(layer, out ZpmColumn seams) && !ValidateValues(true, seams, _edgeCount, 2))
+                return false;
         }
         return true;
+    }
+
+    /// <summary>Walks every offset: only reading them can prove they rise.</summary>
+    readonly bool ValidateCreaseChains()
+    {
+        if (_hasCreaseChains != _hasCreaseChainVertices)
+            return false;
+        if (!_hasCreaseChains)
+            return true;
+        if (!_creaseChainOffsets.ValidateLayout(_limit) || !_creaseChainVertices.ValidateLayout(_limit)
+            || _creaseChainOffsets.count < 2 || !_creaseChainVertices.ValidateBelow(_vertexCount))
+            return false;
+        uint previous = 0;
+        for (uint i = 0; i < _creaseChainOffsets.count; i++)
+        {
+            uint offset = _creaseChainOffsets.Get(i);
+            if (offset < previous || offset > _creaseChainVertices.count || (i == 0 && offset != 0))
+                return false;
+            previous = offset;
+        }
+        return previous == _creaseChainVertices.count;
     }
 
     readonly bool ValidateColorLayers()
@@ -542,11 +640,11 @@ public unsafe struct ZpmMeshView
     public readonly bool TryGetColorLayerName(uint layer, out byte* utf8, out uint length) =>
         _colorNames.TryGet(layer, out utf8, out length);
 
-    /// <summary>Returns one corner's tangent. The file must have tangents.</summary>
+    /// <summary>Returns one corner's tangent from a layer got with TryGetTangentLayer.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public readonly ZpmTangent GetCornerTangent(uint corner)
+    public readonly ZpmTangent GetCornerTangent(in ZpmCornerStream layer, uint corner)
     {
-        _tangents.GetPair(corner, GetCorner(corner), out uint a, out uint b);
+        layer.GetPair(corner, GetCorner(corner), out uint a, out uint b);
         ZpmNormal direction = DecodeDirection(a, b & (ZpmLayout.TangentSignBit - 1));
         return new ZpmTangent(direction.x, direction.y, direction.z, (b & ZpmLayout.TangentSignBit) != 0 ? -1f : 1f);
     }
@@ -557,18 +655,55 @@ public unsafe struct ZpmMeshView
     /// </summary>
     public readonly bool TryGetUvLayer(uint layer, out ZpmCornerStream stream)
     {
+        return TryBindLayerStream(ZpmSectionKind.UvStream, ZpmSectionKind.UvStreamLast, layer, out stream);
+    }
+
+    /// <summary>
+    /// Finds the tangents worked out from one UV layer, by walking the directory. Returns false when
+    /// that layer has none. Keep the result: GetCornerTangent on it costs nothing extra.
+    /// </summary>
+    public readonly bool TryGetTangentLayer(uint uvLayer, out ZpmCornerStream stream)
+    {
+        return TryBindLayerStream(ZpmSectionKind.TangentStream, ZpmSectionKind.TangentStreamLast, uvLayer, out stream);
+    }
+
+    readonly bool TryBindLayerStream(ZpmSectionKind first, ZpmSectionKind last, uint layer, out ZpmCornerStream stream)
+    {
         stream = default;
+        if (layer >= _uvNames.count)
+            return false;
         for (uint i = 0; i < _sectionCount; i++)
         {
             byte* entry = _data + ZpmLayout.FileHeaderBytes + i * ZpmLayout.DirectoryEntryBytes;
             var kind = (ZpmSectionKind)Unsafe.ReadUnaligned<ushort>(entry);
-            if (!IsUvStreamKind(kind) || entry[3] != layer)
+            if (kind < first || kind > last || entry[3] != layer)
                 continue;
             uint offset = Unsafe.ReadUnaligned<uint>(entry + 4);
-            if (!stream.TryBindRole(kind - ZpmSectionKind.UvStream, _data + offset, (ZpmSectionFlags)entry[2], _cornerCount))
+            if (!stream.TryBindRole(kind - first, _data + offset, (ZpmSectionFlags)entry[2], _cornerCount))
                 return false;
         }
         return stream.isBound;
+    }
+
+    /// <summary>
+    /// Finds a UV layer's own seams, one value per edge, by walking the directory. Returns false when
+    /// the layer follows the mesh's seams, which IsEdgeSeam reads.
+    /// </summary>
+    public readonly bool TryGetUvSeamLayer(uint uvLayer, out ZpmColumn seams)
+    {
+        seams = default;
+        if (uvLayer >= _uvNames.count)
+            return false;
+        for (uint i = 0; i < _sectionCount; i++)
+        {
+            byte* entry = _data + ZpmLayout.FileHeaderBytes + i * ZpmLayout.DirectoryEntryBytes;
+            if ((ZpmSectionKind)Unsafe.ReadUnaligned<ushort>(entry) == ZpmSectionKind.UvSeams && entry[3] == uvLayer)
+            {
+                seams = ZpmColumn.Bind(_data + Unsafe.ReadUnaligned<uint>(entry + 4), (ZpmSectionFlags)entry[2]);
+                return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>Gets the stream of 12-bit normal values. Returns false when the file stores none.</summary>
@@ -639,6 +774,72 @@ public unsafe struct ZpmMeshView
 
     /// <summary>Returns whether a face is shaded flat.</summary>
     public readonly bool IsFaceFlat(uint face) => _hasFaceFlat && _faceFlat.Get(face) != 0;
+
+    /// <summary>Returns the material slot a face uses. Slot 0 when the file stores no slots per face.</summary>
+    public readonly uint GetFaceMaterial(uint face) => _hasFaceMaterials ? _faceMaterials.Get(face) : 0;
+
+    /// <summary>Finds a material slot's UTF-8 name, empty for an empty slot. Returns false when out of range.</summary>
+    public readonly bool TryGetMaterialSlotName(uint slot, out byte* utf8, out uint length) =>
+        _materialSlots.TryGet(slot, out utf8, out length);
+
+    /// <summary>Returns whether a corner is marked sharp.</summary>
+    public readonly bool IsCornerSharp(uint corner) => _hasCornerSharp && _cornerSharp.Get(corner) != 0;
+
+    /// <summary>Returns a corner's smoothing group, 0 for none.</summary>
+    public readonly uint GetCornerSmoothingGroup(uint corner) => _hasSmoothingGroups ? _smoothingGroups.Get(corner) : 0;
+
+    /// <summary>Returns how many vertices a crease chain has.</summary>
+    public readonly uint GetCreaseChainLength(uint chain) => _creaseChainOffsets.Get(chain + 1) - _creaseChainOffsets.Get(chain);
+
+    /// <summary>Fills the caller's buffer with a crease chain's vertex IDs and returns how many it wrote.</summary>
+    public readonly uint GetCreaseChain(uint chain, uint* vertices)
+    {
+        uint start = _creaseChainOffsets.Get(chain);
+        uint count = _creaseChainOffsets.Get(chain + 1) - start;
+        for (uint i = 0; i < count; i++)
+            vertices[i] = _creaseChainVertices.Get(start + i);
+        return count;
+    }
+
+    /// <summary>Returns how many rings a face has: its outer ring, plus one per hole. Costs a binary search over holes.</summary>
+    public readonly uint GetFaceRingCount(uint face)
+    {
+        if (!_hasHoles)
+            return 1;
+        uint start = GetFaceStart(face);
+        return FindFirstHoleAtOrAfter(start + GetFaceSize(face)) - FindFirstHoleAtOrAfter(start) + 1;
+    }
+
+    /// <summary>
+    /// Fills the caller's buffer with the first corner of each ring in a face, outer ring first, and
+    /// returns how many it wrote. A ring ends where the next begins, and closes on itself.
+    /// </summary>
+    public readonly uint GetFaceRings(uint face, uint* ringStarts)
+    {
+        uint start = GetFaceStart(face);
+        ringStarts[0] = start;
+        if (!_hasHoles)
+            return 1;
+        uint first = FindFirstHoleAtOrAfter(start);
+        uint end = FindFirstHoleAtOrAfter(start + GetFaceSize(face));
+        for (uint i = first; i < end; i++)
+            ringStarts[i - first + 1] = _holeStarts.Get(i);
+        return end - first + 1;
+    }
+
+    readonly uint FindFirstHoleAtOrAfter(uint corner)
+    {
+        uint low = 0, high = _holeStarts.count;
+        while (low < high)
+        {
+            uint middle = low + (high - low) / 2;
+            if (_holeStarts.Get(middle) < corner)
+                low = middle + 1;
+            else
+                high = middle;
+        }
+        return low;
+    }
 
     /// <summary>Returns an edge's crease from 0 to 1.</summary>
     public readonly float GetEdgeCrease(uint edge) => _hasEdgeCreases ? _edgeCreases.Get(edge) / ZpmLayout.UnitMax : 0f;

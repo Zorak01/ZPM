@@ -197,7 +197,7 @@ values above 1, on a grid of 1 / 2^16, and take two streams.
 ### Tangents with their sign in a spare bit
 
 **Technique:** A tangent is a 12-bit direction like a normal, and the sign needs one bit, so it sits just
-above the second value. Tangents come from the first UV layer. Blender can't calculate them for n-gons, so
+above the second value. Each UV layer has its own tangents, using that layer's number. Blender can't calculate them for n-gons, so
 those meshes store none. This adds real size for now: about 20% on `DamagedHelmet`.
 
 ### Vertex groups and weights with no padding
@@ -208,6 +208,43 @@ those meshes store none. This adds real size for now: about 20% on `DamagedHelme
 weights start, and because offsets climb steadily, they compress well. A vertex's weights are one lookup
 away. **Not optimized yet:** weights are the largest part of `CesiumMan` and `werewolf`, so they're a clear
 target for the optimize round.
+
+### Material slots, with each material's faces kept together
+
+**Problem:** Renderers draw one material at a time, and formats often split a mesh per material, which
+duplicates vertices along the borders.
+
+**Technique:** One slot number per face. The face walk stays inside one material and starts follow
+slot order, so when reordering wins, each material is one unbroken run of faces. A block holding one slot stores
+no data, so the column shrinks, and a renderer gets draw ranges without sorting. A file where every face uses
+slot 0 stores no column.
+
+**Cost:** on 4 real meshes with 4 test materials split by position, the file grew 0.6% to 9.3% over
+no materials; the 9.3% is a 104-vertex mesh. Where the reordered file won, the column was 2.3x to 2.7x
+smaller than with a walk ignoring materials. These are test materials, not authored ones.
+
+### Holes as a short list of ring starts
+
+**Technique:** A face's corners are its outer ring, then each hole ring. One rising column names the corner
+each hole starts at, so a mesh without holes pays nothing. Finding a face's rings is a binary search. Edge
+references and calculated face normals both assume one ring per face, so a mesh with holes stores endpoints and
+normals instead. Blender has no such faces, so importing one there is refused rather than changed.
+
+### Marks only some tools author
+
+**Technique:** Sharp corners, smoothing groups and crease chains are ordinary columns, absent when unused.
+Blender has no home for them, so they stay in `zpm_sharp_corner`, `zpm_smoothing_group`, `zpm_seam:LAYER`
+attributes and `zpm_crease_chain_*` properties. Smoothing groups are per corner, which also covers per-face groups.
+
+### Seams per UV layer, stored only when different
+
+**Technique:** The mesh keeps one seam column. A UV layer gets its own only if it differs, so the usual case,
+Blender's single set of seams, costs nothing extra.
+
+### Color space in a spare bit
+
+**Technique:** A layer's format word gains an sRGB flag, costing no bytes. Blender's byte colors are sRGB and its
+float colors linear, and each is restored the same way.
 
 ## The file itself
 

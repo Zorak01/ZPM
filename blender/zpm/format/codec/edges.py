@@ -102,14 +102,19 @@ def _encode_references(edges: list, corners: list, sizes: list) -> list:
     return sections
 
 
-def encode_edges(edges: list, corners: list, sizes: list) -> list:
-    """Return the smallest legal form of the edge list."""
+def encode_edge_endpoints(edges: list) -> list:
+    """Return edges as endpoints: the one form that needs no face to read."""
     firsts = edges[0::2]
     spans = [second - first for first, second in zip(firsts, edges[1::2], strict=True)]
-    endpoints = [
+    return [
         column_section(SectionKind.EDGE_FIRST, firsts),
         column_section(SectionKind.EDGE_SPAN, spans),
     ]
+
+
+def encode_edges(edges: list, corners: list, sizes: list) -> list:
+    """Return the smallest legal form of the edge list."""
+    endpoints = encode_edge_endpoints(edges)
     if not corners:
         return endpoints
     referenced = _encode_references(edges, corners, sizes)

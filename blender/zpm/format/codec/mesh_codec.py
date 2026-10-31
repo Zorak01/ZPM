@@ -22,20 +22,25 @@ from .colors import encode_colors, read_colors
 from .corners import (
     encode_corners,
     encode_face_starts,
+    encode_holes,
     read_corners,
     read_face_sizes,
+    read_holes,
 )
-from .edges import encode_edges, read_edges
+from .edges import encode_edge_endpoints, encode_edges, read_edges
+from .materials import encode_materials, read_materials
 from .positions import encode_positions, read_positions
 from .surface import (
     encode_marks,
     encode_normals,
     encode_tangents,
     encode_uv_layers,
+    encode_uv_seams,
     read_marks,
     read_normals,
     read_tangents,
     read_uv_layers,
+    read_uv_seams,
 )
 from .weights import encode_weights, read_weights
 
@@ -81,8 +86,15 @@ def _encode_mesh(mesh: Mesh) -> bytes:
         sections += encode_corners(corners, face_count, arity)
         if not arity:
             sections.append(encode_face_starts(sizes, len(corners)))
+        sections += encode_holes(mesh.hole_starts)
     if edges:
-        sections += encode_edges(edges, corners, sizes)
+        # An edge reference means "this corner and the next around its face", which
+        # holds only when a face is one ring.
+        sections += (
+            encode_edge_endpoints(edges)
+            if mesh.hole_starts
+            else encode_edges(edges, corners, sizes)
+        )
     flags = MeshFlags.NONE
     if mesh.has_custom_normals:
         flags |= MeshFlags.CUSTOM_NORMALS
@@ -92,6 +104,8 @@ def _encode_mesh(mesh: Mesh) -> bytes:
         sections += encode_normals(mesh)
     sections += encode_tangents(mesh)
     sections += encode_uv_layers(mesh)
+    sections += encode_uv_seams(mesh)
+    sections += encode_materials(mesh)
     sections += encode_colors(mesh)
     sections += encode_marks(mesh)
     sections += encode_weights(mesh)
@@ -145,6 +159,9 @@ def decode(data: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
     mixed = corner_count and not arity
     stored_sizes = read_face_sizes(sections, corner_count, faces) if mixed else []
     sizes = [arity] * faces if arity else stored_sizes
+    holes = read_holes(sections)
+    if holes and edge_count and not sections.has(SectionKind.EDGE_FIRST):
+        raise FormatError("Edges in a mesh with holes must store their endpoints")
     edges = read_edges(sections, edge_count, corners, sizes)
     code = "H" if width == 2 else "I"
     try:
@@ -157,9 +174,12 @@ def decode(data: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
             corner_normals=read_normals(sections, corners),
             has_custom_normals=bool(MeshFlags(flags) & MeshFlags.CUSTOM_NORMALS),
             uv_layers=read_uv_layers(sections, corners),
-            corner_tangents=read_tangents(sections, corners),
+            uv_seams=read_uv_seams(sections, edge_count),
+            tangent_layers=read_tangents(sections, corners),
+            hole_starts=holes,
             color_layers=read_colors(sections, corners),
-            **read_marks(sections, edge_count, faces, vertices),
+            **read_materials(sections, faces),
+            **read_marks(sections, edge_count, faces, vertices, corner_count),
             **read_weights(sections, vertices),
         )
     except OverflowError as error:

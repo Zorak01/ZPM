@@ -49,10 +49,11 @@ def grid_exponent(positions: array) -> int:
 def normals_match_faces(mesh: Mesh) -> bool:
     """Return whether readers can calculate this mesh's normals from its faces.
 
-    True when normals were not authored and each is within 0.1 degrees of its face's.
+    True when normals were not authored, no face has holes, and each is within 0.1
+    degrees of its face's.
     Walks the whole mesh.
     """
-    if mesh.has_custom_normals or not mesh.corner_normals:
+    if mesh.has_custom_normals or mesh.hole_starts or not mesh.corner_normals:
         return False
     derived = corner_normals_from_faces(mesh.positions, face_lists(mesh))
     if derived is None:
@@ -82,7 +83,14 @@ def _snap_color(layer: ColorLayer) -> ColorLayer:
     if not layer.is_float:
         return layer
     snapped = [decode_color_channel(encode_color_channel(v)) for v in layer.values]
-    return ColorLayer(array("f", snapped), layer.is_corner)
+    return ColorLayer(array("f", snapped), layer.is_corner, layer.is_srgb)
+
+
+def _distinct_seams(mesh: Mesh) -> dict:
+    shared = bytes(mesh.seam_edges) or bytes(mesh.edge_count)
+    return {
+        name: flags for name, flags in mesh.uv_seams.items() if bytes(flags) != shared
+    }
 
 
 def snap_mesh(mesh: Mesh) -> Mesh:
@@ -93,15 +101,18 @@ def snap_mesh(mesh: Mesh) -> Mesh:
     cannot crack apart. The step is a power of two, so snapping again changes nothing.
     Normals and tangents become 12-bit directions, or normals their faces' when those
     match. UVs go on a 1 / 2^20 grid, float colors on 1 / 2^16, creases and weights to
-    16 bits. RGBA8 colors stay exact.
+    16 bits. RGBA8 colors stay exact. A UV layer's seams are dropped when they equal
+    the mesh's own.
     """
     changes = {
         "corner_normals": _snap_groups(
             mesh.corner_normals, AXIS_COUNT, encode_normal, decode_normal
         ),
-        "corner_tangents": _snap_groups(
-            mesh.corner_tangents, _TANGENT_WIDTH, encode_tangent, decode_tangent
-        ),
+        "tangent_layers": {
+            name: _snap_groups(layer, _TANGENT_WIDTH, encode_tangent, decode_tangent)
+            for name, layer in mesh.tangent_layers.items()
+        },
+        "uv_seams": _distinct_seams(mesh),
         "uv_layers": {
             name: array("f", [decode_uv(encode_uv(value)) for value in layer])
             for name, layer in mesh.uv_layers.items()

@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Face corners and face sizes."""
+"""Face corners, face sizes and hole rings."""
+
+from array import array
 
 from ..container.layout import (
     MAX_RELATIVE_ARITY,
@@ -61,6 +63,20 @@ def encode_face_starts(sizes: list, corner_count: int) -> Section:
         starts.append(at)
         at += size
     return Section(SectionKind.FACE_STARTS, encode_select_bits(starts, corner_count))
+
+
+def encode_holes(hole_starts: array) -> list:
+    """Return the first corner of each hole ring, or nothing when no face has holes."""
+    if not hole_starts:
+        return []
+    return [column_section(SectionKind.FACE_HOLE_STARTS, list(hole_starts))]
+
+
+def read_holes(sections: SectionReader) -> array:
+    kind = SectionKind.FACE_HOLE_STARTS
+    if not sections.has(kind):
+        return array("I")
+    return array("I", sections.column(kind, sections.count_of(kind)))
 
 
 def read_corners(

@@ -31,6 +31,7 @@ NORMAL_BITS = 12
 UV_GRID_BITS = 20
 COLOR_GRID_BITS = 16
 UNIT_MAX = 65535
+MIN_RING_CORNERS = 3
 
 
 class MeshFlags(IntFlag):
@@ -68,8 +69,13 @@ class SectionKind(IntEnum):
     CORNER_OFFSET_3 = 36
     CORNER_REPEAT_MASK = 37
     CORNER_BACK_DISTANCES = 38
+    CORNER_SHARP = 39
     FACE_STARTS = 40
     FACE_FLAT = 41
+    FACE_MATERIALS = 42
+    MATERIAL_SLOT_NAMES = 43
+    FACE_HOLE_STARTS = 44
+    CORNER_SMOOTHING_GROUPS = 45
     EDGE_FIRST = 48
     EDGE_SPAN = 49
     EDGE_LOOSE_MASK = 50
@@ -81,6 +87,8 @@ class SectionKind(IntEnum):
     EDGE_SHARP = 56
     EDGE_SEAM = 57
     EDGE_CREASES = 58
+    CREASE_CHAIN_OFFSETS = 59
+    CREASE_CHAIN_VERTICES = 60
     NORMAL_REPEAT_MASK = 64
     NORMAL_DISTANCES = 65
     NORMAL_VALUES_A = 66
@@ -90,6 +98,7 @@ class SectionKind(IntEnum):
     NORMAL_EXCEPTION_MASK = 70
     NORMAL_EXCEPTION_A = 71
     NORMAL_EXCEPTION_B = 72
+    UV_SEAMS = 78
     UV_NAMES = 79
     UV_REPEAT_MASK = 80
     UV_DISTANCES = 81
@@ -155,6 +164,7 @@ class ColorFormat(IntFlag):
     NONE = 0
     CORNER = 1
     FLOAT = 2
+    SRGB = 4
 
 
 class SectionFlags(IntFlag):

@@ -11,6 +11,12 @@ from ..format import ColorLayer, FormatError, Mesh
 
 _MAX_TANGENT_FACE_SIZE = 4
 _BYTE_MAX = 255
+# Blender has no home for these, so they live under these attribute and property names.
+_SHARP_CORNER_ATTRIBUTE = "zpm_sharp_corner"
+_SMOOTHING_GROUP_ATTRIBUTE = "zpm_smoothing_group"
+_UV_SEAM_ATTRIBUTE_PREFIX = "zpm_seam:"
+_CHAIN_OFFSETS_PROPERTY = "zpm_crease_chain_offsets"
+_CHAIN_VERTICES_PROPERTY = "zpm_crease_chain_vertices"
 
 
 def capture_object(obj: bpy.types.Object) -> Mesh:
@@ -60,6 +66,45 @@ def _capture_flags(collection, name: str, count: int) -> array:
     return array("B", [1 if flag else 0 for flag in flags])
 
 
+def _capture_attribute_flags(mesh: bpy.types.Mesh, name: str) -> array:
+    attribute = mesh.attributes.get(name)
+    if attribute is None:
+        return array("B")
+    return _capture_flags(attribute.data, "value", len(attribute.data))
+
+
+def _capture_uv_seams(mesh: bpy.types.Mesh) -> dict:
+    seams = {}
+    for layer in mesh.uv_layers:
+        name = _UV_SEAM_ATTRIBUTE_PREFIX + layer.name
+        if name in mesh.attributes:
+            seams[layer.name] = _capture_attribute_flags(mesh, name)
+    return seams
+
+
+def _capture_smoothing_groups(mesh: bpy.types.Mesh) -> array:
+    attribute = mesh.attributes.get(_SMOOTHING_GROUP_ATTRIBUTE)
+    if attribute is None:
+        return array("I")
+    groups = array("i", [0]) * len(attribute.data)
+    attribute.data.foreach_get("value", groups)
+    return array("I", groups)
+
+
+def _capture_materials(mesh: bpy.types.Mesh) -> dict:
+    """Return slots and face slots, clamping a stale index as Blender itself does."""
+    slots = [material.name if material else "" for material in mesh.materials]
+    if not slots:
+        return {}
+    indices = array("i", [0]) * len(mesh.polygons)
+    mesh.polygons.foreach_get("material_index", indices)
+    last = len(slots) - 1
+    return {
+        "material_slots": slots,
+        "face_materials": array("I", [min(max(i, 0), last) for i in indices]),
+    }
+
+
 def _capture_crease(mesh: bpy.types.Mesh, name: str) -> array:
     attribute = mesh.attributes.get(name)
     if attribute is None:
@@ -82,6 +127,12 @@ def _capture_surface(mesh: bpy.types.Mesh) -> dict:
         layers[layer.name] = values
     smooth = _capture_flags(mesh.polygons, "use_smooth", len(mesh.polygons))
     return {
+        **_capture_materials(mesh),
+        "uv_seams": _capture_uv_seams(mesh),
+        "sharp_corners": _capture_attribute_flags(mesh, _SHARP_CORNER_ATTRIBUTE),
+        "smoothing_groups": _capture_smoothing_groups(mesh),
+        "crease_chain_offsets": array("I", mesh.get(_CHAIN_OFFSETS_PROPERTY, [])),
+        "crease_chain_vertices": array("I", mesh.get(_CHAIN_VERTICES_PROPERTY, [])),
         "corner_normals": normals if corner_count else array("f"),
         "has_custom_normals": mesh.has_custom_normals,
         "uv_layers": layers,
@@ -90,20 +141,27 @@ def _capture_surface(mesh: bpy.types.Mesh) -> dict:
         "flat_faces": array("B", [0 if flag else 1 for flag in smooth]),
         "edge_creases": _capture_crease(mesh, "crease_edge"),
         "vertex_creases": _capture_crease(mesh, "crease_vert"),
-        "corner_tangents": _capture_tangents(mesh),
+        "tangent_layers": _capture_tangents(mesh),
         "color_layers": _capture_colors(mesh),
     }
 
 
-def _capture_tangents(mesh: bpy.types.Mesh) -> array:
-    """Return tangents from the first UV layer. Blender cannot do this for n-gons."""
+def _capture_tangents(mesh: bpy.types.Mesh) -> dict:
+    """Return tangents for every UV layer. Blender cannot do this for n-gons."""
     if not mesh.uv_layers or not len(mesh.loops):
-        return array("f")
+        return {}
     sizes = array("I", [0]) * len(mesh.polygons)
     mesh.polygons.foreach_get("loop_total", sizes)
     if max(sizes) > _MAX_TANGENT_FACE_SIZE:
-        return array("f")
-    mesh.calc_tangents(uvmap=mesh.uv_layers[0].name)
+        return {}
+    return {
+        layer.name: _capture_layer_tangents(mesh, layer.name)
+        for layer in mesh.uv_layers
+    }
+
+
+def _capture_layer_tangents(mesh: bpy.types.Mesh, layer_name: str) -> array:
+    mesh.calc_tangents(uvmap=layer_name)
     tangents = array("f", [0.0]) * (len(mesh.loops) * 3)
     signs = array("f", [0.0]) * len(mesh.loops)
     mesh.loops.foreach_get("tangent", tangents)
@@ -128,8 +186,38 @@ def _capture_colors(mesh: bpy.types.Mesh) -> dict:
         else:
             stored = array("f", [0.0]) * (owners * 4)
             attribute.data.foreach_get("color", stored)
-        layers[attribute.name] = ColorLayer(stored, is_corner)
+        is_srgb = attribute.data_type == "BYTE_COLOR"
+        layers[attribute.name] = ColorLayer(stored, is_corner, is_srgb)
     return layers
+
+
+def _apply_authored_marks(mesh: Mesh, result: bpy.types.Mesh) -> None:
+    if mesh.sharp_corners:
+        attribute = result.attributes.new(_SHARP_CORNER_ATTRIBUTE, "BOOLEAN", "CORNER")
+        attribute.data.foreach_set("value", _bools(mesh.sharp_corners))
+    if mesh.smoothing_groups:
+        attribute = result.attributes.new(_SMOOTHING_GROUP_ATTRIBUTE, "INT", "CORNER")
+        attribute.data.foreach_set("value", array("i", mesh.smoothing_groups))
+    for name, flags in mesh.uv_seams.items():
+        attribute = result.attributes.new(
+            _UV_SEAM_ATTRIBUTE_PREFIX + name, "BOOLEAN", "EDGE"
+        )
+        attribute.data.foreach_set("value", _bools(flags))
+    if mesh.crease_chain_offsets:
+        result[_CHAIN_OFFSETS_PROPERTY] = list(mesh.crease_chain_offsets)
+        result[_CHAIN_VERTICES_PROPERTY] = list(mesh.crease_chain_vertices)
+
+
+def _apply_materials(mesh: Mesh, result: bpy.types.Mesh) -> None:
+    """Fill slots, reusing a material of the same name. Materials hold no data yet."""
+    if mesh.face_materials:
+        indices = array("i", mesh.face_materials)
+        result.polygons.foreach_set("material_index", indices)
+    for name in mesh.material_slots:
+        material = None
+        if name:
+            material = bpy.data.materials.get(name) or bpy.data.materials.new(name)
+        result.materials.append(material)
 
 
 def _apply_crease(result: bpy.types.Mesh, name: str, domain: str, values: array):
@@ -152,6 +240,7 @@ def _apply_surface(mesh: Mesh, result: bpy.types.Mesh) -> None:
     _apply_crease(result, "crease_edge", "EDGE", mesh.edge_creases)
     _apply_crease(result, "crease_vert", "POINT", mesh.vertex_creases)
     _apply_colors(mesh, result)
+    _apply_authored_marks(mesh, result)
     if mesh.has_custom_normals and mesh.corner_normals:
         values = mesh.corner_normals
         result.normals_split_custom_set(
@@ -164,11 +253,11 @@ def _apply_colors(mesh: Mesh, result: bpy.types.Mesh) -> None:
         data_type = "FLOAT_COLOR" if layer.is_float else "BYTE_COLOR"
         domain = "CORNER" if layer.is_corner else "POINT"
         attribute = result.color_attributes.new(name, data_type, domain)
-        if layer.is_float:
-            attribute.data.foreach_set("color", layer.values)
-        else:
-            scaled = array("f", [value / _BYTE_MAX for value in layer.values])
-            attribute.data.foreach_set("color_srgb", scaled)
+        values = layer.values
+        if not layer.is_float:
+            values = array("f", [value / _BYTE_MAX for value in values])
+        channel = "color_srgb" if layer.is_srgb else "color"
+        attribute.data.foreach_set(channel, values)
 
 
 def apply_vertex_groups(mesh: Mesh, obj: bpy.types.Object) -> None:
@@ -190,6 +279,8 @@ def _bools(flags: array) -> array:
 
 def _validate_geometry(mesh: Mesh) -> array:
     """Reject geometry Blender would otherwise repair or discard on import."""
+    if mesh.hole_starts:
+        raise FormatError("Blender has no faces with holes")
     if not all(math.isfinite(value) for value in mesh.positions):
         raise FormatError("Blender mesh positions must be finite")
     edge_keys = {}
@@ -219,6 +310,7 @@ def create_mesh(mesh: Mesh, *, name: str) -> bpy.types.Mesh:
     """Create a mesh datablock, leaving scene linking and selection to the caller.
 
     Blender keeps no stored tangents, so it recalculates them from UVs when needed.
+    A mesh with holes is refused: Blender has no such faces and would have to change it.
     On failure the partial datablock is removed. Existing scene data is untouched.
     """
     mesh.validate()
@@ -250,6 +342,7 @@ def create_mesh(mesh: Mesh, *, name: str) -> bpy.types.Mesh:
         result.update()
         _apply_surface(mesh, result)
         result.update()
+        _apply_materials(mesh, result)
         return result
     except Exception:
         bpy.data.meshes.remove(result)

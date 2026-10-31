@@ -149,18 +149,28 @@ static unsafe class Program
     static void VerifyTangentsColorsWeights(in ZpmMeshView view, BinaryReader reader)
     {
         const float Tolerance = 1e-5f;
-        Require((reader.ReadUInt32() != 0) == view.hasTangents, "has tangents");
-        for (uint c = 0; view.hasTangents && c < view.cornerCount; c++)
+        uint uvLayers = reader.ReadUInt32();
+        Require(uvLayers == view.uvLayerCount, "tangent layer count");
+        for (uint layer = 0; layer < uvLayers; layer++)
         {
-            ZpmTangent tangent = view.GetCornerTangent(c);
-            Require(MathF.Abs(tangent.x - reader.ReadSingle()) < Tolerance && MathF.Abs(tangent.y - reader.ReadSingle()) < Tolerance
-                && MathF.Abs(tangent.z - reader.ReadSingle()) < Tolerance && tangent.w == reader.ReadSingle(), "tangent");
+            Require((reader.ReadUInt32() != 0) == view.TryGetTangentLayer(layer, out ZpmCornerStream tangents), "has tangents");
+            for (uint c = 0; tangents.isBound && c < view.cornerCount; c++)
+            {
+                ZpmTangent tangent = view.GetCornerTangent(tangents, c);
+                Require(MathF.Abs(tangent.x - reader.ReadSingle()) < Tolerance && MathF.Abs(tangent.y - reader.ReadSingle()) < Tolerance
+                    && MathF.Abs(tangent.z - reader.ReadSingle()) < Tolerance && tangent.w == reader.ReadSingle(), "tangent");
+            }
+            bool hasSeams = view.TryGetUvSeamLayer(layer, out ZpmColumn seams);
+            Require((reader.ReadUInt32() != 0) == hasSeams, "has UV seams");
+            for (uint e = 0; hasSeams && e < view.edgeCount; e++)
+                Require(seams.Get(e) == reader.ReadByte(), "UV seam");
         }
         uint layers = reader.ReadUInt32();
         Require(layers == view.colorLayerCount, "color layer count");
         for (uint layer = 0; layer < layers; layer++)
         {
             Require(view.TryGetColorLayer(layer, out ZpmColorLayer colors), "color layer");
+            Require(colors.isSrgb == (reader.ReadUInt32() != 0), "color space");
             uint owners = colors.isCorner ? view.cornerCount : view.vertexCount;
             for (uint i = 0; i < owners; i++)
             {
@@ -183,6 +193,49 @@ static unsafe class Program
                     Require(g[i] == reader.ReadUInt32() && MathF.Abs(w[i] - reader.ReadSingle()) < Tolerance, "weight");
             }
         }
+        VerifyMaterialsAndAuthoredMarks(view, reader);
+    }
+
+    static void VerifyMaterialsAndAuthoredMarks(in ZpmMeshView view, BinaryReader reader)
+    {
+        Require(reader.ReadUInt32() == view.materialSlotCount, "material slot count");
+        for (uint f = 0; f < view.faceCount; f++)
+            Require(view.GetFaceMaterial(f) == reader.ReadUInt32(), "face material");
+        for (uint c = 0; c < view.cornerCount; c++)
+            Require(view.IsCornerSharp(c) == (reader.ReadByte() != 0), "sharp corner");
+        for (uint c = 0; c < view.cornerCount; c++)
+            Require(view.GetCornerSmoothingGroup(c) == reader.ReadUInt32(), "smoothing group");
+        uint offsets = reader.ReadUInt32();
+        Require(offsets == (view.creaseChainCount == 0 ? 0 : view.creaseChainCount + 1), "crease chain count");
+        var chainOffsets = new uint[offsets];
+        for (uint i = 0; i < offsets; i++)
+            chainOffsets[i] = reader.ReadUInt32();
+        var chain = new uint[offsets == 0 ? 1 : chainOffsets[offsets - 1] + 1];
+        fixed (uint* vertices = chain)
+        {
+            for (uint i = 0; i < view.creaseChainCount; i++)
+            {
+                uint length = view.GetCreaseChain(i, vertices);
+                Require(length == view.GetCreaseChainLength(i) && length == chainOffsets[i + 1] - chainOffsets[i], "crease chain length");
+                for (uint j = 0; j < length; j++)
+                    Require(vertices[j] == reader.ReadUInt32(), "crease chain vertex");
+            }
+        }
+        uint holes = reader.ReadUInt32();
+        Require((holes != 0) == view.hasHoles, "has holes");
+        var rings = new uint[holes + 1];
+        uint seen = 0;
+        fixed (uint* ringStarts = rings)
+        {
+            for (uint f = 0; f < view.faceCount; f++)
+            {
+                uint count = view.GetFaceRings(f, ringStarts);
+                Require(count == view.GetFaceRingCount(f) && ringStarts[0] == view.GetFaceStart(f), "face rings");
+                for (uint r = 1; r < count; r++, seen++)
+                    Require(ringStarts[r] == reader.ReadUInt32(), "hole start");
+            }
+        }
+        Require(seen == holes, "hole count");
     }
 
     /// <summary>The whole-mesh pair copy must match reading each corner on its own.</summary>
@@ -383,8 +436,31 @@ static unsafe class Program
             view.IsEdgeSharp(i);
             view.GetEdgeCrease(i);
         }
-        for (uint c = 0; view.hasTangents && c < view.cornerCount; c++)
-            view.GetCornerTangent(c);
+        for (uint layer = 0; layer < view.uvLayerCount; layer++)
+        {
+            if (view.TryGetTangentLayer(layer, out ZpmCornerStream tangents))
+            {
+                for (uint c = 0; c < view.cornerCount; c++)
+                    view.GetCornerTangent(tangents, c);
+            }
+        }
+        for (uint f = 0; f < view.faceCount; f++)
+        {
+            view.GetFaceMaterial(f);
+            if (view.GetFaceRingCount(f) > MaxFuzzWeights)
+                throw new InvalidDataException("Fuzzed face has too many rings to test");
+            view.GetFaceRings(f, output);
+        }
+        for (uint c = 0; c < view.cornerCount; c++)
+        {
+            view.IsCornerSharp(c);
+            view.GetCornerSmoothingGroup(c);
+        }
+        for (uint chain = 0; chain < view.creaseChainCount; chain++)
+        {
+            if (view.GetCreaseChainLength(chain) <= MaxFuzzWeights)
+                view.GetCreaseChain(chain, output);
+        }
         for (uint layer = 0; layer < view.colorLayerCount; layer++)
         {
             if (view.TryGetColorLayer(layer, out ZpmColorLayer colors))

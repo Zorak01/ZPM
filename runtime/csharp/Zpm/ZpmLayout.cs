@@ -22,8 +22,13 @@ public enum ZpmSectionKind : ushort
     CornerOffset3 = 36,
     CornerRepeatMask = 37,
     CornerBackDistances = 38,
+    CornerSharp = 39,
     FaceStarts = 40,
     FaceFlat = 41,
+    FaceMaterials = 42,
+    MaterialSlotNames = 43,
+    FaceHoleStarts = 44,
+    CornerSmoothingGroups = 45,
     EdgeFirst = 48,
     EdgeSpan = 49,
     EdgeLooseMask = 50,
@@ -35,8 +40,11 @@ public enum ZpmSectionKind : ushort
     EdgeSharp = 56,
     EdgeSeam = 57,
     EdgeCreases = 58,
+    CreaseChainOffsets = 59,
+    CreaseChainVertices = 60,
     NormalStream = 64,
     NormalStreamLast = 72,
+    UvSeams = 78,
     UvNames = 79,
     UvStream = 80,
     UvStreamLast = 88,
@@ -90,6 +98,7 @@ public static class ZpmLayout
     public const int TailBytes = 32;
     public const int AxisCount = 3;
     public const int MaxRelativeArity = 4;
+    public const uint MinRingCorners = 3;
     public const int NoGrid = int.MinValue;
     public const float NormalMax = 4095f;
     public const float UvGridScale = 1048576f;

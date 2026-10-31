@@ -19,13 +19,13 @@ smallest earlier experiment, which had to decode all of it first.
 
 | Area | What it includes | Status |
 | --- | --- | --- |
-| Mesh geometry | Vertices and their positions; edges; triangles, quads, and n-gons; original face boundaries and winding; loose edges and nonmanifold meshes | Working |
-| Surface data | Normals, sharp edges, flat faces, seams, and crease values | Working |
-| Tangents | Stored per corner with their sign, from the first UV layer | Working |
+| Mesh geometry | Vertices and their positions; edges; triangles, quads, and n-gons; faces with holes (not importable in Blender); original face boundaries and winding; loose edges and nonmanifold meshes | Working |
+| Surface data | Normals, sharp edges and corners, smoothing groups, flat faces, seams per UV layer, crease values and crease chains | Working |
+| Tangents | Stored per corner with their sign, for each UV layer | Working |
 | UVs | Multiple named UV sets and coordinates spanning UDIM tiles | Working |
-| Vertex colors | Multiple named RGBA layers, stored per vertex or face corner; 8-bit or float values | Working |
+| Vertex colors | Multiple named RGBA layers, stored per vertex or face corner; 8-bit or float values; linear or sRGB | Working |
 | Custom attributes | Named data attached to vertices, face corners, edges, or faces | Planned |
-| Materials and textures | Material assignments, material properties, texture references, and textures embedded in the file when asked for | Planned |
+| Materials and textures | Material slots per face work. Planned: material properties, texture references, and textures embedded in the file when asked for | Partly |
 | Objects and hierarchy | Mesh objects, empty objects, names, transforms, parenting, collections, and instances | Planned |
 | Bones and rigs | Bone head, tail, length, roll, parenting, rest transforms, pose data, and control shapes | Planned |
 | Skinning | Named vertex groups and painted weights; bone influences come with bones | Working |

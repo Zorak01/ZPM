@@ -77,7 +77,7 @@ class EXPORT_MESH_OT_zpm(bpy.types.Operator, ExportHelper):
         box.label(text="Active object, local coordinates, base mesh.")
         box.label(text="Positions, faces, edges, normals, UVs, sharp, seams, creases.")
         box.label(text="Colors, tangents, vertex groups and weights too.")
-        box.label(text="Materials and rig data are not exported yet.")
+        box.label(text="Material slots per face; material settings not exported yet.")
 
     def execute(self, context):
         try:

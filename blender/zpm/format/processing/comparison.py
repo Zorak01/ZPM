@@ -48,6 +48,9 @@ def _key(mesh: Mesh, compare_normals: bool) -> tuple:
         )
 
     uv_names = sorted(mesh.uv_layers)
+    seam_names = sorted(mesh.uv_seams)
+    tangent_names = sorted(mesh.tangent_layers) if compare_normals else []
+    holes = set(mesh.hole_starts)
     faces = []
     corner = 0
     for index, face in enumerate(face_lists(mesh)):
@@ -59,15 +62,27 @@ def _key(mesh: Mesh, compare_normals: bool) -> tuple:
                     _group(mesh.corner_normals, corner, AXIS_COUNT)
                     if compare_normals
                     else (),
-                    _group(mesh.corner_tangents, corner, _CHANNELS)
-                    if compare_normals
-                    else (),
+                    tuple(
+                        _group(mesh.tangent_layers[n], corner, _CHANNELS)
+                        for n in tangent_names
+                    ),
                     tuple(_group(mesh.uv_layers[n], corner, 2) for n in uv_names),
                     tuple(_group(c.values, corner, _CHANNELS) for c in corner_colors),
+                    _group(mesh.sharp_corners, corner, 1),
+                    _group(mesh.smoothing_groups, corner, 1),
+                    corner in holes,
                 )
             )
             corner += 1
-        faces.append((tuple(rows), _group(mesh.flat_faces, index, 1)))
+        faces.append(
+            (
+                tuple(rows),
+                _group(mesh.flat_faces, index, 1),
+                mesh.material_slots[mesh.face_materials[index]]
+                if mesh.face_materials
+                else "",
+            )
+        )
     edges = []
     for edge in range(mesh.edge_count):
         ends = sorted((point(mesh.edges[edge * 2]), point(mesh.edges[edge * 2 + 1])))
@@ -77,15 +92,23 @@ def _key(mesh: Mesh, compare_normals: bool) -> tuple:
                 _group(mesh.sharp_edges, edge, 1),
                 _group(mesh.seam_edges, edge, 1),
                 _group(mesh.edge_creases, edge, 1),
+                tuple(_group(mesh.uv_seams[n], edge, 1) for n in seam_names),
             )
         )
     points = sorted(point(vertex) for vertex in range(mesh.vertex_count))
+    offsets = mesh.crease_chain_offsets
+    chains = [
+        tuple(point(vertex) for vertex in mesh.crease_chain_vertices[start:end])
+        for start, end in zip(offsets, offsets[1:], strict=False)
+    ]
     return (
         points,
         sorted(faces),
         sorted(edges),
         uv_names,
-        sorted(mesh.color_layers),
+        sorted((name, c.is_srgb) for name, c in mesh.color_layers.items()),
+        sorted(chains),
+        mesh.material_slots,
         sorted(mesh.vertex_groups),
     )
 

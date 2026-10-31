@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "blender"))
 
 import zpm
 from zpm.addon import mesh_adapter
-from zpm.format import FormatError, load, same_geometry, snap_mesh
+from zpm.format import FormatError, Mesh, load, same_geometry, snap_mesh
 
 
 def check_colors_tangents_and_weights(directory):
@@ -37,7 +37,7 @@ def check_colors_tangents_and_weights(directory):
     path = str(Path(directory) / "colors.zpm")
     assert bpy.ops.export_mesh.zpm(filepath=path) == {"FINISHED"}
     geometry = load(path)
-    assert geometry.corner_tangents, "Tangents were not stored"
+    assert sorted(geometry.tangent_layers) == sorted(mesh.uv_layers.keys())
     assert sorted(geometry.color_layers) == ["Heat", "Paint"]
     assert geometry.vertex_groups == ["Head", "Arm"]
     assert len(geometry.weight_values) == 80
@@ -70,12 +70,10 @@ def check_surface_data(directory):
     vertex_creases = mesh.attributes.new("crease_vert", "FLOAT", "POINT")
     vertex_creases.data[9].value = 0.25
     expected = snap_mesh(mesh_adapter.capture_mesh(mesh))
-    expected.corner_tangents = array("f")
     path = str(Path(directory) / "surface.zpm")
     assert bpy.ops.export_mesh.zpm(filepath=path) == {"FINISHED"}
     result = mesh_adapter.create_mesh(load(path), name="surface-result")
     actual = snap_mesh(mesh_adapter.capture_mesh(result))
-    actual.corner_tangents = array("f")
     assert same_geometry(actual, expected, compare_normals=False)
     assert sorted(result.uv_layers.keys()) == sorted(mesh.uv_layers.keys())
     assert "Detail" in result.uv_layers
@@ -90,6 +88,67 @@ def check_surface_data(directory):
     for corner in result.corner_normals:
         assert (corner.vector - mathutils.Vector(normals[0])).length < 0.02
     print("PASS: surface data and custom normals")
+
+
+def check_materials_and_authored_marks(directory):
+    """Slots, per-layer seams, sRGB flags, sharp corners, groups and chains survive."""
+    bpy.ops.mesh.primitive_grid_add(x_subdivisions=8, y_subdivisions=8)
+    obj = bpy.context.active_object
+    mesh = obj.data
+    mesh.uv_layers.new(name="First")
+    mesh.uv_layers.new(name="Second")
+    mesh.materials.append(bpy.data.materials.new("Skin"))
+    mesh.materials.append(None)
+    mesh.materials.append(bpy.data.materials.new("Metal"))
+    for index, face in enumerate(mesh.polygons):
+        face.material_index = 0 if index < 20 else 2
+    mesh.edges[1].use_seam = True
+    seams = mesh.attributes.new("zpm_seam:Second", "BOOLEAN", "EDGE")
+    seams.data[4].value = True
+    sharp = mesh.attributes.new("zpm_sharp_corner", "BOOLEAN", "CORNER")
+    sharp.data[6].value = True
+    groups = mesh.attributes.new("zpm_smoothing_group", "INT", "CORNER")
+    for corner, data in enumerate(groups.data):
+        data.value = corner // 40
+    mesh["zpm_crease_chain_offsets"] = [0, 2]
+    mesh["zpm_crease_chain_vertices"] = list(mesh.edges[0].vertices)
+    mesh.color_attributes.new("Linear", "FLOAT_COLOR", "POINT")
+    mesh.color_attributes.new("Paint", "BYTE_COLOR", "POINT")
+    expected = snap_mesh(mesh_adapter.capture_mesh(mesh))
+    path = str(Path(directory) / "materials.zpm")
+    assert bpy.ops.export_mesh.zpm(filepath=path) == {"FINISHED"}
+    geometry = load(path)
+    assert geometry.material_slots == ["Skin", "", "Metal"]
+    assert sorted(geometry.tangent_layers) == sorted(mesh.uv_layers.keys())
+    assert list(geometry.uv_seams) == ["Second"]
+    assert geometry.color_layers["Paint"].is_srgb
+    assert not geometry.color_layers["Linear"].is_srgb
+    result = mesh_adapter.create_mesh(geometry, name="materials-result")
+    assert [m.name if m else "" for m in result.materials] == ["Skin", "", "Metal"]
+    actual = snap_mesh(mesh_adapter.capture_mesh(result))
+    assert same_geometry(actual, expected, compare_normals=False)
+    print("PASS: materials, per-layer data and authored marks")
+
+
+def check_holes_are_refused():
+    """Blender has no faces with holes, so importing one fails, changing nothing."""
+    square = [(0, 0, 0), (4, 0, 0), (4, 4, 0), (0, 4, 0)]
+    inner = [(1, 1, 0), (1, 3, 0), (3, 3, 0)]
+    geometry = Mesh(
+        array("f", [part for point in square + inner for part in point]),
+        array("I", [7]),
+        array("I", range(7)),
+        array("I", [0, 1, 1, 2, 2, 3, 0, 3, 4, 5, 5, 6, 4, 6]),
+        hole_starts=array("I", [4]),
+    )
+    before = len(bpy.data.meshes)
+    try:
+        mesh_adapter.create_mesh(geometry, name="holes")
+    except FormatError:
+        assert len(bpy.data.meshes) == before
+        print("PASS: holes refused")
+        return
+    raise AssertionError("A face with holes was accepted")
 
 
 def run():
@@ -148,6 +207,8 @@ def run():
             print(f"PASS: {name}, API and file operators")
         check_surface_data(directory)
         check_colors_tangents_and_weights(directory)
+        check_materials_and_authored_marks(directory)
+        check_holes_are_refused()
         geometry = mesh_adapter.capture_mesh(source)
         geometry.corners[0] = geometry.vertex_count + 1
         before = len(bpy.data.meshes)

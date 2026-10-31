@@ -46,8 +46,12 @@ def _spatial_face_order(mesh: Mesh, faces: list) -> list:
     return sorted(range(len(faces)), key=key)
 
 
-def _walk_faces(faces: list, starts: list) -> list:
-    """Return face indices walking across shared edges, widest first."""
+def _walk_faces(faces: list, starts: list, materials: list) -> list:
+    """Return face indices walking across shared edges, widest first.
+
+    The walk stays inside one material and starts follow material order, so each
+    material's faces end up as one run a renderer can draw directly.
+    """
     faces_of_edge = {}
     for index, face in enumerate(faces):
         for key in face_edges(face):
@@ -64,7 +68,9 @@ def _walk_faces(faces: list, starts: list) -> list:
             walked.append(index)
             for key in face_edges(faces[index]):
                 for neighbour in faces_of_edge[key]:
-                    if not visited[neighbour]:
+                    if not visited[neighbour] and (
+                        materials[neighbour] == materials[index]
+                    ):
                         visited[neighbour] = True
                         waiting.append(neighbour)
     return walked
@@ -112,7 +118,9 @@ def _reordered_weights(mesh: Mesh, vertex_order: list) -> dict:
 
 def _reordered_color(layer: ColorLayer, corner_order, vertex_order) -> ColorLayer:
     order = corner_order if layer.is_corner else vertex_order
-    return ColorLayer(_pick(layer.values, order, _CHANNELS), layer.is_corner)
+    return ColorLayer(
+        _pick(layer.values, order, _CHANNELS), layer.is_corner, layer.is_srgb
+    )
 
 
 def reorder_mesh(mesh: Mesh) -> Mesh:
@@ -126,7 +134,9 @@ def reorder_mesh(mesh: Mesh) -> Mesh:
     if not mesh.face_count or not all(math.isfinite(v) for v in mesh.positions):
         return mesh
     source_faces = face_lists(mesh)
-    order = _walk_faces(source_faces, _spatial_face_order(mesh, source_faces))
+    materials = list(mesh.face_materials) or [0] * mesh.face_count
+    starts = sorted(_spatial_face_order(mesh, source_faces), key=materials.__getitem__)
+    order = _walk_faces(source_faces, starts, materials)
     new_ids = {}
     for index in order:
         for vertex in source_faces[index]:
@@ -144,6 +154,7 @@ def reorder_mesh(mesh: Mesh) -> Mesh:
         for index in order
         for position in range(len(source_faces[index]))
     ]
+    new_corners = {old: new for new, old in enumerate(corner_order)}
     faces = [[new_ids[vertex] for vertex in source_faces[index]] for index in order]
     edge_order, edges = _reordered_edges(mesh, new_ids, faces)
     return replace(
@@ -154,7 +165,20 @@ def reorder_mesh(mesh: Mesh) -> Mesh:
         edges=array("I", edges),
         arity=0,
         corner_normals=_pick(mesh.corner_normals, corner_order, AXIS_COUNT),
-        corner_tangents=_pick(mesh.corner_tangents, corner_order, _CHANNELS),
+        tangent_layers={
+            name: _pick(layer, corner_order, _CHANNELS)
+            for name, layer in mesh.tangent_layers.items()
+        },
+        uv_seams={
+            name: _pick(flags, edge_order) for name, flags in mesh.uv_seams.items()
+        },
+        sharp_corners=_pick(mesh.sharp_corners, corner_order),
+        smoothing_groups=_pick(mesh.smoothing_groups, corner_order),
+        crease_chain_vertices=array(
+            "I", [new_ids[vertex] for vertex in mesh.crease_chain_vertices]
+        ),
+        face_materials=_pick(mesh.face_materials, order),
+        hole_starts=array("I", sorted(new_corners[at] for at in mesh.hole_starts)),
         uv_layers={
             name: _pick(layer, corner_order, 2)
             for name, layer in mesh.uv_layers.items()

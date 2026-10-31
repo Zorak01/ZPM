@@ -64,7 +64,12 @@ Flag values: `1` the column stores slopes, `2` a palette index holds a sign in i
 | 37 | `CORNER_REPEAT_MASK` | Rank mask | Marks corners that reuse an earlier vertex. Unmarked ones use the next new vertex |
 | 38 | `CORNER_BACK_DISTANCES` | Column | How far each marked corner reaches back from the newest vertex |
 | 40 | `FACE_STARTS` | Select bits | Marks each face's first corner |
+| 39 | `CORNER_SHARP` | Column | 1 where a corner is marked sharp |
 | 41 | `FACE_FLAT` | Column | 1 where a face is shaded flat |
+| 42 | `FACE_MATERIALS` | Column | Material slot per face; absent when every face uses slot 0 |
+| 43 | `MATERIAL_SLOT_NAMES` | Name table | Slot names; an empty name is an empty slot |
+| 44 | `FACE_HOLE_STARTS` | Column | Rising corner indices, each the first corner of a hole ring. Requires edges as endpoints and stored normals |
+| 45 | `CORNER_SMOOTHING_GROUPS` | Column | Smoothing group per corner; 0 means none |
 | 48 | `EDGE_FIRST` | Column | First vertex ID of each edge |
 | 49 | `EDGE_SPAN` | Column | Second vertex ID, relative to the first |
 | 50 | `EDGE_LOOSE_MASK` | Rank mask | Marks edges on no face |
@@ -74,12 +79,15 @@ Flag values: `1` the column stores slopes, `2` a palette index holds a sign in i
 | 55 | `EDGE_FIRST_USE` | Select bits | Marks the corner that first reaches each edge, in edge order |
 | 56–57 | `EDGE_SHARP`, `EDGE_SEAM` | Column | 1 where an edge is marked |
 | 58 | `EDGE_CREASES` | Column | 16-bit crease per edge |
+| 59 | `CREASE_CHAIN_OFFSETS` | Column | Where each chain's vertices start, plus a final total |
+| 60 | `CREASE_CHAIN_VERTICES` | Column | Vertex IDs along each chain; neighbours share an edge |
+| 78 | `UV_SEAMS` | Column, layered by UV layer | A layer's own seams, only when they differ from `EDGE_SEAM` |
 | 64–72 | `NORMAL_*` | Corner stream | Two 12-bit values per corner |
 | 79 | `UV_NAMES` | UInt32 count, then length + UTF-8 | Layer names; a name's position is its layer number |
 | 80–88 | `UV_*` | Corner stream, one per layer | Two grid integers per corner |
-| 96–104 | `TANGENT_*` | Corner stream | A 12-bit direction per corner, with the bitangent sign as bit 12 of the second value |
+| 96–104 | `TANGENT_*` | Corner stream, layered by UV layer | A 12-bit direction per corner, with the bitangent sign as bit 12 of the second value |
 | 110 | `COLOR_NAMES` | Name table | Layer names; a name's position is its layer number |
-| 111 | `COLOR_FORMATS` | UInt32 per layer | 1 = per corner, 2 = float channels |
+| 111 | `COLOR_FORMATS` | UInt32 per layer | 1 = per corner, 2 = float channels, 4 = sRGB color channels |
 | 112–120 | `COLOR_RG_*` | Corner stream, one per layer | RGBA8: red + green and blue + alpha, as two 16-bit values. Float: red and green |
 | 128–136 | `COLOR_BA_*` | Corner stream, one per float layer | Float blue and alpha |
 | 144 | `GROUP_NAMES` | Name table | Vertex group names; a weight's group is an index here |

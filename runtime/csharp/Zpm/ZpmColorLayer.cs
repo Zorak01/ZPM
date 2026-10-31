@@ -15,15 +15,19 @@ public unsafe struct ZpmColorLayer
     const float FloatScale = 65536f;
     const uint CornerFlag = 1;
     const uint FloatFlag = 2;
+    const uint SrgbFlag = 4;
 
     ZpmCornerStream _redGreen, _blueAlpha;
-    bool _isCorner, _isFloat;
+    bool _isCorner, _isFloat, _isSrgb;
 
     /// <summary>Whether this layer holds a color per corner, not per vertex.</summary>
     public readonly bool isCorner => _isCorner;
 
     /// <summary>Whether this layer holds float channels, not bytes.</summary>
     public readonly bool isFloat => _isFloat;
+
+    /// <summary>Whether color channels are sRGB encoded, not linear. Alpha is always linear.</summary>
+    public readonly bool isSrgb => _isSrgb;
 
     /// <summary>Whether its streams are present for its format.</summary>
     public readonly bool isComplete => _redGreen.isBound && (!_isFloat || _blueAlpha.isBound);
@@ -33,6 +37,7 @@ public unsafe struct ZpmColorLayer
     {
         _isCorner = (format & CornerFlag) != 0;
         _isFloat = (format & FloatFlag) != 0;
+        _isSrgb = (format & SrgbFlag) != 0;
     }
 
     /// <summary>Points at one section of its first or second stream.</summary>

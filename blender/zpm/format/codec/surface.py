@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Per-corner surface data: normals, tangents and UV layers; and marks and creases."""
+"""Per-corner surface data: normals, tangents and UV layers; and marks and creases.
+
+Tangents and seams belong to a UV layer, so they use that layer's number.
+"""
 
 from array import array
 
@@ -31,6 +34,11 @@ _FLAG_KINDS = (
     ("sharp_edges", SectionKind.EDGE_SHARP),
     ("seam_edges", SectionKind.EDGE_SEAM),
     ("flat_faces", SectionKind.FACE_FLAT),
+    ("sharp_corners", SectionKind.CORNER_SHARP),
+)
+_CHAIN_KINDS = (
+    ("crease_chain_offsets", SectionKind.CREASE_CHAIN_OFFSETS),
+    ("crease_chain_vertices", SectionKind.CREASE_CHAIN_VERTICES),
 )
 _CREASE_KINDS = (
     ("edge_creases", SectionKind.EDGE_CREASES),
@@ -53,15 +61,32 @@ def encode_normals(mesh: Mesh) -> list:
 
 
 def encode_tangents(mesh: Mesh) -> list:
-    if not mesh.corner_tangents:
-        return []
-    pairs = [
-        encode_tangent(*group)
-        for group in _groups(mesh.corner_tangents, _TANGENT_WIDTH)
+    sections = []
+    corners = list(mesh.corners)
+    for layer, name in enumerate(sorted(mesh.uv_layers)):
+        if name not in mesh.tangent_layers:
+            continue
+        pairs = [
+            encode_tangent(*group)
+            for group in _groups(mesh.tangent_layers[name], _TANGENT_WIDTH)
+        ]
+        sections += encode_corner_pairs(
+            pairs, corners, mesh.vertex_count, SectionKind.TANGENT_REPEAT_MASK, layer
+        )
+    return sections
+
+
+def encode_uv_seams(mesh: Mesh) -> list:
+    """Return seams for each UV layer whose seams differ from the mesh's own."""
+    return [
+        column_section(
+            SectionKind.UV_SEAMS,
+            [1 if flag else 0 for flag in mesh.uv_seams[name]],
+            layer=layer,
+        )
+        for layer, name in enumerate(sorted(mesh.uv_layers))
+        if name in mesh.uv_seams
     ]
-    return encode_corner_pairs(
-        pairs, list(mesh.corners), mesh.vertex_count, SectionKind.TANGENT_REPEAT_MASK
-    )
 
 
 def encode_uv_layers(mesh: Mesh) -> list:
@@ -94,6 +119,17 @@ def encode_marks(mesh: Mesh) -> list:
         stored = [encode_unit(value) for value in getattr(mesh, name)]
         if any(stored):
             sections.append(column_section(kind, stored))
+    if any(mesh.smoothing_groups):
+        sections.append(
+            column_section(
+                SectionKind.CORNER_SMOOTHING_GROUPS, list(mesh.smoothing_groups)
+            )
+        )
+    if mesh.crease_chain_offsets:
+        sections += [
+            column_section(kind, list(getattr(mesh, name)))
+            for name, kind in _CHAIN_KINDS
+        ]
     return sections
 
 
@@ -104,18 +140,44 @@ def read_normals(sections: SectionReader, corners: list) -> array:
     return array("f", [part for a, b in pairs for part in decode_normal(a, b)])
 
 
-def read_tangents(sections: SectionReader, corners: list) -> array:
-    if not has_stream(sections, SectionKind.TANGENT_REPEAT_MASK):
-        return array("f")
-    pairs = read_corner_pairs(sections, SectionKind.TANGENT_REPEAT_MASK, corners)
-    return array("f", [part for a, b in pairs for part in decode_tangent(a, b)])
+def _uv_names(sections: SectionReader) -> list:
+    if not sections.has(SectionKind.UV_NAMES):
+        return []
+    return read_names(sections.raw(SectionKind.UV_NAMES))
+
+
+def read_tangents(sections: SectionReader, corners: list) -> dict:
+    """Return UV layer name to tangents, for layers that have them."""
+    kind = SectionKind.TANGENT_REPEAT_MASK
+    return {
+        name: array(
+            "f",
+            [
+                part
+                for a, b in read_corner_pairs(sections, kind, corners, layer)
+                for part in decode_tangent(a, b)
+            ],
+        )
+        for layer, name in enumerate(_uv_names(sections))
+        if has_stream(sections, kind, layer)
+    }
+
+
+def read_uv_seams(sections: SectionReader, edge_count: int) -> dict:
+    """Return UV layer name to seams, for layers whose seams differ from the mesh's."""
+    seams = {}
+    for layer, name in enumerate(_uv_names(sections)):
+        if sections.has(SectionKind.UV_SEAMS, layer):
+            values = sections.column(SectionKind.UV_SEAMS, edge_count, layer)
+            if values and max(values) > 1:
+                raise FormatError("UV seams hold a value other than 0 or 1")
+            seams[name] = array("B", values)
+    return seams
 
 
 def read_uv_layers(sections: SectionReader, corners: list) -> dict:
-    if not sections.has(SectionKind.UV_NAMES):
-        return {}
     layers = {}
-    for layer, name in enumerate(read_names(sections.raw(SectionKind.UV_NAMES))):
+    for layer, name in enumerate(_uv_names(sections)):
         pairs = read_corner_pairs(sections, SectionKind.UV_REPEAT_MASK, corners, layer)
         layers[name] = array(
             "f", [decode_uv(to_signed(part)) for pair in pairs for part in pair]
@@ -124,13 +186,18 @@ def read_uv_layers(sections: SectionReader, corners: list) -> dict:
 
 
 def read_marks(
-    sections: SectionReader, edge_count: int, face_count: int, vertex_count: int
+    sections: SectionReader,
+    edge_count: int,
+    face_count: int,
+    vertex_count: int,
+    corner_count: int,
 ) -> dict:
     """Return Mesh fields for marks and creases; absent ones come back empty."""
     owners = {
         "sharp_edges": edge_count,
         "seam_edges": edge_count,
         "flat_faces": face_count,
+        "sharp_corners": corner_count,
         "edge_creases": edge_count,
         "vertex_creases": vertex_count,
     }
@@ -143,4 +210,10 @@ def read_marks(
     for name, kind in _CREASE_KINDS:
         values = sections.column(kind, owners[name]) if sections.has(kind) else []
         fields[name] = array("f", [decode_unit(value) for value in values])
+    kind = SectionKind.CORNER_SMOOTHING_GROUPS
+    groups = sections.column(kind, corner_count) if sections.has(kind) else []
+    fields["smoothing_groups"] = array("I", groups)
+    for name, kind in _CHAIN_KINDS:
+        count = sections.count_of(kind) if sections.has(kind) else 0
+        fields[name] = array("I", sections.column(kind, count) if count else [])
     return fields

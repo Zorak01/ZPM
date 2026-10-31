@@ -4,6 +4,9 @@
 face-size, corner and edge arrays. The codec validates buffers, preserves exact
 Float32 bits, bounds input reads and replaces output files atomically.
 
+`format/direct.py` writes and expands ZMD1 files, byte-identical to the benchmark
+reference encoder. `codec` chooses between envelopes by magic.
+
 `mesh_io` converts arrays using Blender's `foreach_get` and `foreach_set`.
 Blender-specific restrictions belong here, not in the portable codec. Explicit
 loop-to-edge links preserve edge endpoint order across Blender versions.
@@ -16,9 +19,10 @@ only its operators and File menus.
 
 The package and manifest share version 0.1.0. Packet semantic changes require
 an updated contract and tests. The benchmark reference has experimental encodings
-that the Python API does not accept; only aligned profiles are supported there.
+that the Python API does not accept; it supports RAW32, COMPACT and DIRECT.
 
 ## Measurements
 
 `benchmarks/mesh-core/reference` is a frozen measurement implementation, not
-the add-on's implementation. Results must name the implementation and boundary.
+the add-on's implementation. `benchmarks/direct-read` measures ZMD1 next to it, on
+one host. Results must name the implementation and boundary.

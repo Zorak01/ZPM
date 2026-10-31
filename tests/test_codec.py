@@ -2,6 +2,7 @@
 
 """Format tests run in ordinary Python, without bpy or Blender installed."""
 
+import hashlib
 import struct
 import sys
 import tempfile
@@ -13,6 +14,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "blender"))
 
 from zpm.format import FormatError, Mesh, Profile, decode, encode, load, save
 from zpm.format.codec import HEADER
+
+
+REFERENCE_HASHES = {
+    "repository_obj418": (
+        "20af93382db2d13150bc2e2bd76cd9daa9e42506f7590209017ad9f10f5064e5"
+    ),
+    "loose_nonmanifold": (
+        "8af07f8f63c83481407f8e0feb565befdd7ac2a91127d1090ec55e9e2ce2f198"
+    ),
+    "mixed_tri_quad_ngon": (
+        "d87b3265e39f268532956eaec6c806559bc667510456c2250df04490a2dd077f"
+    ),
+}
 
 
 def triangle() -> Mesh:
@@ -101,6 +115,67 @@ class CodecTests(unittest.TestCase):
                 decode(packet[:length])
         with self.assertRaises(FormatError):
             decode(packet + b"extra")
+
+    def test_direct_truncation_and_trailing_data(self):
+        packet = encode(triangle(), profile=Profile.DIRECT)
+        for length in range(len(packet)):
+            with self.assertRaises(FormatError):
+                decode(packet[:length])
+        with self.assertRaises(FormatError):
+            decode(packet + b"extra")
+
+    def test_direct_repeated_positions_loose_edges_and_grid(self):
+        side = 40
+        positions = array("f")
+        for y in range(side):
+            for x in range(side):
+                positions.extend((x, -y, 0))
+        corners = array("I")
+        for y in range(side - 1):
+            for x in range(side - 1):
+                v = y * side + x
+                corners.extend((v, v + 1, v + side + 1, v + side))
+        edges = array("I")
+        for face in range(0, len(corners), 4):
+            for j in range(4):
+                a, b = corners[face + j], corners[face + (j + 1) % 4]
+                edges.extend((min(a, b), max(a, b)))
+        grid = Mesh(positions, array("I", [4] * (len(corners) // 4)), corners, edges)
+        self.assert_round_trip(grid)
+        packet = encode(grid, profile=Profile.DIRECT)
+        self.assertLess(len(packet), len(encode(grid)) / 2)
+        twins = array("f", [1, 2, 3] * 200)
+        self.assert_round_trip(
+            Mesh(twins, array("I"), array("I"), array("I", [0, 199, 5, 3]))
+        )
+        mixed = Mesh(
+            array("f", range(24)),
+            array("I", [3, 5]),
+            array("I", [0, 1, 2, 2, 3, 4, 5, 6]),
+            array("I", [1, 0, 2, 1, 7, 6, 0, 2, 6, 2, 2, 3, 3, 4, 4, 5, 5, 6]),
+        )
+        self.assert_round_trip(mixed)
+
+    def test_direct_matches_reference_encoder(self):
+        """Hashes come from benchmarks/direct-read: both encoders write equal bytes."""
+        root = Path(__file__).resolve().parents[1] / "benchmarks/mesh-core/fixtures"
+        for name, expected in REFERENCE_HASHES.items():
+            with self.subTest(name=name):
+                data = (root / f"{name}.zms").read_bytes()
+                v, f, c, e = struct.unpack_from("<4I", data, 4)
+                values = array("I")
+                values.frombytes(data[20:])
+                positions = array("f")
+                positions.frombytes(values[: v * 3].tobytes())
+                source = Mesh(
+                    positions,
+                    values[v * 3 : v * 3 + f],
+                    values[v * 3 + f : v * 3 + f + c],
+                    values[v * 3 + f + c :],
+                )
+                packet = encode(source, profile=Profile.DIRECT)
+                self.assertEqual(hashlib.sha256(packet).hexdigest(), expected)
+                self.assertEqual(list(decode(packet).edges), list(source.edges))
 
     def test_invalid_headers(self):
         source = encode(triangle())

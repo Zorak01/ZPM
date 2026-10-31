@@ -66,12 +66,13 @@ class EXPORT_MESH_OT_zpm(bpy.types.Operator, ExportHelper):
     filter_glob: StringProperty(default="*.zpm", options={"HIDDEN"})
     profile: EnumProperty(
         name="Storage",
-        description="Both profiles preserve Float32 position bits and topology",
+        description="All profiles preserve Float32 position bits and topology",
         items=(
+            ("direct", "Direct", "Smallest; readable by index without decoding"),
             ("compact", "Compact", "16-bit indices where possible; exact positions"),
             ("raw32", "Raw 32-bit", "Uncompressed reference layout"),
         ),
-        default="compact",
+        default="direct",
     )
 
     @classmethod

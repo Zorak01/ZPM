@@ -59,7 +59,7 @@ def run():
             bpy.context.view_layer.objects.active = obj
             obj.location = (10, 20, 30)
             expected = snapshot(source)
-            for profile in ("compact", "raw32"):
+            for profile in ("direct", "compact", "raw32"):
                 path = str(Path(directory) / f"{name}-{profile}.zpm")
                 assert bpy.ops.export_mesh.zpm(filepath=path, profile=profile) == {
                     "FINISHED"
@@ -80,7 +80,7 @@ def run():
                 assert snapshot(imported_obj.data) == expected
                 assert tuple(imported_obj.location) == (0, 0, 0)
                 assert tuple(obj.location) == (10, 20, 30)
-            print(f"PASS: {name}, both profiles, API and file operators")
+            print(f"PASS: {name}, all profiles, API and file operators")
         geometry = mesh_io.capture(source)
         geometry.corners[0] = geometry.vertex_count + 1
         before = len(bpy.data.meshes)

@@ -3,8 +3,8 @@
 """Exact, aligned mesh codec compatible with the mesh-core benchmark packets.
 
 The ZMC1 test envelope is deliberately retained during format development.
-Only RAW32 and COMPACT are supported here; experimental compression modes
-are rejected rather than interpreted as a different encoding.
+RAW32 and COMPACT use it; its experimental compression modes are rejected rather
+than interpreted as a different encoding. DIRECT uses ZMD1, see direct.py.
 """
 
 import os
@@ -15,6 +15,7 @@ from array import array
 from enum import StrEnum
 from pathlib import Path
 
+from . import direct
 from .model import FormatError, Mesh
 
 HEADER = struct.Struct("<4s15I")
@@ -24,6 +25,7 @@ DEFAULT_MAX_BYTES = 512 * 1024 * 1024
 class Profile(StrEnum):
     RAW32 = "raw32"
     COMPACT = "compact"
+    DIRECT = "direct"
 
 
 def _bytes(buffer: array) -> bytes:
@@ -53,6 +55,8 @@ def encode(mesh: Mesh, *, profile: Profile = Profile.COMPACT) -> bytes:
         profile = Profile(profile)
     except ValueError as error:
         raise FormatError(f"Unknown profile: {profile}") from error
+    if profile is Profile.DIRECT:
+        return direct.encode(mesh)
     raw = profile is Profile.RAW32
     arity = mesh.arity
     if not arity and mesh.face_sizes:
@@ -98,7 +102,11 @@ def decode(data: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
     max_bytes limits both packet size and retained decoded buffers. It is not
     a peak process-memory limit: decoding also retains the input packet.
     """
-    if len(data) < HEADER.size or len(data) > max_bytes:
+    if len(data) > max_bytes:
+        raise FormatError("Packet is truncated or exceeds the configured size limit")
+    if data[:4] == direct.MAGIC:
+        return direct.decode(data, max_bytes)
+    if len(data) < HEADER.size:
         raise FormatError("Packet is truncated or exceeds the configured size limit")
     (
         magic,

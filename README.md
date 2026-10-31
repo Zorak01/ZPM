@@ -9,6 +9,11 @@ of your work preserved when you export.**
 ZPM is in early development. Mesh import and export work today. The wider
 feature set below is planned, not implemented yet.
 
+**Reading a ZPM mesh means no decode step.** The Direct profile is read by index
+straight from the file bytes, with no allocation: one face on a real 3,682-vertex
+character takes about 0.09 microseconds, and the file is 2.9x smaller than Compact.
+[Measurements](benchmarks/direct-read/README.md) | [Layout](docs/mesh-core.md#zmd1-direct-read-layout)
+
 ## What ZPM will store
 
 | Area | What it includes | Status |
@@ -61,6 +66,8 @@ Exports contain the active object's base mesh in local coordinates; modifiers
 are not evaluated. Imports create a new object at the origin. Keep the source
 `.blend` for data outside the supported mesh-core scope.
 
+The export dialog's Storage option defaults to **Direct**. Compact and Raw 32-bit remain.
+
 ## Python API
 
 Python 3.11+. No runtime dependencies. Importing the format API does not import bpy.
@@ -74,8 +81,11 @@ from zpm.format import Profile, load, save
 
 mesh = load("model.zpm")
 print(mesh.vertex_count, mesh.face_count, mesh.buffer_bytes)
-save("copy.zpm", mesh, profile=Profile.COMPACT)
+save("copy.zpm", mesh, profile=Profile.DIRECT)
 ```
+
+The Python API expands a whole file into arrays for editing. By-index reading is
+in the [C# reference reader](benchmarks/direct-read/reference/ZpmMeshView.cs).
 
 See the [packet contract](docs/mesh-core.md) and [architecture](docs/architecture.md).
 
@@ -91,6 +101,9 @@ reference codec**, not Python API speed or end-to-end Blender loading.
 
 These results compare mesh-core encodings on identical input. They do not
 establish an advantage over GLB, glTF, FBX, or other complete scene formats.
+
+[Direct-read results](benchmarks/direct-read/README.md) measure the Direct profile
+next to these profiles, rerun on one machine.
 
 ## Development
 
@@ -120,6 +133,7 @@ trips, and extension packaging.
 | `blender/zpm/operators.py` | Operators and menus |
 | `tests` | Codec and Blender integration tests |
 | `benchmarks/mesh-core` | Frozen reference, fixtures, measurements, runner |
+| `benchmarks/direct-read` | Direct-read reference reader, encoder, measurements |
 | `docs` | Public contracts and architecture |
 | `tools` | Validation and build utilities |
 

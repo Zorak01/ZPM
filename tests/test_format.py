@@ -81,6 +81,7 @@ from zpm.format.container.layout import (
     align,
 )
 from zpm.format.container.sections import Section, write_file
+from zpm.format.processing.animation import reduce_track
 from zpm.format.processing.reordering import reorder_mesh
 
 
@@ -176,6 +177,10 @@ def authored_mesh() -> Mesh:
         "Heat": ColorLayer(array("f", [0.5] * mesh.vertex_count * 4), False),
     }
     mesh.tangent_method = "MikkTSpace, test"
+    mesh.vertex_groups = ["Face"]
+    mesh.weight_offsets = array("I", range(mesh.vertex_count + 1))
+    mesh.weight_groups = array("I", [0]) * mesh.vertex_count
+    mesh.weight_values = array("f", [1.0]) * mesh.vertex_count
     mesh.attributes = attributes_for(mesh)
     mesh.shape_targets = shape_targets_for(mesh)
     return mesh
@@ -602,7 +607,9 @@ class CodecTests(unittest.TestCase):
         data = encode(grid_mesh())
         count = FILE_HEADER.unpack_from(data)[2]
         kinds = [
-            DIRECTORY_ENTRY.unpack_from(data, FILE_HEADER.size + i * 8)[0]
+            DIRECTORY_ENTRY.unpack_from(
+                data, FILE_HEADER.size + i * DIRECTORY_ENTRY.size
+            )[0]
             for i in range(count)
         ]
         self.assertEqual(kinds, sorted(set(kinds)))
@@ -659,6 +666,15 @@ class CodecTests(unittest.TestCase):
             with self.assertRaises(FormatError):
                 load(path, max_bytes=64)
             self.assertEqual(list(path.parent.iterdir()), [path])
+
+
+def _value_at(track: Track, time: float) -> float:
+    for at in range(len(track.times) - 1):
+        start, end = track.times[at], track.times[at + 1]
+        if start <= time <= end:
+            part = (time - start) / (end - start)
+            return track.values[at] + (track.values[at + 1] - track.values[at]) * part
+    raise AssertionError("Time outside the track")
 
 
 def sample_scene() -> Scene:
@@ -924,6 +940,43 @@ def sample_scene() -> Scene:
 
 
 class SceneTests(unittest.TestCase):
+    def test_keys_on_a_line_are_dropped_and_the_rest_stay_close(self):
+        times = [float(key) for key in range(100)]
+        values = [2.0 * time for time in times[:50]] + [
+            98.0 + math.sin(time) for time in times[50:]
+        ]
+        track = Track(ResourceKind.OBJECT, 0, "x", list(times), list(values))
+        reduce_track(track)
+        self.assertLess(len(track.times), 60)
+        self.assertEqual((track.times[0], track.times[-1]), (0.0, 99.0))
+        limit = (max(values) - min(values)) * 1e-5
+        for time, value in zip(times, values, strict=True):
+            self.assertLessEqual(abs(_value_at(track, time) - value), limit * 1.01)
+
+    def test_vertices_with_equal_weights_share_a_row(self):
+        mesh = grid_mesh(30)
+        mesh.vertex_groups = ["A", "B"]
+        mesh.weight_offsets = array("I", [v * 2 for v in range(mesh.vertex_count + 1)])
+        mesh.weight_groups = array("I", [0, 1] * mesh.vertex_count)
+        mesh.weight_values = array("f", [0.25, 0.75] * mesh.vertex_count)
+        data = encode(mesh)
+        names = {region.name for region in map_file(data)}
+        self.assertIn("WEIGHT_SET_OF_VERTEX", names)
+        self.assertTrue(same_geometry(snap_mesh(mesh), decode(data)))
+
+    def test_targets_moving_the_same_vertices_share_a_list(self):
+        mesh = grid_mesh(10)
+        first = array("f", mesh.positions)
+        second = array("f", mesh.positions)
+        for vertex in range(0, 40, 2):
+            first[vertex * 3 + 2] = 0.5
+            second[vertex * 3 + 2] = 0.25
+        mesh.shape_targets = [ShapeTarget("A", first), ShapeTarget("B", second)]
+        data = encode(mesh)
+        names = {region.name for region in map_file(data)}
+        self.assertIn("SHAPE_LIST_STARTS", names)
+        self.assertTrue(same_geometry(snap_mesh(mesh), decode(data)))
+
     def test_every_table_round_trips(self):
         source = sample_scene()
         decoded = decode_scene(encode_scene(source))
@@ -976,7 +1029,7 @@ class SceneTests(unittest.TestCase):
 
     def test_unknown_optional_sections_are_skipped(self):
         sections = [
-            Section(SectionKind.SCENE_MESH_STARTS, array("I", [0]).tobytes()),
+            Section(SectionKind.SCENE_MESH_STARTS, bytes(8)),
             Section(OPTIONAL_KIND_START + 5, b"future data!"),
         ]
         data = write_file(sections)

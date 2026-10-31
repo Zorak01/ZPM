@@ -16,8 +16,8 @@ public unsafe struct ZpmShapeTargets
 
     ZpmNames _names, _groups;
     byte* _info;
-    ZpmColumn _starts, _vertices, _x, _y, _z, _normalX, _normalY, _normalZ, _tangentX, _tangentY, _tangentZ;
-    bool _hasGroups, _hasStarts, _hasVertices, _hasX, _hasY, _hasZ, _hasNormalX, _hasNormalY, _hasNormalZ, _hasTangentX, _hasTangentY, _hasTangentZ;
+    ZpmColumn _listStarts, _starts, _vertices, _x, _y, _z, _normalX, _normalY, _normalZ, _tangentX, _tangentY, _tangentZ;
+    bool _hasListStarts, _hasGroups, _hasStarts, _hasVertices, _hasX, _hasY, _hasZ, _hasNormalX, _hasNormalY, _hasNormalZ, _hasTangentX, _hasTangentY, _hasTangentZ;
 
     /// <summary>How many targets the file holds.</summary>
     public readonly uint count => _names.count;
@@ -37,6 +37,7 @@ public unsafe struct ZpmShapeTargets
             case ZpmSectionKind.ShapeGroupNames: _groups = ZpmNames.Bind(section); _hasGroups = true; return true;
             case ZpmSectionKind.ShapeInfo: _info = section; return true;
             case ZpmSectionKind.ShapeStarts: _starts = ZpmColumn.Bind(section, flags); _hasStarts = true; return true;
+            case ZpmSectionKind.ShapeListStarts: _listStarts = ZpmColumn.Bind(section, flags); _hasListStarts = true; return true;
             case ZpmSectionKind.ShapeVertices: _vertices = ZpmColumn.Bind(section, flags); _hasVertices = true; return true;
             case ZpmSectionKind.ShapePositionX: _x = ZpmColumn.Bind(section, flags); _hasX = true; return true;
             case ZpmSectionKind.ShapePositionY: _y = ZpmColumn.Bind(section, flags); _hasY = true; return true;
@@ -87,9 +88,13 @@ public unsafe struct ZpmShapeTargets
     /// <summary>Returns how many vertices a target changes.</summary>
     public readonly uint GetAffectedCount(uint target) => _starts.Get(target + 1) - _starts.Get(target);
 
-    /// <summary>Returns the vertex at one place in the shared columns.</summary>
+    /// <summary>Where a target's vertex list starts. Targets moving the same vertices share one.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public readonly uint GetVertexAt(uint at) => _vertices.Get(at);
+    readonly uint GetListStart(uint target) => _hasListStarts ? _listStarts.Get(target) : _starts.Get(target);
+
+    /// <summary>Returns one of the vertices a target changes.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public readonly uint GetAffectedVertex(uint target, uint index) => _vertices.Get(GetListStart(target) + index);
 
     /// <summary>Returns the stored position values at one place: grid steps, or ordered bits with no grid.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -115,14 +120,16 @@ public unsafe struct ZpmShapeTargets
     /// <summary>Finds a vertex in a target's run, by binary search. Returns false when it does not move.</summary>
     public readonly bool TryFindVertex(uint target, uint vertex, out uint at)
     {
-        uint low = _starts.Get(target), high = _starts.Get(target + 1);
+        uint first = GetListStart(target);
+        uint low = first, high = first + GetAffectedCount(target);
+        uint start = _starts.Get(target);
         while (low < high)
         {
             uint middle = low + (high - low) / 2;
             uint found = _vertices.Get(middle);
             if (found == vertex)
             {
-                at = middle;
+                at = start + (middle - first);
                 return true;
             }
             if (found < vertex)
@@ -137,7 +144,7 @@ public unsafe struct ZpmShapeTargets
     /// <summary>Walks every start, vertex and target entry: only reading them can prove they are in range.</summary>
     public readonly bool Validate(byte* limit, uint vertexCount)
     {
-        bool anyColumn = _hasStarts || _hasVertices || _hasX || _hasY || _hasZ || _hasGroups || _info != null
+        bool anyColumn = _hasListStarts || _hasStarts || _hasVertices || _hasX || _hasY || _hasZ || _hasGroups || _info != null
             || _hasNormalX || _hasNormalY || _hasNormalZ || _hasTangentX || _hasTangentY || _hasTangentZ;
         uint targets = _names.count;
         if (targets == 0)
@@ -149,7 +156,9 @@ public unsafe struct ZpmShapeTargets
             return false;
         if (_starts.count != (ulong)targets + 1 || !_starts.ValidateLayout(limit) || !_vertices.ValidateLayout(limit))
             return false;
-        uint total = _vertices.count;
+        if (_hasListStarts ? _listStarts.count != targets || !_listStarts.ValidateLayout(limit) : _vertices.count != _starts.Get(targets))
+            return false;
+        uint total = _starts.Get(targets);
         if (!ValidateChannel(limit, total, true, _hasX, _x) || !ValidateChannel(limit, total, true, _hasY, _y) || !ValidateChannel(limit, total, true, _hasZ, _z)
             || !ValidateOptional(limit, total, _hasNormalX, _hasNormalY, _hasNormalZ, _normalX, _normalY, _normalZ)
             || !ValidateOptional(limit, total, _hasTangentX, _hasTangentY, _hasTangentZ, _tangentX, _tangentY, _tangentZ))
@@ -162,11 +171,14 @@ public unsafe struct ZpmShapeTargets
             uint end = _starts.Get(target + 1);
             if (end < start || end > total || !ValidateTargetEntry(target, targets))
                 return false;
+            uint first = GetListStart(target);
+            if ((ulong)first + (end - start) > _vertices.count)
+                return false;
             uint previous = 0;
-            for (uint at = start; at < end; at++)
+            for (uint at = first; at < first + (end - start); at++)
             {
                 uint vertex = _vertices.Get(at);
-                if (vertex >= vertexCount || (at != start && vertex <= previous))
+                if (vertex >= vertexCount || (at != first && vertex <= previous))
                     return false;
                 previous = vertex;
             }

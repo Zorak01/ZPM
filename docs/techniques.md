@@ -206,8 +206,16 @@ those meshes store none. This adds real size for now: about 20% on `DamagedHelme
 
 **Technique:** Any number of weights per vertex, nothing padded. A column of offsets says where each vertex's
 weights start, and because offsets climb steadily, they compress well. A vertex's weights are one lookup
-away. **Not optimized yet:** weights are the largest part of `CesiumMan` and `werewolf`, so they're a clear
-target for the optimize round.
+away.
+
+### Vertices with equal weights share a row
+
+**Technique:** Rigged meshes repeat the same weights across many vertices. Each distinct set is stored once, with
+one more column saying which row a vertex uses, whenever that is smaller. A read costs one extra lookup.
+
+**Numbers:** `CesiumMan` 21,916 to 19,232 bytes (1.14x), with 1,949 distinct sets across 3,273 vertices.
+`RiggedFigure` 2,964 to 1,476 bytes (2.01x), with 124 across 370. Weights are 16-bit, so only exact matches share.
+They remain a large part of rigged files.
 
 ### Material slots, with each material's faces kept together
 
@@ -260,6 +268,8 @@ positions. Absolute and relative targets store alike. Meshes with no grid store 
 **Numbers:** 52 made-up smooth bumps of 8% of the model's size, moving vertices by up to 3% of it, not real
 face-rig data: `minotaur` 34,489 bytes, 2.1x smaller than sparse ID + three floats and 39.6x smaller than dense
 floats. `04263` 388,620 bytes, 2.6x and 26.8x. Most cost is offsets, about 15 bits each per axis on `04263`.
+
+Targets moving exactly the same vertices share one list, through one more column present only when that happens.
 
 **Prior art:** sparse targets are common, and so are quantized ones. Exact grid-step offsets sharing the mesh's
 grid, readable without unpacking, we have not seen, though we have not surveyed every format.
@@ -334,6 +344,9 @@ validated, including resources that vary over time.
 
 **Numbers:** made-up smooth rotation curves on 50 objects, 200 tracks of 250 keys: 187,108 bytes against 400,000 for plain time and value floats (2.14x smaller). Key times are stored once, in 796 bytes. Values take 28.1 bits each, because exact float bits keep their noisy low digits.
 
+Keys on a straight line between their neighbours are dropped on export, when a track is all linear. No value moves
+more than 1 / 100,000 of the track's own range.
+
 **Can improve:** exact bits are expensive. A tiny quantization grid like positions use would shrink values a lot.
 
 ### Curves and lattices in exact columns
@@ -374,6 +387,20 @@ Nothing to choose on export. The encoder tries each legal form of every stream a
 Opening trusts nothing it hasn't checked, and validation proves every read stays inside the file and
 every ID exists. Block descriptors prove most of it without reading the data. Each benchmark run also
 reads thousands of deliberately corrupted files: one early run caught a real crash.
+
+### What a rendered test shows about 12-bit normals
+
+`benchmarks/quality/shading_test.py` renders a near-mirror mesh reflecting a sharp checker pattern, the hardest case
+we could set up, with exact and stored normals. Identical normals differ by exactly 0, so the render is repeatable.
+
+| Normals compared with exact | Mean difference | Largest pixel difference |
+| --- | ---: | ---: |
+| Stored at 12 bits | 0.13% | 12.8% |
+| Turned by 1° (the control) | 1.33% | 45.4% |
+
+**What this means:** on a mirror-like surface, some pixels at sharp reflection edges do change, so 12 bits is not
+invisible in this worst case. Blender stores custom normals coarsely itself, about 0.6° earlier, and that is in both
+renders, so this may overstate ZPM's part. A less extreme glossy surface and direct evaluation still need testing.
 
 ## Tried and rejected
 

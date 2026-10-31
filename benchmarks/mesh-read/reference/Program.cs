@@ -539,7 +539,7 @@ static unsafe class Program
                 {
                     uint tile = image.firstTile + t;
                     scene.TryGetTilePath(tile, out byte* name, out uint length);
-                    uint bytesLength = scene.TryGetTilePayload(tile, out byte* _, out uint size) ? size : 0;
+                    ulong bytesLength = scene.TryGetTilePayload(tile, out byte* _, out ulong size) ? size : 0;
                     tiles.Add(new { number = scene.GetImageTile(tile).number, path = Text(name, length), bytes = bytesLength });
                 }
             }
@@ -691,7 +691,7 @@ static unsafe class Program
             ref readonly ZpmImage image = ref scene.GetImage(i);
             for (uint t = 0; t < image.tileCount; t++)
             {
-                if (scene.TryGetTilePayload(image.firstTile + t, out byte* bytes, out uint length) && length != 0)
+                if (scene.TryGetTilePayload(image.firstTile + t, out byte* bytes, out ulong length) && length != 0)
                     Require(bytes[length - 1] == bytes[length - 1], "payload read");
             }
         }

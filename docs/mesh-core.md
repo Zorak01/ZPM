@@ -35,8 +35,8 @@ Little-endian. Every byte belongs to exactly one named region, and `tools/zpm_ma
 
 | Region | Contents |
 | --- | --- |
-| File header | 12 bytes: magic `ZPM\0`, version (UInt16), section count (UInt16), file length (UInt32) |
-| Directory | 8 bytes per section: kind (UInt16), flags (Byte), layer (Byte), file offset (UInt32) |
+| File header | 16 bytes: magic `ZPM\0`, version (UInt16), section count (UInt16), file length (UInt64) |
+| Directory | 12 bytes per section: kind (UInt16), flags (Byte), layer (Byte), file offset (UInt64) |
 | Sections | Each padded with zeros to 4-byte alignment, contiguous, in rising kind then layer order |
 | Tail | 32 zero bytes, so readers can load whole words past the last value |
 
@@ -94,6 +94,7 @@ Flag values: `1` the column stores slopes, `2` a palette index holds a sign in i
 | 144 | `GROUP_NAMES` | Name table | Vertex group names; a weight's group is an index here |
 | 145 | `WEIGHT_OFFSETS` | Column | Where each vertex's weights start, plus a final total |
 | 146–147 | `WEIGHT_GROUPS`, `WEIGHT_VALUES` | Column | A group index and a 16-bit value per weight |
+| 148 | `WEIGHT_SET_OF_VERTEX` | Column | Which row of the weight tables each vertex uses, present when sharing rows is smaller. `WEIGHT_OFFSETS` then has one entry per row plus a total |
 | 160 | `ATTRIBUTE_NAMES` | Name table | Custom attribute names |
 | 161 | `ATTRIBUTE_FORMATS` | UInt32 per attribute | Domain, type << 8, components << 16, meaning << 24 |
 | 162 | `ATTRIBUTE_VALUES` | Column, layered by attribute | All of component 0, then component 1 and so on. Floats as ordered bits, so exact |
@@ -102,6 +103,7 @@ Flag values: `1` the column stores slopes, `2` a palette index holds a sign in i
 | 172 | `SHAPE_INFO` | 32 bytes per target | Reference, in-between-of, value, minimum, maximum, frame, in-between weight, flags (1 relative, 2 muted, interpolation << 8) |
 | 173 | `SHAPE_STARTS` | Column | Where each target's run starts, plus a final total |
 | 174 | `SHAPE_VERTICES` | Column | Rising vertex IDs each target changes |
+| 184 | `SHAPE_LIST_STARTS` | Column | Where each target's list starts, present when targets share lists |
 | 175–177 | `SHAPE_POSITION_X/Y/Z` | Column | Signed grid steps from the base shape, or ordered bits of the target with no grid |
 | 178–183 | `SHAPE_NORMAL_*`, `SHAPE_TANGENT_*` | Column | Optional signed changes on a 1 / 2^16 grid |
 
@@ -114,7 +116,7 @@ Tables hold fixed records of 4-byte fields, read in place. Links are indices, wi
 | Kind | Section | Holds |
 | --- | --- | --- |
 | 4 | `SPACE` | Float32 meters per unit, up axis, forward axis, two zero bytes. Absent means 1 m, +Z up, -Y forward |
-| 200, 201 | `SCENE_MESH_STARTS`, `SCENE_MESHES` | UInt32 start per mesh plus a total, then the mesh files joined |
+| 200, 201 | `SCENE_MESH_STARTS`, `SCENE_MESHES` | UInt64 start per mesh plus a total, then the mesh files joined |
 | 202, 203 | `OBJECT_NAMES`, `OBJECT_INFO` | 148 bytes per object: type, data, parent, parent bone, rotation mode, flags, instance collection, skin armature, skin flags, location, rotation, scale, parent inverse, first pose channel, pose channel count |
 | 204 | `POSE_CHANNELS` | 48 bytes per channel: bone, location, rotation, scale, rotation mode |
 | 205–208 | `COLLECTION_*` | Names, parents, member starts, members |
@@ -123,7 +125,7 @@ Tables hold fixed records of 4-byte fields, read in place. Links are indices, wi
 | 213 | `SAMPLERS` | 12 bytes per sampler: filter, wrap U, wrap V |
 | 214–216 | `IMAGE_NAMES`, `IMAGE_COLOR_SPACES`, `IMAGE_INFO` | 24 bytes per image: width, height, channels, flags, first tile, tile count |
 | 217, 218 | `IMAGE_TILES`, `IMAGE_PATHS` | 8 bytes per tile: UDIM number, payload; and its path |
-| 219, 220 | `IMAGE_PAYLOAD_STARTS`, `IMAGE_PAYLOADS` | Original encoded image bytes, each distinct file once |
+| 219, 220 | `IMAGE_PAYLOAD_STARTS`, `IMAGE_PAYLOADS` | UInt64 starts, then original encoded image bytes, each distinct file once |
 | 221, 222 | `LIGHT_NAMES`, `LIGHT_INFO` | 56 bytes per light: type, unit, color, power, flags, area shape, radius, spot angle, spot blend, sun angle, area size |
 | 223, 224 | `ARMATURE_NAMES`, `ARMATURE_BONE_STARTS` | Names and where each armature's bones start |
 | 225, 226 | `BONE_NAMES`, `BONE_INFO` | 48 bytes per bone: parent, flags, head, tail, roll, envelope distance, head radius, tail radius |
@@ -213,7 +215,7 @@ them. The benchmark fuzzes this on every run.
 
 ## Limits
 
-One mesh file stays under 4 GiB. `decode` and `load` default to a 512 MiB limit on the file and the
+One mesh stays under 4 GiB, because its element counts are 32-bit, but a scene file can be larger, as far as tested below 4 GiB. `decode` and `load` default to a 512 MiB limit on the file and the
 expanded buffers, configurable by API callers. It is not a peak RAM budget.
 
 The format API supports arbitrary index topology. The Blender adapter additionally rejects self-loop

@@ -37,11 +37,10 @@ from .scene_objects import (
     read_objects,
 )
 from .scene_tables import (
-    indices_section,
+    byte_offsets_section,
     names_section,
+    read_byte_offsets,
     read_name_list,
-    read_starts,
-    starts_of,
 )
 from .scene_values import StringTable, encode_values, read_strings, read_values
 from .space import encode_space, read_space
@@ -70,7 +69,7 @@ def _without_repeated_meshes(scene: Scene) -> Scene:
     remap = {}
     kept = []
     for index, mesh in enumerate(scene.meshes):
-        key = (encode(mesh), repr(mesh.properties))
+        key = (encode(mesh), repr((mesh.properties, mesh.drivers)))
         if index in animated or key not in first_of:
             first_of.setdefault(key, len(kept))
             remap[index] = len(kept)
@@ -94,7 +93,7 @@ def encode_scene(scene: Scene) -> bytes:
     strings = StringTable()
     sections = [
         *encode_space(scene.space),
-        *indices_section(SectionKind.SCENE_MESH_STARTS, starts_of(meshes)),
+        *byte_offsets_section(SectionKind.SCENE_MESH_STARTS, meshes),
         *encode_materials_and_images(deduplicated),
         *encode_objects_and_rigs(deduplicated),
         *names_section(SectionKind.CAMERA_NAMES, [c.name for c in scene.cameras]),
@@ -110,12 +109,8 @@ def encode_scene(scene: Scene) -> bytes:
 
 
 def _read_meshes(sections: SectionReader, max_bytes: int) -> list:
-    kind = SectionKind.SCENE_MESH_STARTS
-    count = len(sections.raw(kind)) // 4 - 1
-    if count < 0:
-        raise FormatError("Mesh starts are invalid")
-    starts = read_starts(sections, kind, count)
-    if not count:
+    starts = read_byte_offsets(sections, SectionKind.SCENE_MESH_STARTS)
+    if len(starts) == 1:
         return []
     blob = sections.raw(SectionKind.SCENE_MESHES)
     if starts[-1] != len(blob):

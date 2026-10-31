@@ -142,6 +142,7 @@ class Mesh:
     tangent_method: what made the tangents and its version, or empty if unknown.
     attributes: name to custom Attribute.
     shape_targets: blendshapes, in the order they evaluate.
+    drivers: what drives its shape targets, kept for the application that made them.
     properties: named values for tools; see the value tree in codec/scene_values.py.
 
     Arrays remain mutable and are owned by the caller. Call validate after edits.
@@ -173,6 +174,7 @@ class Mesh:
     attributes: dict = field(default_factory=dict)
     shape_targets: list = field(default_factory=list)
     properties: dict = field(default_factory=dict)
+    drivers: list = field(default_factory=list)
     color_layers: dict = field(default_factory=dict)
     vertex_groups: list = field(default_factory=list)
     weight_offsets: array = field(default_factory=_empty_indices)

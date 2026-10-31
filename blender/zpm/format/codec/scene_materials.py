@@ -22,13 +22,12 @@ from ..container.sections import Section, SectionReader
 from ..errors import FormatError
 from ..scene import Image, ImageTile, Material, Sampler, Scene, TextureSlot
 from .scene_tables import (
+    byte_offsets_section,
     checked_enum,
-    indices_section,
     names_section,
+    read_byte_offsets,
     read_name_list,
     read_records,
-    read_starts,
-    starts_of,
 )
 
 _DOUBLE_SIDED = 1
@@ -112,7 +111,7 @@ def _encode_images(images: list) -> list:
         sections += names_section(SectionKind.IMAGE_PATHS, paths)
     if payloads:
         blobs = list(payloads)
-        sections += indices_section(SectionKind.IMAGE_PAYLOAD_STARTS, starts_of(blobs))
+        sections += byte_offsets_section(SectionKind.IMAGE_PAYLOAD_STARTS, blobs)
         sections.append(Section(SectionKind.IMAGE_PAYLOADS, b"".join(blobs)))
     return sections
 
@@ -203,8 +202,7 @@ def _read_payloads(sections: SectionReader) -> list:
     kind = SectionKind.IMAGE_PAYLOAD_STARTS
     if not sections.has(kind):
         return []
-    count = len(sections.raw(kind)) // 4 - 1
-    starts = read_starts(sections, kind, count)
+    starts = read_byte_offsets(sections, kind)
     blob = sections.raw(SectionKind.IMAGE_PAYLOADS)
     if starts[-1] > len(blob):
         raise FormatError("Image payloads run past their section")

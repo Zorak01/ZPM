@@ -9,14 +9,16 @@ from bpy_extras import anim_utils
 
 from ..format import Clip, Track
 from ..format.container.layout import HandleType, KeyMode, ResourceKind
+from ..format.processing.animation import reduce_track
 
+NODE_TREE_PREFIX = "node_tree."
 _MODES = {mode.name: mode for mode in KeyMode}
 _HANDLES = {kind.name: kind for kind in HandleType}
 _KEY_FIELDS = 2
 _HANDLE_FIELDS = 4
 
 
-def _capture_track(curve, kind: ResourceKind, owner: int) -> Track:
+def _capture_track(curve, kind: ResourceKind, owner: int, prefix: str) -> Track:
     points = curve.keyframe_points
     count = len(points)
     values = array("f", [0.0]) * (count * _KEY_FIELDS)
@@ -28,7 +30,7 @@ def _capture_track(curve, kind: ResourceKind, owner: int) -> Track:
     track = Track(
         kind,
         owner,
-        curve.data_path,
+        prefix + curve.data_path,
         list(values[0::_KEY_FIELDS]),
         list(values[1::_KEY_FIELDS]),
         curve.array_index,
@@ -44,7 +46,7 @@ def _capture_track(curve, kind: ResourceKind, owner: int) -> Track:
             for key in range(count)
             for v in (*left[key * 2 : key * 2 + 2], *right[key * 2 : key * 2 + 2])
         ]
-    return _without_held_keys(track)
+    return reduce_track(_without_held_keys(track))
 
 
 def _without_held_keys(track: Track) -> Track:
@@ -82,7 +84,7 @@ class ClipCapture:
     def clips(self) -> list:
         return list(self._clips.values())
 
-    def add(self, block, kind: ResourceKind, owner: int) -> None:
+    def add(self, block, kind: ResourceKind, owner: int, prefix: str = "") -> None:
         action, curves = _curves_of(block)
         if action is None:
             return
@@ -95,7 +97,7 @@ class ClipCapture:
                 action.frame_range[1],
             ),
         )
-        clip.tracks += [_capture_track(curve, kind, owner) for curve in curves]
+        clip.tracks += [_capture_track(curve, kind, owner, prefix) for curve in curves]
 
 
 def _apply_track(curve, track: Track) -> None:
@@ -126,9 +128,13 @@ def apply_clips(clips: list, owner_block, created: list) -> None:
     for clip in clips:
         by_owner = {}
         for track in clip.tracks:
-            by_owner.setdefault((track.owner_kind, track.owner), []).append(track)
-        for (kind, owner), tracks in by_owner.items():
+            in_node_tree = track.path.startswith(NODE_TREE_PREFIX)
+            key = (track.owner_kind, track.owner, in_node_tree)
+            by_owner.setdefault(key, []).append(track)
+        for (kind, owner, in_node_tree), tracks in by_owner.items():
             block = owner_block(kind, owner)
+            if block is not None and in_node_tree:
+                block = block.node_tree
             if block is None:
                 continue
             action = bpy.data.actions.new(clip.name)
@@ -136,6 +142,8 @@ def apply_clips(clips: list, owner_block, created: list) -> None:
             block.animation_data_create().action = action
             for track in tracks:
                 curve = action.fcurve_ensure_for_datablock(
-                    block, track.path, index=track.array_index
+                    block,
+                    track.path.removeprefix(NODE_TREE_PREFIX),
+                    index=track.array_index,
                 )
                 _apply_track(curve, track)

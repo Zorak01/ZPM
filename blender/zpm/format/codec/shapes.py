@@ -103,6 +103,25 @@ def _offset_sections(mesh, name, first_kind, affected) -> list:
     ]
 
 
+def _vertex_list_sections(affected: list) -> list:
+    """Return vertex lists, each distinct one once when any targets share a list."""
+    distinct = {}
+    joined = []
+    list_starts = []
+    for vertices in affected:
+        key = tuple(vertices)
+        if key not in distinct:
+            distinct[key] = len(joined)
+            joined += vertices
+        list_starts.append(distinct[key])
+    if len(joined) == sum(len(vertices) for vertices in affected):
+        return [column_section(SectionKind.SHAPE_VERTICES, joined)]
+    return [
+        column_section(SectionKind.SHAPE_LIST_STARTS, list_starts),
+        column_section(SectionKind.SHAPE_VERTICES, joined),
+    ]
+
+
 def encode_shapes(mesh: Mesh, exponent: int) -> list:
     """Return every section describing the mesh's shape targets, if it has any."""
     targets = mesh.shape_targets
@@ -117,9 +136,7 @@ def encode_shapes(mesh: Mesh, exponent: int) -> list:
         Section(SectionKind.SHAPE_NAMES, encode_names([t.name for t in targets])),
         Section(SectionKind.SHAPE_INFO, b"".join(_pack_info(t) for t in targets)),
         column_section(SectionKind.SHAPE_STARTS, starts),
-        column_section(
-            SectionKind.SHAPE_VERTICES, [v for vertices in affected for v in vertices]
-        ),
+        *_vertex_list_sections(affected),
     ]
     if any(target.vertex_group for target in targets):
         names = encode_names([target.vertex_group for target in targets])
@@ -162,16 +179,27 @@ def _unpack_target(name, group, raw) -> ShapeTarget:
 
 
 def _read_ids(sections: SectionReader, count: int) -> tuple:
-    """Return (starts, vertices), proving each target's vertices rise."""
+    """Return (starts, each target's vertex list), proving each list rises."""
     starts = sections.column(SectionKind.SHAPE_STARTS, count + 1)
     if starts[0] != 0 or any(a > b for a, b in zip(starts, starts[1:], strict=False)):
         raise FormatError("Shape target starts must rise")
-    vertices = sections.column(SectionKind.SHAPE_VERTICES, starts[-1])
-    for start, end in zip(starts, starts[1:], strict=False):
-        run = vertices[start:end]
-        if any(a >= b for a, b in zip(run, run[1:], strict=False)):
+    kind = SectionKind.SHAPE_VERTICES
+    if sections.has(SectionKind.SHAPE_LIST_STARTS):
+        vertices = sections.column(kind, sections.count_of(kind))
+        firsts = sections.column(SectionKind.SHAPE_LIST_STARTS, count)
+    else:
+        vertices = sections.column(kind, starts[-1])
+        firsts = starts[:-1]
+    runs = []
+    for index, first in enumerate(firsts):
+        length = starts[index + 1] - starts[index]
+        run = vertices[first : first + length]
+        if len(run) != length or any(
+            a >= b for a, b in zip(run, run[1:], strict=False)
+        ):
             raise FormatError("A shape target's vertices must rise")
-    return starts, vertices
+        runs.append(run)
+    return starts, runs
 
 
 def _apply_positions(moved, base, vertices, stored, axis, exponent) -> None:
@@ -194,14 +222,14 @@ def _read_offsets(sections, first_kind, total) -> list | None:
     ]
 
 
-def _fill_offsets(columns, start, end, vertices, length) -> array:
+def _fill_offsets(columns, start, run, length) -> array:
     if columns is None:
         return array("f")
     offsets = array("f", [0.0]) * length
     for axis, column in enumerate(columns):
-        for at in range(start, end):
-            slot = vertices[at] * AXIS_COUNT + axis
-            offsets[slot] = decode_offset(to_signed(column[at]))
+        for at, vertex in enumerate(run):
+            slot = vertex * AXIS_COUNT + axis
+            offsets[slot] = decode_offset(to_signed(column[start + at]))
     return offsets
 
 
@@ -226,8 +254,8 @@ def read_shapes(sections: SectionReader, positions: array, exponent: int) -> lis
     if not sections.has(SectionKind.SHAPE_NAMES):
         return []
     targets = _read_targets(sections)
-    starts, vertices = _read_ids(sections, len(targets))
-    if vertices and max(vertices) * AXIS_COUNT >= len(positions):
+    starts, runs = _read_ids(sections, len(targets))
+    if any(run and run[-1] * AXIS_COUNT >= len(positions) for run in runs):
         raise FormatError("A shape target references a missing vertex")
     axes = [
         sections.column(SectionKind(SectionKind.SHAPE_POSITION_X + axis), starts[-1])
@@ -242,15 +270,15 @@ def read_shapes(sections: SectionReader, positions: array, exponent: int) -> lis
             _apply_positions(
                 target.positions,
                 positions,
-                vertices[start:end],
+                runs[index],
                 stored[start:end],
                 axis,
                 exponent,
             )
         target.normal_offsets = _fill_offsets(
-            normals, start, end, vertices, len(positions)
+            normals, start, runs[index], len(positions)
         )
         target.tangent_offsets = _fill_offsets(
-            tangents, start, end, vertices, len(positions)
+            tangents, start, runs[index], len(positions)
         )
     return targets

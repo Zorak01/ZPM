@@ -47,8 +47,8 @@ public unsafe struct ZpmMeshView
     bool _hasFaceMaterials, _hasHoles, _hasCornerSharp, _hasSmoothingGroups, _hasCreaseChains, _hasCreaseChainVertices;
     ZpmColumn _faceMaterials, _holeStarts, _cornerSharp, _smoothingGroups, _creaseChainOffsets, _creaseChainVertices;
     uint* _colorFormats;
-    bool _hasWeights, _hasWeightGroups, _hasWeightValues;
-    ZpmColumn _weightOffsets, _weightGroups, _weightValues;
+    bool _hasWeights, _hasWeightGroups, _hasWeightValues, _hasWeightSets;
+    ZpmColumn _weightOffsets, _weightGroups, _weightValues, _weightSets;
 
     public readonly uint vertexCount => _vertexCount;
     public readonly uint faceCount => _faceCount;
@@ -102,7 +102,7 @@ public unsafe struct ZpmMeshView
             return false;
         if (Unsafe.ReadUnaligned<uint>(data) != ZpmLayout.Magic
             || Unsafe.ReadUnaligned<ushort>(data + 4) != ZpmLayout.Version
-            || Unsafe.ReadUnaligned<uint>(data + 8) != length)
+            || Unsafe.ReadUnaligned<ulong>(data + 8) != (ulong)length)
             return false;
         uint sections = Unsafe.ReadUnaligned<ushort>(data + 6);
         long directoryEnd = ZpmLayout.FileHeaderBytes + (long)sections * ZpmLayout.DirectoryEntryBytes;
@@ -122,7 +122,7 @@ public unsafe struct ZpmMeshView
             int kind = Unsafe.ReadUnaligned<ushort>(entry);
             var flags = (ZpmSectionFlags)entry[2];
             int layer = entry[3];
-            uint offset = Unsafe.ReadUnaligned<uint>(entry + 4);
+            long offset = (long)Unsafe.ReadUnaligned<ulong>(entry + 4);
             int order = (kind << 8) | layer;
             if (order <= previous || offset < previousOffset || (offset & 3) != 0 || offset + (long)ZpmLayout.ColumnCountBytes > limit)
                 return false;
@@ -182,6 +182,10 @@ public unsafe struct ZpmMeshView
             case ZpmSectionKind.WeightGroups:
                 _weightGroups = ZpmColumn.Bind(section, flags);
                 _hasWeightGroups = true;
+                return true;
+            case ZpmSectionKind.WeightSetOfVertex:
+                _weightSets = ZpmColumn.Bind(section, flags);
+                _hasWeightSets = true;
                 return true;
             case ZpmSectionKind.WeightValues:
                 _weightValues = ZpmColumn.Bind(section, flags);
@@ -603,7 +607,10 @@ public unsafe struct ZpmMeshView
             return false;
         if (!_hasWeights)
             return true;
-        if (!_hasWeightGroups || !_hasWeightValues || _weightOffsets.count != (ulong)_vertexCount + 1
+        if (_hasWeightSets && (_weightSets.count != _vertexCount || !_weightSets.ValidateLayout(_limit)
+            || _weightOffsets.count == 0 || !_weightSets.ValidateBelow(_weightOffsets.count - 1)))
+            return false;
+        if (!_hasWeightGroups || !_hasWeightValues || (!_hasWeightSets && _weightOffsets.count != (ulong)_vertexCount + 1)
             || !_weightOffsets.ValidateLayout(_limit) || !_weightGroups.ValidateLayout(_limit) || !_weightValues.ValidateLayout(_limit))
             return false;
         uint total = _weightValues.count;
@@ -633,7 +640,7 @@ public unsafe struct ZpmMeshView
             var kind = (ZpmSectionKind)Unsafe.ReadUnaligned<ushort>(entry);
             if (entry[3] != layer)
                 continue;
-            uint offset = Unsafe.ReadUnaligned<uint>(entry + 4);
+            ulong offset = Unsafe.ReadUnaligned<ulong>(entry + 4);
             if (IsFirstColorKind(kind) && !found.TryBindRole(false, kind - ZpmSectionKind.ColorRedGreenStream, _data + offset, (ZpmSectionFlags)entry[2], _cornerCount))
                 return false;
             if (IsSecondColorKind(kind) && !found.TryBindRole(true, kind - ZpmSectionKind.ColorBlueAlphaStream, _data + offset, (ZpmSectionFlags)entry[2], _cornerCount))
@@ -652,15 +659,20 @@ public unsafe struct ZpmMeshView
 
     /// <summary>Returns how many weights a vertex has.</summary>
     public readonly uint GetVertexWeightCount(uint vertex) =>
-        _hasWeights ? _weightOffsets.Get(vertex + 1) - _weightOffsets.Get(vertex) : 0;
+        _hasWeights ? _weightOffsets.Get(GetWeightRow(vertex) + 1) - _weightOffsets.Get(GetWeightRow(vertex)) : 0;
+
+    /// <summary>Returns which row of the weight tables a vertex uses. Vertices with equal weights share one.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    readonly uint GetWeightRow(uint vertex) => _hasWeightSets ? _weightSets.Get(vertex) : vertex;
 
     /// <summary>Fills the caller's buffers with a vertex's groups and weights. Returns how many it wrote.</summary>
     public readonly uint GetVertexWeights(uint vertex, uint* groups, float* weights)
     {
         if (!_hasWeights)
             return 0;
-        uint start = _weightOffsets.Get(vertex);
-        uint count = _weightOffsets.Get(vertex + 1) - start;
+        uint row = GetWeightRow(vertex);
+        uint start = _weightOffsets.Get(row);
+        uint count = _weightOffsets.Get(row + 1) - start;
         for (uint i = 0; i < count; i++)
         {
             groups[i] = _weightGroups.Get(start + i);
@@ -719,7 +731,7 @@ public unsafe struct ZpmMeshView
             var kind = (ZpmSectionKind)Unsafe.ReadUnaligned<ushort>(entry);
             if (kind < first || kind > last || entry[3] != layer)
                 continue;
-            uint offset = Unsafe.ReadUnaligned<uint>(entry + 4);
+            ulong offset = Unsafe.ReadUnaligned<ulong>(entry + 4);
             if (!stream.TryBindRole(kind - first, _data + offset, (ZpmSectionFlags)entry[2], _cornerCount))
                 return false;
         }
@@ -740,7 +752,7 @@ public unsafe struct ZpmMeshView
             byte* entry = _data + ZpmLayout.FileHeaderBytes + i * ZpmLayout.DirectoryEntryBytes;
             if ((ZpmSectionKind)Unsafe.ReadUnaligned<ushort>(entry) == ZpmSectionKind.UvSeams && entry[3] == uvLayer)
             {
-                seams = ZpmColumn.Bind(_data + Unsafe.ReadUnaligned<uint>(entry + 4), (ZpmSectionFlags)entry[2]);
+                seams = ZpmColumn.Bind(_data + Unsafe.ReadUnaligned<ulong>(entry + 4), (ZpmSectionFlags)entry[2]);
                 return true;
             }
         }
@@ -832,7 +844,7 @@ public unsafe struct ZpmMeshView
             byte* entry = _data + ZpmLayout.FileHeaderBytes + i * ZpmLayout.DirectoryEntryBytes;
             if ((ZpmSectionKind)Unsafe.ReadUnaligned<ushort>(entry) == ZpmSectionKind.AttributeValues && entry[3] == attribute)
             {
-                byte* section = _data + Unsafe.ReadUnaligned<uint>(entry + 4);
+                byte* section = _data + Unsafe.ReadUnaligned<ulong>(entry + 4);
                 found = ZpmAttribute.Bind(format, section, (ZpmSectionFlags)entry[2], GetDomainSize(ZpmAttribute.GetDomain(format)));
                 return true;
             }
@@ -878,7 +890,7 @@ public unsafe struct ZpmMeshView
         uint count = _shapes.GetAffectedCount(target);
         for (uint i = 0; i < count; i++)
         {
-            uint vertex = _shapes.GetVertexAt(start + i);
+            uint vertex = _shapes.GetAffectedVertex(target, i);
             vertices[i] = vertex;
             _shapes.GetStoredPosition(start + i, out uint x, out uint y, out uint z);
             if (_hasGrid)

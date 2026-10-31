@@ -140,6 +140,28 @@ def check_whole_scene(directory):
     empty.keyframe_insert("location", index=0, frame=10)
     empty.animation_data.action.name = "Slide"
     shader.inputs["IOR"].default_value = 1.25
+    spine_pose.custom_shape_transform = rig.pose.bones["Hip"]
+    image["source_note"] = "scan"
+    group["team"] = 7
+    body.data["cost"] = 3
+    body.shape_key_add(name="Basis", from_mix=False)
+    smile = body.shape_key_add(name="Smile", from_mix=False)
+    key_driver = smile.driver_add("value").driver
+    key_driver.expression = "lens / 100"
+    key_variable = key_driver.variables.new()
+    key_variable.name = "lens"
+    key_variable.targets[0].id_type = "CAMERA"
+    key_variable.targets[0].id = lens
+    key_variable.targets[0].data_path = "lens"
+    light_data.keyframe_insert("energy", frame=1)
+    light_data.energy = 80
+    light_data.keyframe_insert("energy", frame=5)
+    light_data.energy = 50
+    socket = shader.inputs["Metallic"]
+    socket.keyframe_insert("default_value", frame=1)
+    socket.default_value = 0.75
+    socket.keyframe_insert("default_value", frame=9)
+    socket.default_value = 0.25
     noise = material.node_tree.nodes.new("ShaderNodeTexNoise")
     material.node_tree.links.new(noise.outputs[0], shader.inputs["Roughness"])
 
@@ -241,6 +263,25 @@ def check_whole_scene(directory):
     assert [tuple(p.co) for p in curve.keyframe_points] == [(1, 0), (10, 4)]
     graph_nodes = {node.bl_idname for node in skin.node_tree.nodes}
     assert "ShaderNodeTexNoise" in graph_nodes
+    assert posed.custom_shape_transform.name == "Hip"
+    imported_image = next(
+        block for block in bpy.data.images if block.get("source_note") == "scan"
+    )
+    assert imported_image is not None
+    assert any(c.get("team") == 7 and c is not group for c in bpy.data.collections)
+    assert made["Body"].data["cost"] == 3
+    key_block_driver = made["Body"].data.shape_keys.animation_data.drivers[0]
+    assert key_block_driver.driver.expression == "lens / 100"
+    assert key_block_driver.driver.variables[0].targets[0].id.name.startswith("Lens")
+    light_curve = anim_utils.action_get_channelbag_for_slot(
+        made["Lamp"].data.animation_data.action,
+        made["Lamp"].data.animation_data.action_slot,
+    ).fcurves[0]
+    assert light_curve.data_path == "energy"
+    tree_curve = anim_utils.action_get_channelbag_for_slot(
+        skin.node_tree.animation_data.action, skin.node_tree.animation_data.action_slot
+    ).fcurves[0]
+    assert "default_value" in tree_curve.data_path
     print("PASS: whole scene")
 
 

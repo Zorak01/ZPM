@@ -7,8 +7,8 @@ from enum import IntEnum, IntFlag
 
 MAGIC = b"ZPM\0"
 VERSION = 1
-FILE_HEADER = struct.Struct("<4sHHI")
-DIRECTORY_ENTRY = struct.Struct("<HBBI")
+FILE_HEADER = struct.Struct("<4sHHQ")
+DIRECTORY_ENTRY = struct.Struct("<HBBQ")
 MESH_INFO = struct.Struct("<6IiI")
 SPACE = struct.Struct("<fBBH")
 OBJECT_INFO = struct.Struct("<9I26f2I")
@@ -29,6 +29,7 @@ IMAGE_TILE = struct.Struct("<2I")
 LIGHT_INFO = struct.Struct("<2I4f2I6f")
 BONE_INFO = struct.Struct("<2I10f")
 INDEX = struct.Struct("<I")
+BYTE_OFFSET = struct.Struct("<Q")
 SHAPE_INFO = struct.Struct("<2I5fI")
 COLUMN_COUNT = struct.Struct("<I")
 TAIL_BYTES = 32
@@ -169,6 +170,7 @@ class SectionKind(IntEnum):
     WEIGHT_OFFSETS = 145
     WEIGHT_GROUPS = 146
     WEIGHT_VALUES = 147
+    WEIGHT_SET_OF_VERTEX = 148
     ATTRIBUTE_NAMES = 160
     ATTRIBUTE_FORMATS = 161
     ATTRIBUTE_VALUES = 162
@@ -186,6 +188,7 @@ class SectionKind(IntEnum):
     SHAPE_TANGENT_X = 181
     SHAPE_TANGENT_Y = 182
     SHAPE_TANGENT_Z = 183
+    SHAPE_LIST_STARTS = 184
     SCENE_MESH_STARTS = 200
     SCENE_MESHES = 201
     OBJECT_NAMES = 202

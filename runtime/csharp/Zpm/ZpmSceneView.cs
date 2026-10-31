@@ -15,8 +15,9 @@ public unsafe struct ZpmSceneView
     byte* _limit;
     float _metersPerUnit;
     ZpmSpaceAxis _upAxis, _forwardAxis;
-    ZpmSceneTable<uint> _meshStarts, _collectionParents, _collectionMemberStarts, _collectionMembers;
-    ZpmSceneTable<uint> _payloadStarts, _armatureBoneStarts, _skinStarts, _skinBones;
+    ZpmSceneTable<ulong> _meshStarts, _payloadStarts;
+    ZpmSceneTable<uint> _collectionParents, _collectionMemberStarts, _collectionMembers;
+    ZpmSceneTable<uint> _armatureBoneStarts, _skinStarts, _skinBones;
     ZpmSceneTable<ZpmObject> _objects;
     ZpmSceneTable<ZpmPoseChannel> _poseChannels;
     ZpmSceneTable<ZpmMaterial> _materials;
@@ -102,11 +103,11 @@ public unsafe struct ZpmSceneView
         view._metersPerUnit = 1f;
         view._upAxis = ZpmSpaceAxis.Z;
         view._forwardAxis = ZpmSpaceAxis.NegativeY;
-        if (length < ZpmLayout.FileHeaderBytes + ZpmLayout.TailBytes || length > uint.MaxValue)
+        if (length < ZpmLayout.FileHeaderBytes + ZpmLayout.TailBytes)
             return false;
         if (Unsafe.ReadUnaligned<uint>(data) != ZpmLayout.Magic
             || Unsafe.ReadUnaligned<ushort>(data + 4) != ZpmLayout.Version
-            || Unsafe.ReadUnaligned<uint>(data + 8) != length)
+            || Unsafe.ReadUnaligned<ulong>(data + 8) != (ulong)length)
             return false;
         uint sections = Unsafe.ReadUnaligned<ushort>(data + 6);
         long directoryEnd = ZpmLayout.FileHeaderBytes + (long)sections * ZpmLayout.DirectoryEntryBytes;
@@ -121,8 +122,8 @@ public unsafe struct ZpmSceneView
         {
             byte* entry = data + ZpmLayout.FileHeaderBytes + i * ZpmLayout.DirectoryEntryBytes;
             int kind = Unsafe.ReadUnaligned<ushort>(entry);
-            uint offset = Unsafe.ReadUnaligned<uint>(entry + 4);
-            long end = i + 1 < sections ? Unsafe.ReadUnaligned<uint>(entry + ZpmLayout.DirectoryEntryBytes + 4) : limit;
+            long offset = (long)Unsafe.ReadUnaligned<ulong>(entry + 4);
+            long end = i + 1 < sections ? (long)Unsafe.ReadUnaligned<ulong>(entry + ZpmLayout.DirectoryEntryBytes + 4) : limit;
             if (kind <= previousKind || offset != previous || (offset & 3) != 0 || end < offset || end > limit)
                 return false;
             if (!view.TryBindSection((ZpmSectionKind)kind, (ZpmSectionFlags)entry[2], data + offset, end - offset))
@@ -203,9 +204,9 @@ public unsafe struct ZpmSceneView
         view = default;
         if (mesh >= meshCount)
             return false;
-        uint start = _meshStarts[mesh], end = _meshStarts[mesh + 1];
-        return _meshes != null && end >= start && end <= _meshesLength
-            && ZpmMeshView.TryOpen(_meshes + start, end - start, out view);
+        ulong start = _meshStarts[mesh], end = _meshStarts[mesh + 1];
+        return _meshes != null && end >= start && end <= (ulong)_meshesLength
+            && ZpmMeshView.TryOpen(_meshes + start, (long)(end - start), out view);
     }
 
     /// <summary>Returns one object in place. The index must be below objectCount.</summary>
@@ -259,14 +260,14 @@ public unsafe struct ZpmSceneView
     public readonly uint GetSkinBone(uint obj, uint group) => _skinBones[_skinStarts[obj] + group];
 
     /// <summary>Finds a tile's embedded encoded bytes, in place. Returns false when it has none.</summary>
-    public readonly bool TryGetTilePayload(uint tile, out byte* bytes, out uint length)
+    public readonly bool TryGetTilePayload(uint tile, out byte* bytes, out ulong length)
     {
         bytes = null;
         length = 0;
         uint payload = _imageTiles[tile].payload;
         if (payload == ZpmLayout.NoIndex || payload + 1 >= _payloadStarts.count)
             return false;
-        uint start = _payloadStarts[payload];
+        ulong start = _payloadStarts[payload];
         bytes = _payloads + start;
         length = _payloadStarts[payload + 1] - start;
         return true;
@@ -348,9 +349,23 @@ public unsafe struct ZpmSceneView
         return starts[starts.count - 1] <= total;
     }
 
+    static bool ValidateByteStarts(in ZpmSceneTable<ulong> starts, long total)
+    {
+        if (starts.count == 0)
+            return total == 0;
+        if (starts[0] != 0)
+            return false;
+        for (uint i = 1; i < starts.count; i++)
+        {
+            if (starts[i] < starts[i - 1])
+                return false;
+        }
+        return starts[starts.count - 1] <= (ulong)total;
+    }
+
     readonly bool ValidateMeshes()
     {
-        if (!ValidateStarts(_meshStarts, _meshStarts.count - 1, _meshesLength))
+        if (!ValidateByteStarts(_meshStarts, _meshesLength))
             return false;
         for (uint mesh = 0; mesh < meshCount; mesh++)
         {
@@ -472,7 +487,7 @@ public unsafe struct ZpmSceneView
         if (_imageNames.count != _images.count || _imageColorSpaces.count != _images.count || _imagePaths.count != _imageTiles.count)
             return false;
         uint payloads = _payloadStarts.count == 0 ? 0 : _payloadStarts.count - 1;
-        if (!ValidateStarts(_payloadStarts, payloads, _payloadsLength))
+        if (!ValidateByteStarts(_payloadStarts, _payloadsLength))
             return false;
         for (uint i = 0; i < _images.count; i++)
         {

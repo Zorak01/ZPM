@@ -329,6 +329,7 @@ def _capture_image(image: bpy.types.Image, embed: bool) -> Image:
         image.channels,
         image.alpha_mode != "NONE",
         _capture_tiles(image, embed),
+        rna_values.capture_properties(image),
     )
 
 
@@ -341,6 +342,7 @@ def _create_image(source: Image) -> bpy.types.Image:
         alpha=source.has_alpha,
         tiled=is_tiled,
     )
+    rna_values.apply_properties(image, source.properties)
     first = source.tiles[0] if source.tiles else ImageTile()
     if is_tiled:
         for tile in source.tiles[1:]:

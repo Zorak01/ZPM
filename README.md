@@ -34,8 +34,8 @@ smallest earlier experiment, which had to decode all of it first.
 | Other objects | Point, spot, sun and area lights, poly, Bezier and NURBS curves, lattices, and cameras | Working |
 | Animation | Clips of tracks addressing any field by owner and path, with float, integer, boolean, string and reference keys | Working |
 
-Tracks can address any stored field. Blender export today writes object and shape key
-animation; material and light animation are not captured yet.
+Tracks can address any stored field. Blender export writes object, shape key, material, light,
+camera, armature, curve and lattice animation.
 
 ## What better means
 
@@ -53,7 +53,7 @@ improvements are claims to demonstrate with public data, not assumptions about t
 
 ## Blender
 
-Requires Blender 4.2+. Locally verified with **4.5.1 LTS** and **5.1.2**.
+Requires Blender 4.4+ for animation. Verified with **5.2.3**; **4.5.1 LTS** and **5.1.2** passed before scenes were added.
 Build an installable extension ZIP:
 
 ```sh

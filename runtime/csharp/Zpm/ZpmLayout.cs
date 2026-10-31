@@ -62,6 +62,7 @@ public enum ZpmSectionKind : ushort
     WeightOffsets = 145,
     WeightGroups = 146,
     WeightValues = 147,
+    WeightSetOfVertex = 148,
     AttributeNames = 160,
     AttributeFormats = 161,
     AttributeValues = 162,
@@ -79,6 +80,7 @@ public enum ZpmSectionKind : ushort
     ShapeTangentX = 181,
     ShapeTangentY = 182,
     ShapeTangentZ = 183,
+    ShapeListStarts = 184,
     SceneMeshStarts = 200,
     SceneMeshes = 201,
     ObjectNames = 202,
@@ -181,8 +183,8 @@ public static class ZpmLayout
 {
     public const uint Magic = 0x004D505A; // "ZPM\0"
     public const ushort Version = 1;
-    public const int FileHeaderBytes = 12;
-    public const int DirectoryEntryBytes = 8;
+    public const int FileHeaderBytes = 16;
+    public const int DirectoryEntryBytes = 12;
     public const int MeshInfoBytes = 32;
     public const int SpaceBytes = 8;
     public const uint NoIndex = uint.MaxValue;

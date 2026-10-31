@@ -41,7 +41,7 @@ TREE_FIELDS = {
         "bone_settings",
         "drivers",
     ),
-    "Mesh": ("properties",),
+    "Mesh": ("properties", "drivers"),
     "Material": ("model", "parameters", "properties"),
     "Image": ("properties",),
     "Light": ("settings", "properties"),

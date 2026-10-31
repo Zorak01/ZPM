@@ -4,7 +4,7 @@
 
 from array import array
 
-from ..container.layout import INDEX, bits_to_ordered, ordered_to_bits
+from ..container.layout import BYTE_OFFSET, INDEX, bits_to_ordered, ordered_to_bits
 from ..container.sections import Section, SectionReader, column_section
 from ..errors import FormatError
 from ..storage.names import encode_names, read_names
@@ -55,6 +55,23 @@ def read_starts(sections: SectionReader, kind, count: int) -> list:
     if not count and not sections.has(kind):
         return [0]
     starts = read_indices(sections, kind, count + 1)
+    if starts[0] != 0 or any(a > b for a, b in zip(starts, starts[1:], strict=False)):
+        raise FormatError(f"Section {kind.name} must rise from zero")
+    return starts
+
+
+def byte_offsets_section(kind, groups: list) -> list:
+    """Return 64-bit starts of byte strings, plus one final total."""
+    packed = b"".join(BYTE_OFFSET.pack(start) for start in starts_of(groups))
+    return [Section(kind, packed)]
+
+
+def read_byte_offsets(sections: SectionReader, kind) -> list:
+    """Return rising 64-bit starts from zero. Raises FormatError otherwise."""
+    section = sections.raw(kind)
+    if not section or len(section) % BYTE_OFFSET.size:
+        raise FormatError(f"Section {kind.name} has the wrong size")
+    starts = [value[0] for value in BYTE_OFFSET.iter_unpack(section)]
     if starts[0] != 0 or any(a > b for a, b in zip(starts, starts[1:], strict=False)):
         raise FormatError(f"Section {kind.name} must rise from zero")
     return starts

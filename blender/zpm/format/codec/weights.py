@@ -1,14 +1,47 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Vertex groups and weights: any number of weights per vertex, none padded."""
+"""Vertex groups and weights: any number of weights per vertex, none padded.
+
+Vertices with exactly the same weights can share one row, found through one more
+column, whenever that is smaller. A row is one lookup further than a vertex.
+"""
 
 from array import array
 
 from ..container.layout import SectionKind
-from ..container.sections import Section, SectionReader, column_section
+from ..container.sections import Section, SectionReader, column_section, stored_bytes
+from ..errors import FormatError
 from ..mesh import Mesh
 from ..storage.names import encode_names, read_names
 from .quantize import decode_unit, encode_unit
+
+
+def _row_columns(offsets: list, groups: list, values: list) -> list:
+    return [
+        column_section(SectionKind.WEIGHT_OFFSETS, offsets),
+        column_section(SectionKind.WEIGHT_GROUPS, groups),
+        column_section(SectionKind.WEIGHT_VALUES, values),
+    ]
+
+
+def _shared_rows(mesh: Mesh, stored: list) -> list:
+    """Return the columns with each distinct set of weights stored once."""
+    rows = {}
+    row_of_vertex = []
+    offsets, groups, values = [0], [], []
+    for vertex in range(mesh.vertex_count):
+        start, end = mesh.weight_offsets[vertex], mesh.weight_offsets[vertex + 1]
+        key = (tuple(mesh.weight_groups[start:end]), tuple(stored[start:end]))
+        if key not in rows:
+            rows[key] = len(rows)
+            groups += key[0]
+            values += key[1]
+            offsets.append(len(values))
+        row_of_vertex.append(rows[key])
+    return [
+        column_section(SectionKind.WEIGHT_SET_OF_VERTEX, row_of_vertex),
+        *_row_columns(offsets, groups, values),
+    ]
 
 
 def encode_weights(mesh: Mesh) -> list:
@@ -18,14 +51,12 @@ def encode_weights(mesh: Mesh) -> list:
         names = encode_names(mesh.vertex_groups)
         sections.append(Section(SectionKind.GROUP_NAMES, names))
     if mesh.weight_values:
-        sections += [
-            column_section(SectionKind.WEIGHT_OFFSETS, list(mesh.weight_offsets)),
-            column_section(SectionKind.WEIGHT_GROUPS, list(mesh.weight_groups)),
-            column_section(
-                SectionKind.WEIGHT_VALUES,
-                [encode_unit(value) for value in mesh.weight_values],
-            ),
-        ]
+        stored = [encode_unit(value) for value in mesh.weight_values]
+        plain = _row_columns(
+            list(mesh.weight_offsets), list(mesh.weight_groups), stored
+        )
+        shared = _shared_rows(mesh, stored)
+        sections += shared if stored_bytes(shared) < stored_bytes(plain) else plain
     return sections
 
 
@@ -41,14 +72,32 @@ def read_weights(sections: SectionReader, vertex_count: int) -> dict:
         fields["vertex_groups"] = read_names(sections.raw(SectionKind.GROUP_NAMES))
     if not sections.has(SectionKind.WEIGHT_OFFSETS):
         return fields
-    offsets = sections.column(SectionKind.WEIGHT_OFFSETS, vertex_count + 1)
-    total = offsets[-1]
+    has_rows = sections.has(SectionKind.WEIGHT_SET_OF_VERTEX)
+    count = (
+        sections.count_of(SectionKind.WEIGHT_OFFSETS) if has_rows else vertex_count + 1
+    )
+    offsets = sections.column(SectionKind.WEIGHT_OFFSETS, count)
+    total = offsets[-1] if offsets else 0
+    if any(a > b for a, b in zip(offsets, offsets[1:], strict=False)):
+        raise FormatError("Weight offsets must rise")
+    groups = sections.column(SectionKind.WEIGHT_GROUPS, total)
+    values = [decode_unit(v) for v in sections.column(SectionKind.WEIGHT_VALUES, total)]
+    if has_rows:
+        rows = sections.column(SectionKind.WEIGHT_SET_OF_VERTEX, vertex_count)
+        if rows and max(rows) + 1 >= count:
+            raise FormatError("A vertex uses a missing weight row")
+        offsets, groups, values = _expand_rows(rows, offsets, groups, values)
     fields["weight_offsets"] = array("I", offsets)
-    fields["weight_groups"] = array(
-        "I", sections.column(SectionKind.WEIGHT_GROUPS, total)
-    )
-    fields["weight_values"] = array(
-        "f",
-        [decode_unit(v) for v in sections.column(SectionKind.WEIGHT_VALUES, total)],
-    )
+    fields["weight_groups"] = array("I", groups)
+    fields["weight_values"] = array("f", values)
     return fields
+
+
+def _expand_rows(rows: list, offsets: list, groups: list, values: list) -> tuple:
+    expanded_offsets, expanded_groups, expanded_values = [0], [], []
+    for row in rows:
+        start, end = offsets[row], offsets[row + 1]
+        expanded_groups += groups[start:end]
+        expanded_values += values[start:end]
+        expanded_offsets.append(len(expanded_values))
+    return expanded_offsets, expanded_groups, expanded_values

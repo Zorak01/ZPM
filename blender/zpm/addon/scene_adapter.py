@@ -92,6 +92,7 @@ _BONE_FIELDS = {
     "head_radius",
     "tail_radius",
 }
+_SHAPE_TRANSFORM = "custom_shape_transform"
 _CURVE_POINT_FIELDS = 4
 _LATTICE_POINT_AXES = 3
 _ROTATION_MODES = {mode.name: mode for mode in RotationMode}
@@ -207,6 +208,8 @@ def _capture_bone_settings(obj, bones: dict, object_index: dict) -> list:
     settings = []
     for pose_bone in obj.pose.bones:
         values = rna_values.capture_rna(pose_bone, object_index, skip=_POSE_FIELDS)
+        if pose_bone.custom_shape_transform is not None:
+            values[_SHAPE_TRANSFORM] = pose_bone.custom_shape_transform.name
         stack = _capture_stack(pose_bone.constraints, object_index)
         if values or stack:
             settings.append(
@@ -405,7 +408,7 @@ class _SceneCapture:
             return self._shared(
                 self._meshes,
                 (obj.data.name, groups),
-                lambda: mesh_adapter.capture_object(obj),
+                lambda: self._capture_mesh(obj),
             )
         if obj.type == "LIGHT":
             return self._shared(
@@ -430,6 +433,15 @@ class _SceneCapture:
                 self._cameras, obj.data.name, lambda: _capture_camera(obj.data)
             )
         return NO_INDEX
+
+    def _capture_mesh(self, obj: bpy.types.Object):
+        mesh = mesh_adapter.capture_object(obj)
+        mesh.properties = rna_values.capture_properties(obj.data)
+        if obj.data.shape_keys is not None:
+            mesh.drivers = rna_values.capture_drivers(
+                obj.data.shape_keys, self._object_index
+            )
+        return mesh
 
     def _capture_skin(self, obj: bpy.types.Object, result: SceneObject) -> None:
         for modifier in obj.modifiers:
@@ -502,6 +514,26 @@ class _SceneCapture:
             keys = bpy.data.meshes[name].shape_keys
             if keys is not None:
                 capture.add(keys, ResourceKind.MESH, index)
+        tables = (
+            (self._lights, bpy.data.lights, ResourceKind.LIGHT),
+            (self._cameras, bpy.data.cameras, ResourceKind.CAMERA),
+            (self._armatures, bpy.data.armatures, ResourceKind.ARMATURE),
+            (self._curves, bpy.data.curves, ResourceKind.CURVE),
+            (self._lattices, bpy.data.lattices, ResourceKind.LATTICE),
+        )
+        for table, blocks, kind in tables:
+            for name, (_, index) in table.items():
+                capture.add(blocks[name], kind, index)
+        for index, material in enumerate(self._materials.materials):
+            block = bpy.data.materials[material.name]
+            capture.add(block, ResourceKind.MATERIAL, index)
+            if block.node_tree is not None:
+                capture.add(
+                    block.node_tree,
+                    ResourceKind.MATERIAL,
+                    index,
+                    animation_adapter.NODE_TREE_PREFIX,
+                )
         return capture.clips
 
     def _collection_index(self, collection, parent: int = NO_INDEX) -> int:
@@ -514,7 +546,14 @@ class _SceneCapture:
             for item in collection.objects
             if item.name in self._object_index
         ]
-        self._collection_list.append(Collection(collection.name, parent, members))
+        self._collection_list.append(
+            Collection(
+                collection.name,
+                parent,
+                members,
+                rna_values.capture_properties(collection),
+            )
+        )
         for child in collection.children:
             self._collection_index(child, index)
         return index
@@ -628,6 +667,7 @@ class _SceneBuilder:
         self._source = source
         self._context = context
         self._created = []
+        self._materials = []
 
     def _keep(self, block):
         self._created.append(block)
@@ -658,6 +698,7 @@ class _SceneBuilder:
             )
             for m in source.materials
         }
+        self._materials = list(materials.values())
         meshes = []
         for index, mesh in enumerate(source.meshes):
             names = [
@@ -701,16 +742,28 @@ class _SceneBuilder:
                 bones = source.armatures[item.data].bones
                 for stored in item.bone_settings:
                     pose_bone = obj.pose.bones[bones[stored["bone"]].name]
-                    rna_values.apply_rna(pose_bone, stored["settings"], objects)
+                    settings = dict(stored["settings"])
+                    shape_bone = settings.pop(_SHAPE_TRANSFORM, "")
+                    rna_values.apply_rna(pose_bone, settings, objects)
+                    if shape_bone:
+                        pose_bone.custom_shape_transform = obj.pose.bones[shape_bone]
                     _apply_constraints(pose_bone, stored["constraints"], objects)
             rna_values.apply_drivers(obj, item.drivers, objects)
+        self._apply_shape_key_drivers(objects)
 
-    def _owner_block(self, kind, owner, objects, meshes):
-        if kind == ResourceKind.OBJECT:
-            return objects[owner]
-        if kind == ResourceKind.MESH:
-            return meshes[owner].shape_keys
-        return None
+    def _apply_shape_key_drivers(self, objects: list) -> None:
+        source = self._source
+        for index, mesh in enumerate(source.meshes):
+            owner = next(
+                (
+                    obj
+                    for item, obj in zip(source.objects, objects, strict=True)
+                    if item.object_type == ObjectType.MESH and item.data == index
+                ),
+                None,
+            )
+            if owner is not None and owner.data.shape_keys is not None:
+                rna_values.apply_drivers(owner.data.shape_keys, mesh.drivers, objects)
 
     def _link_skins_and_poses(self, objects: list) -> None:
         source = self._source
@@ -749,6 +802,7 @@ class _SceneBuilder:
                 else self._context.scene.collection
             )
             parent.children.link(collection)
+            rna_values.apply_properties(collection, item.properties)
             for member in item.members:
                 collection.objects.link(objects[member])
                 linked.add(member)
@@ -817,9 +871,19 @@ class _SceneBuilder:
             rna_values.apply_rna(curve, stored.settings, objects)
         self._apply_object_settings(objects)
         self._link_skins_and_poses(objects)
+        owners = {
+            ResourceKind.OBJECT: objects,
+            ResourceKind.MESH: [mesh.shape_keys for mesh in meshes],
+            ResourceKind.MATERIAL: self._materials,
+            ResourceKind.LIGHT: lights,
+            ResourceKind.CAMERA: cameras,
+            ResourceKind.ARMATURE: armatures,
+            ResourceKind.CURVE: curves,
+            ResourceKind.LATTICE: lattices,
+        }
         animation_adapter.apply_clips(
             source.clips,
-            lambda kind, owner: self._owner_block(kind, owner, objects, meshes),
+            lambda kind, owner: owners[kind][owner] if kind in owners else None,
             self._created,
         )
         rna_values.apply_properties(self._context.scene, source.properties)

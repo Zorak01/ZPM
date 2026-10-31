@@ -41,3 +41,6 @@ SKILL.md
 .env.*
 *.key
 *.pem
+
+# Benchmark reports use Markdown, data files and static charts.
+/benchmarks/**/*.html

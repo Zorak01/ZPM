@@ -110,7 +110,6 @@ blender --background --factory-startup --python-exit-code 1 --python tests/blend
 
 CI checks Python on Windows and Linux, benchmark integrity, Blender 4.5 round
 trips, and extension packaging.
-See [contributing](CONTRIBUTING.md) for the development workflow.
 
 ## Layout
 
@@ -124,5 +123,4 @@ See [contributing](CONTRIBUTING.md) for the development workflow.
 | `docs` | Public contracts and architecture |
 | `tools` | Validation and build utilities |
 
-[Contributing](CONTRIBUTING.md) | [Security](SECURITY.md) |
-[Changelog](CHANGELOG.md) | [GPL-3.0-or-later](LICENSE)
+[GPL-3.0-or-later](LICENSE)

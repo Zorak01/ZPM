@@ -64,7 +64,7 @@ def load_fixture(path: Path) -> Mesh:
     return Mesh(
         positions,
         values[vertices * 3 : sizes_end],
-        values[sizes_end : corners_end],
+        values[sizes_end:corners_end],
         values[corners_end:],
     )
 

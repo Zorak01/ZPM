@@ -19,8 +19,7 @@ public unsafe struct ZpmMeshView
     byte* _uvNames;
 
     bool _hasRepeats;
-    ZpmRankMask _repeats;
-    ZpmColumn _repeatIds;
+    ZpmBackReferences _positionIds;
     ZpmAxis _x, _y, _z;
 
     bool _hasRelativeCorners;
@@ -143,10 +142,10 @@ public unsafe struct ZpmMeshView
                 return available >= ZpmLayout.MeshInfoBytes && TryReadMeshInfo(section);
             case ZpmSectionKind.PositionRepeatMask:
                 _hasRepeats = true;
-                _repeats = ZpmRankMask.Bind(section, _vertexCount);
+                _positionIds.BindMask(section, _vertexCount);
                 return true;
-            case ZpmSectionKind.PositionRepeatIds:
-                _repeatIds = ZpmColumn.Bind(section, flags);
+            case ZpmSectionKind.PositionBackDistances:
+                _positionIds.BindDistances(section, flags);
                 return _hasRepeats;
             case ZpmSectionKind.CornerIds:
                 _corners = ZpmColumn.Bind(section, flags);
@@ -302,8 +301,7 @@ public unsafe struct ZpmMeshView
     {
         if (_hasRepeats)
         {
-            if (!_repeats.Validate(_limit, _uniqueCount) || _repeatIds.count != _vertexCount - _uniqueCount
-                || !_repeatIds.ValidateLayout(_limit) || !_repeatIds.ValidateBelow(_uniqueCount))
+            if (!_positionIds.Validate(_limit, _uniqueCount) || _positionIds.idCount != _uniqueCount)
                 return false;
         }
         return _vertexCount == 0
@@ -422,6 +420,13 @@ public unsafe struct ZpmMeshView
         return stream.isBound;
     }
 
+    /// <summary>Gets the stream of 12-bit normal values. Returns false when the file has no normals.</summary>
+    public readonly bool TryGetNormalStream(out ZpmCornerStream stream)
+    {
+        stream = _normals;
+        return _normals.isBound;
+    }
+
     /// <summary>Returns one corner's normal. The file must have normals.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public readonly ZpmNormal GetCornerNormal(uint corner)
@@ -467,9 +472,7 @@ public unsafe struct ZpmMeshView
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public readonly ZpmVertex GetVertex(uint index)
     {
-        uint unique = index;
-        if (_hasRepeats)
-            unique = _repeats.IsSet(index) ? _repeatIds.Get(_repeats.GetSetRank(index)) : _repeats.GetClearRank(index);
+        uint unique = _hasRepeats ? _positionIds.Get(index) : index;
         return new ZpmVertex(_x.GetBits(unique), _y.GetBits(unique), _z.GetBits(unique));
     }
 
@@ -491,9 +494,9 @@ public unsafe struct ZpmMeshView
         uint end = first + length;
         for (uint vertex = first; vertex < end;)
         {
-            if (_repeats.IsSet(vertex))
+            if (_positionIds.IsRepeat(vertex))
             {
-                uint unique = _repeatIds.Get(_repeats.GetSetRank(vertex));
+                uint unique = _positionIds.Get(vertex);
                 destination[0] = _x.GetBits(unique);
                 destination[1] = _y.GetBits(unique);
                 destination[2] = _z.GetBits(unique);
@@ -501,8 +504,8 @@ public unsafe struct ZpmMeshView
                 vertex++;
                 continue;
             }
-            uint run = Math.Min(_repeats.GetClearRun(vertex), end - vertex);
-            uint start = _repeats.GetClearRank(vertex);
+            uint run = Math.Min(_positionIds.GetNewRun(vertex), end - vertex);
+            uint start = _positionIds.Get(vertex);
             _x.CopyTo(start, run, destination);
             _y.CopyTo(start, run, destination + 1);
             _z.CopyTo(start, run, destination + 2);
@@ -522,17 +525,7 @@ public unsafe struct ZpmMeshView
         _x.CopyTo(0, unique, destination);
         _y.CopyTo(0, unique, destination + 1);
         _z.CopyTo(0, unique, destination + 2);
-        uint repeated = _vertexCount - unique;
-        for (uint vertex = _vertexCount; repeated != 0;)
-        {
-            vertex--;
-            uint source = _repeats.IsSet(vertex) ? _repeatIds.Get(--repeated) : --unique;
-            uint* from = destination + source * 3;
-            uint* to = destination + vertex * 3;
-            to[0] = from[0];
-            to[1] = from[1];
-            to[2] = from[2];
-        }
+        _positionIds.ExpandAll(destination, ZpmLayout.AxisCount);
     }
 
     /// <summary>

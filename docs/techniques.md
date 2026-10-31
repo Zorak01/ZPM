@@ -87,7 +87,7 @@ Up to 1.44x smaller on positions, and up to 1.23x on whole files. Meshes without
 **Problem:** UV seams split vertices, so real models repeat positions constantly. Samurai has 3,682
 vertices but only 1,423 unique positions.
 
-**Technique:** A rank mask marks repeats. A marked vertex stores which unique position it uses. An
+**Technique:** A rank mask marks repeats. A marked vertex stores how far back its position is. An
 unmarked vertex's unique position is simply its rank, costing no bits at all.
 
 ### Per-axis palettes
@@ -214,8 +214,9 @@ reads thousands of deliberately corrupted files: one early run caught a real cra
 
 - **Can say:** on these 17 meshes, smaller than every earlier ZPM experiment on all but tiny meshes,
   with zero allocations when reading.
-- **Can't say yet:** smaller or faster than GLB, meshopt or Draco. That comparison hasn't been run, and
-  sequential codecs may well be smaller, because they are allowed to decode first.
+- **Can't say:** smaller than Draco or meshopt, or faster at reading a whole mesh. It has been measured
+  and ZPM currently loses: see [the comparison](../benchmarks/format-compare/README.md). It wins on reading
+  part of a mesh and on memory.
 - **Not new inventions:** the building blocks above are known. What's unusual is combining them in a
   mesh file so nothing needs decoding. We have not surveyed every format, so say "unusual", not "first".
 - **Tiny meshes get bigger:** a mesh of a few vertices costs more, because of the directory and tail.

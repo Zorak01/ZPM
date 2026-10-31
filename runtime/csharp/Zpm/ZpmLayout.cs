@@ -8,7 +8,7 @@ public enum ZpmSectionKind : ushort
 {
     MeshInfo = 1,
     PositionRepeatMask = 2,
-    PositionRepeatIds = 3,
+    PositionBackDistances = 3,
     PositionGridX = 12,
     VertexCreases = 15,
     PositionBitsX = 16,

@@ -54,9 +54,7 @@ def _column(
 
 
 def _stored_bytes(sections: list) -> int:
-    return sum(
-        align(len(section.data)) + DIRECTORY_ENTRY.size for section in sections
-    )
+    return sum(align(len(section.data)) + DIRECTORY_ENTRY.size for section in sections)
 
 
 def _encode_axis(rows: list, axis: int, count: int, exponent: int) -> list:
@@ -109,7 +107,7 @@ def _encode_positions(mesh: Mesh, exponent: int) -> tuple:
     seen = {}
     rows = []
     marks = [False] * vertex_count
-    repeat_ids = []
+    distances = []
     raw = mesh.positions.tobytes()
     for vertex in range(vertex_count):
         key = raw[vertex * 12 : (vertex + 1) * 12]
@@ -119,12 +117,12 @@ def _encode_positions(mesh: Mesh, exponent: int) -> tuple:
             rows.extend(values[vertex * AXIS_COUNT : (vertex + 1) * AXIS_COUNT])
         else:
             marks[vertex] = True
-            repeat_ids.append(known)
-    if not repeat_ids:
+            distances.append(len(seen) - 1 - known)
+    if not distances:
         return plain, vertex_count
     layered = [
         _Section(SectionKind.POSITION_REPEAT_MASK, encode_rank_mask(marks)),
-        _column(SectionKind.POSITION_REPEAT_IDS, repeat_ids),
+        _column(SectionKind.POSITION_BACK_DISTANCES, distances),
         *_encode_axes(rows, len(seen), exponent),
     ]
     if _stored_bytes(layered) < _stored_bytes(plain):
@@ -253,23 +251,23 @@ def _encode_edge_references(edges: list, corners: list, sizes: list) -> list:
         return sections
     by_first = [options[0] for options in candidates]
     by_block = _nearest_references(candidates)
-    picked = min(
-        (by_first, by_block), key=lambda values: len(encode_column(values)[0])
-    )
+    picked = min((by_first, by_block), key=lambda values: len(encode_column(values)[0]))
     first_use = _encode_edge_first_use(attached_pairs, corners, following)
     if first_use is not None:
         return [*sections, first_use]
     sections.append(_column(SectionKind.EDGE_CORNERS, picked))
-    flips = [0 if corners[ref] == a else 1 for ref, a in zip(picked, first_ids)]
-    if flips != [
-        1 if corners[ref] > corners[following[ref]] else 0 for ref in picked
-    ]:
+    flips = [
+        0 if corners[ref] == a else 1 for ref, a in zip(picked, first_ids, strict=True)
+    ]
+    if flips != [1 if corners[ref] > corners[following[ref]] else 0 for ref in picked]:
         sections.append(_column(SectionKind.EDGE_FLIPS, flips))
     return sections
 
 
 def _encode_edges(edges: list, corners: list, sizes: list) -> list:
-    spans = [second - first for first, second in zip(edges[0::2], edges[1::2])]
+    spans = [
+        second - first for first, second in zip(edges[0::2], edges[1::2], strict=True)
+    ]
     endpoints = [
         _column(SectionKind.EDGE_FIRST, edges[0::2]),
         _column(SectionKind.EDGE_SPAN, spans),
@@ -309,9 +307,7 @@ def _encode_shared_stream(pairs: list, first_kind: SectionKind, layer: int) -> l
             encode_rank_mask(marks),
             layer=layer,
         ),
-        _column(
-            _stream_kind(first_kind, StreamRole.DISTANCES), distances, layer=layer
-        ),
+        _column(_stream_kind(first_kind, StreamRole.DISTANCES), distances, layer=layer),
         _column(_stream_kind(first_kind, StreamRole.VALUES_A), values_a, layer=layer),
         _column(_stream_kind(first_kind, StreamRole.VALUES_B), values_b, layer=layer),
     ]

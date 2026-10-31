@@ -33,6 +33,34 @@ public unsafe struct ZpmBackReferences
         return _mask.IsSet(index) ? newCount - 1 - _distances.Get(index - newCount) : newCount;
     }
 
+    /// <summary>Returns whether this element reuses an earlier ID.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public readonly bool IsRepeat(uint index) => _mask.IsSet(index);
+
+    /// <summary>Returns how many elements from this index on, inside its mask word, take new IDs.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public readonly uint GetNewRun(uint index) => _mask.GetClearRun(index);
+
+    /// <summary>
+    /// Spreads values out in place: the buffer starts with one group of width values per ID and
+    /// ends with one group per element. A group's slot is never past the elements using it, so
+    /// working from the end overwrites nothing before it is read. Needs no second buffer.
+    /// </summary>
+    public readonly void ExpandAll(uint* values, uint width)
+    {
+        uint newest = idCount;
+        uint repeated = _distances.count;
+        for (uint element = _count; repeated != 0;)
+        {
+            element--;
+            uint source = _mask.IsSet(element) ? newest - 1 - _distances.Get(--repeated) : --newest;
+            uint* from = values + source * width;
+            uint* to = values + element * width;
+            for (uint part = 0; part < width; part++)
+                to[part] = from[part];
+        }
+    }
+
     /// <summary>
     /// Writes every ID to the caller's buffer of count elements. Distances unpack at the buffer's
     /// end and resolve forward: the read position never falls behind the write position.

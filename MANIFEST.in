@@ -11,6 +11,8 @@ recursive-include benchmarks/mesh-read/reference *.cs *.csproj
 recursive-include benchmarks/mesh-read/results *.json *.csv
 recursive-include benchmarks/mesh-read/tools *.py
 include benchmarks/mesh-read/README.md benchmarks/mesh-read/run.py benchmarks/mesh-read/build_with_csc.py
+recursive-include benchmarks/format-compare *.py *.mjs *.md *.json
+prune benchmarks/format-compare/runs
 global-exclude *.py[cod]
 prune benchmarks/mesh-core/reference/bin
 prune benchmarks/mesh-core/reference/obj

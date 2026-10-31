@@ -102,8 +102,9 @@ The published run covers **11 fixtures x 10 profiles**. Exact reconstruction is
 checked for fresh and reused output buffers. It measures the frozen **.NET 9
 reference codec**, not Python API speed or end-to-end Blender loading.
 
-These results compare mesh-core encodings on identical input. They do not
-establish an advantage over GLB, glTF, FBX, or other complete scene formats.
+These results compare mesh-core encodings on identical input. For other formats, see
+[ZPM against Draco and meshoptimizer](benchmarks/format-compare/README.md): today ZPM loses on
+size and whole-mesh speed, and wins on partial reads and memory.
 
 These are earlier experiments, kept as the comparison.
 [Current results](benchmarks/mesh-read/README.md) measure today's layout next to

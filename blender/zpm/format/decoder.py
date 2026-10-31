@@ -144,32 +144,21 @@ def _read_positions(
     if not vertex_count:
         return []
     axes = [
-        _read_axis(sections, axis, unique_count, exponent)
-        for axis in range(AXIS_COUNT)
+        _read_axis(sections, axis, unique_count, exponent) for axis in range(AXIS_COUNT)
     ]
     rows = list(zip(*axes, strict=True))
     if not sections.has(SectionKind.POSITION_REPEAT_MASK):
         if unique_count != vertex_count:
             raise FormatError("Unique position count does not match the mesh")
         return [value for row in rows for value in row]
-    marks = read_rank_mask(
-        sections.raw(SectionKind.POSITION_REPEAT_MASK), vertex_count
+    marks = read_rank_mask(sections.raw(SectionKind.POSITION_REPEAT_MASK), vertex_count)
+    distances = sections.column(
+        SectionKind.POSITION_BACK_DISTANCES, vertex_count - unique_count
     )
-    repeat_ids = iter(
-        sections.column(SectionKind.POSITION_REPEAT_IDS, vertex_count - unique_count)
-    )
-    values = []
-    next_unique = 0
-    try:
-        for marked in marks:
-            if marked:
-                values.extend(rows[next(repeat_ids)])
-            else:
-                values.extend(rows[next_unique])
-                next_unique += 1
-    except (IndexError, StopIteration) as error:
-        raise FormatError("Repeated position ID is out of range") from error
-    return values
+    ids = _resolve_back_references(marks, distances, "Position")
+    if ids and max(ids) >= unique_count:
+        raise FormatError("Repeated position ID is out of range")
+    return [value for unique in ids for value in rows[unique]]
 
 
 def _resolve_back_references(marks: list, distances: list, limit_name: str) -> list:
@@ -210,9 +199,7 @@ def _read_corner_stream(
         marks = read_rank_mask(
             sections.raw(kind(StreamRole.REPEAT_MASK), layer), len(corners)
         )
-        distances = sections.column(
-            kind(StreamRole.DISTANCES), sum(marks), layer
-        )
+        distances = sections.column(kind(StreamRole.DISTANCES), sum(marks), layer)
         ids = _resolve_back_references(marks, distances, "Corner stream")
         count = len(corners) - sum(marks)
         values_a = sections.column(kind(StreamRole.VALUES_A), count, layer)
@@ -287,9 +274,7 @@ def _read_surface(
         "seam_edges": _read_flags(sections, SectionKind.EDGE_SEAM, edges),
         "flat_faces": _read_flags(sections, SectionKind.FACE_FLAT, faces),
         "edge_creases": _read_creases(sections, SectionKind.EDGE_CREASES, edges),
-        "vertex_creases": _read_creases(
-            sections, SectionKind.VERTEX_CREASES, vertices
-        ),
+        "vertex_creases": _read_creases(sections, SectionKind.VERTEX_CREASES, vertices),
     }
     has_normals = sections.has(SectionKind.NORMAL_REPEAT_MASK) or sections.has(
         SectionKind.NORMAL_VERTEX_A
@@ -310,11 +295,7 @@ def _read_surface(
             )
             layers[name] = array(
                 "f",
-                [
-                    decode_uv(to_signed(part))
-                    for pair in pairs
-                    for part in pair
-                ],
+                [decode_uv(to_signed(part)) for pair in pairs for part in pair],
             )
     surface["uv_layers"] = layers
     return surface

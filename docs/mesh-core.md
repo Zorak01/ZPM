@@ -49,7 +49,7 @@ Flag values: `1` the column stores slopes, `2` a palette index holds a sign in i
 | ---: | --- | --- | --- |
 | 1 | `MESH_INFO` | 8 × 32-bit | Vertex, face, corner, edge and unique-position counts; shared face size or 0; position grid exponent; flags (1 = authored normals) |
 | 2 | `POSITION_REPEAT_MASK` | Rank mask | Marks vertices that repeat an earlier position |
-| 3 | `POSITION_REPEAT_IDS` | Column | Unique-position ID of each marked vertex |
+| 3 | `POSITION_BACK_DISTANCES` | Column | How far each marked vertex reaches back from the newest unique position |
 | 12–14 | `POSITION_GRID_X/Y/Z` | Column | Position as a whole number of grid steps |
 | 15 | `VERTEX_CREASES` | Column | 16-bit crease per vertex |
 | 16–18 | `POSITION_BITS_X/Y/Z` | Column | Float bits, mapped so their order follows their value. Only for meshes with no grid |
@@ -111,7 +111,8 @@ the Nth set bit is found by reading a few words.
 
 - **Positions are grid integers.** After snapping, a coordinate is a whole number of steps, so the
   jump in float bits between -1 and +1 is gone. Reading is one multiply.
-- **Repeated positions** are stored once. An unmarked vertex's unique ID is its rank in the mask.
+- **Repeated positions** are stored once. An unmarked vertex's unique ID is its rank in the mask, and
+  a marked vertex stores how far back it reaches.
 - **Signed palettes** store magnitudes, with the sign in the index, so a mirrored model shares values.
 - **Edges** store one corner reference. A manifold edge has two such corners, and the encoder picks
   whichever fits its block in fewer bits. Blender writes the lower ID first, so order costs nothing.

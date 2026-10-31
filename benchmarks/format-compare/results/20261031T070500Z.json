@@ -1,0 +1,182 @@
+{
+  "run_id": "20261031T070500Z",
+  "started_utc": "2026-10-31T07:05:00.598801+00:00",
+  "source_run": "20261031T070333Z",
+  "draco": "DracoPy",
+  "position_bits": 20,
+  "normal_bits": 12,
+  "uv_bits": 20,
+  "results": [
+    {
+      "mesh": "04263",
+      "corners": 25332,
+      "merged_vertices": 16787,
+      "has_uvs": false,
+      "zpm_bytes": 88940,
+      "zpm_bytes_without_edges": 79328,
+      "zpm_zstd_bytes": 58515,
+      "zpm_full_read_us": 837.824,
+      "zpm_full_read_stored_us": 307.14799999999997,
+      "zpm_allocated_bytes": 0,
+      "draco": {
+        "bytes": 38498,
+        "decode_us": 5318.0320002138615
+      },
+      "meshopt": {
+        "vertices": 16787,
+        "stored": {
+          "positions": 115214,
+          "normals": 25835,
+          "indices": 8467
+        },
+        "decode_us": 136.928,
+        "decoded_bytes": 369920,
+        "bytes": 149516,
+        "zstd_bytes": 129127
+      }
+    },
+    {
+      "mesh": "04362",
+      "corners": 1728,
+      "merged_vertices": 1686,
+      "has_uvs": true,
+      "zpm_bytes": 9220,
+      "zpm_bytes_without_edges": 8896,
+      "zpm_zstd_bytes": 7580,
+      "zpm_full_read_us": 66.852,
+      "zpm_full_read_stored_us": 34.352,
+      "zpm_allocated_bytes": 0,
+      "draco": {
+        "bytes": 6906,
+        "decode_us": 452.6959965005517
+      },
+      "meshopt": {
+        "vertices": 1686,
+        "stored": {
+          "positions": 12339,
+          "normals": 5829,
+          "uvs": 39,
+          "indices": 597
+        },
+        "decode_us": 20.156,
+        "decoded_bytes": 47376,
+        "bytes": 18804,
+        "zstd_bytes": 16355
+      }
+    },
+    {
+      "mesh": "11375",
+      "corners": 120,
+      "merged_vertices": 42,
+      "has_uvs": true,
+      "zpm_bytes": 776,
+      "zpm_bytes_without_edges": 752,
+      "zpm_zstd_bytes": 499,
+      "zpm_full_read_us": 3.6,
+      "zpm_full_read_stored_us": 2.8080000000000003,
+      "zpm_allocated_bytes": 0,
+      "draco": {
+        "bytes": 501,
+        "decode_us": 35.415999591350555
+      },
+      "meshopt": {
+        "vertices": 42,
+        "stored": {
+          "positions": 340,
+          "normals": 113,
+          "uvs": 27,
+          "indices": 87
+        },
+        "decode_us": 3.884,
+        "decoded_bytes": 1488,
+        "bytes": 567,
+        "zstd_bytes": 479
+      }
+    },
+    {
+      "mesh": "minotaur",
+      "corners": 4362,
+      "merged_vertices": 1045,
+      "has_uvs": false,
+      "zpm_bytes": 16672,
+      "zpm_bytes_without_edges": 15916,
+      "zpm_zstd_bytes": 14550,
+      "zpm_full_read_us": 103.18,
+      "zpm_full_read_stored_us": 66.196,
+      "zpm_allocated_bytes": 0,
+      "draco": {
+        "bytes": 8823,
+        "decode_us": 765.8240012824535
+      },
+      "meshopt": {
+        "vertices": 1045,
+        "stored": {
+          "positions": 6532,
+          "normals": 3576,
+          "indices": 1721
+        },
+        "decode_us": 25.08,
+        "decoded_bytes": 34168,
+        "bytes": 11829,
+        "zstd_bytes": 10689
+      }
+    },
+    {
+      "mesh": "samurai",
+      "corners": 6558,
+      "merged_vertices": 1729,
+      "has_uvs": false,
+      "zpm_bytes": 24840,
+      "zpm_bytes_without_edges": 23696,
+      "zpm_zstd_bytes": 21278,
+      "zpm_full_read_us": 230.484,
+      "zpm_full_read_stored_us": 99.212,
+      "zpm_allocated_bytes": 0,
+      "draco": {
+        "bytes": 13705,
+        "decode_us": 1164.0359973534942
+      },
+      "meshopt": {
+        "vertices": 1729,
+        "stored": {
+          "positions": 10249,
+          "normals": 5789,
+          "indices": 2407
+        },
+        "decode_us": 26.708000000000002,
+        "decoded_bytes": 53896,
+        "bytes": 18445,
+        "zstd_bytes": 15902
+      }
+    },
+    {
+      "mesh": "werewolf",
+      "corners": 3852,
+      "merged_vertices": 793,
+      "has_uvs": true,
+      "zpm_bytes": 15364,
+      "zpm_bytes_without_edges": 14708,
+      "zpm_zstd_bytes": 13084,
+      "zpm_full_read_us": 149.584,
+      "zpm_full_read_stored_us": 82.396,
+      "zpm_allocated_bytes": 0,
+      "draco": {
+        "bytes": 7521,
+        "decode_us": 770.9319982677698
+      },
+      "meshopt": {
+        "vertices": 793,
+        "stored": {
+          "positions": 5563,
+          "normals": 2638,
+          "uvs": 33,
+          "indices": 1621
+        },
+        "decode_us": 19.52,
+        "decoded_bytes": 34440,
+        "bytes": 9855,
+        "zstd_bytes": 9263
+      }
+    }
+  ]
+}

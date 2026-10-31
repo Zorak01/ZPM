@@ -77,6 +77,24 @@ public unsafe struct ZpmCornerStream
         b = _b.Get(vertex);
     }
 
+    /// <summary>
+    /// Fills the caller's buffer with every corner's stored pair: the fastest way to read them all.
+    /// corners holds each corner's vertex ID, as GetCorners writes them.
+    /// </summary>
+    public readonly void CopyAllPairs(uint* corners, uint cornerCount, uint* pairs)
+    {
+        if (_isShared)
+        {
+            uint ids = _ids.idCount;
+            _a.CopyTo(0, ids, pairs, 2);
+            _b.CopyTo(0, ids, pairs + 1, 2);
+            _ids.ExpandAll(pairs, 2);
+            return;
+        }
+        for (uint corner = 0; corner < cornerCount; corner++)
+            GetPair(corner, corners[corner], out pairs[corner * 2], out pairs[corner * 2 + 1]);
+    }
+
     /// <summary>Checks the stream fits the file and every lookup stays in range.</summary>
     public readonly bool Validate(byte* limit, uint cornerCount, uint vertexCount)
     {

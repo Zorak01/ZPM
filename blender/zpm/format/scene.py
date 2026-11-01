@@ -8,10 +8,12 @@ from .container.layout import (
     NO_INDEX,
     AlphaMode,
     AreaShape,
+    InheritScale,
     LightType,
     LightUnit,
     ObjectFlags,
     ObjectType,
+    ParentType,
     ResourceKind,
     RotationMode,
     SamplerFilter,
@@ -33,9 +35,11 @@ ROLE_NORMAL = "normal"
 ROLE_EMISSION = "emission"
 ROLE_ALPHA = "alpha"
 TREE_FIELDS = {
-    "Scene": ("properties",),
+    "Scene": ("properties", "settings"),
     "SceneObject": (
         "properties",
+        "settings",
+        "material_overrides",
         "modifiers",
         "constraints",
         "bone_settings",
@@ -45,7 +49,7 @@ TREE_FIELDS = {
     "Material": ("model", "parameters", "properties"),
     "Image": ("properties",),
     "Light": ("settings", "properties"),
-    "Armature": ("settings", "properties"),
+    "Armature": ("settings", "bone_collections", "properties"),
     "Bone": ("settings", "properties"),
     "Collection": ("properties",),
     "Curve": ("settings", "properties"),
@@ -93,7 +97,8 @@ class SceneObject:
     """One placed thing.
 
     data indexes the list its type names: meshes, armatures or lights. skin_bones gives
-    the bone for each of the mesh's vertex groups, or NO_INDEX. modifiers, constraints,
+    the bone for each of the mesh's vertex groups, or NO_INDEX. material_overrides holds
+    {"slot", "material"} for slots this object fills itself. modifiers, constraints,
     bone_settings and drivers hold whatever their source application calls them: they
     are kept for that application, and are not a portable way to evaluate a rig.
     """
@@ -103,6 +108,8 @@ class SceneObject:
     data: int = NO_INDEX
     parent: int = NO_INDEX
     parent_bone: int = NO_INDEX
+    parent_type: ParentType = ParentType.OBJECT
+    parent_vertices: tuple = (0, 0, 0)
     rotation_mode: RotationMode = RotationMode.QUATERNION
     flags: ObjectFlags = ObjectFlags.NONE
     instance_collection: int = NO_INDEX
@@ -115,6 +122,8 @@ class SceneObject:
     skin_bones: list = field(default_factory=list)
     pose: list = field(default_factory=list)
     properties: dict = field(default_factory=dict)
+    settings: dict = field(default_factory=dict)
+    material_overrides: list = field(default_factory=list)
     modifiers: list = field(default_factory=list)
     constraints: list = field(default_factory=list)
     bone_settings: list = field(default_factory=list)
@@ -243,16 +252,19 @@ class Bone:
     is_connected: bool = False
     is_deform: bool = True
     inherits_rotation: bool = True
-    inherits_scale: bool = True
+    inherit_scale: InheritScale = InheritScale.FULL
     settings: dict = field(default_factory=dict)
     properties: dict = field(default_factory=dict)
 
 
 @dataclass(slots=True)
 class Armature:
+    """Bones, in any order. bone_collections holds named groups of bone names."""
+
     name: str
     bones: list = field(default_factory=list)
     settings: dict = field(default_factory=dict)
+    bone_collections: list = field(default_factory=list)
     properties: dict = field(default_factory=dict)
 
 
@@ -386,6 +398,7 @@ class Scene:
     clips: list = field(default_factory=list)
     extensions: list = field(default_factory=list)
     properties: dict = field(default_factory=dict)
+    settings: dict = field(default_factory=dict)
 
     def resources(self, kind: ResourceKind) -> list:
         """Return every resource of one kind. Bones run across all armatures."""

@@ -107,6 +107,12 @@ class MaterialCapture:
     def images(self) -> list:
         return [image for image, _ in self._images.values()]
 
+    def material_index(self, material: bpy.types.Material) -> int:
+        """Add a material if needed, and return its place in the list."""
+        if material.name not in self._materials:
+            self._materials[material.name] = self._capture(material)
+        return list(self._materials).index(material.name)
+
     def add_mesh_slots(self, mesh: bpy.types.Mesh) -> None:
         for material in mesh.materials:
             if material is not None and material.name not in self._materials:

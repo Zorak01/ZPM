@@ -11,7 +11,7 @@ FILE_HEADER = struct.Struct("<4sHHQ")
 DIRECTORY_ENTRY = struct.Struct("<HBBQ")
 MESH_INFO = struct.Struct("<6IiI")
 SPACE = struct.Struct("<fBBH")
-OBJECT_INFO = struct.Struct("<9I26f2I")
+OBJECT_INFO = struct.Struct("<13I26f2I")
 POSE_CHANNEL = struct.Struct("<I10fI")
 MATERIAL_INFO = struct.Struct("<12f4I")
 TEXTURE_SLOT = struct.Struct("<2I5f")
@@ -261,6 +261,12 @@ class SectionKind(IntEnum):
     EXTENSION_NAMES = 269
     EXTENSION_INFO = 270
     EXTENSION_PAYLOADS = 271
+    OBJECT_ORDER = 272
+    OBJECT_CHILD_STARTS = 273
+    OBJECT_CHILDREN = 274
+    BONE_ORDER = 275
+    BONE_CHILD_STARTS = 276
+    BONE_CHILDREN = 277
 
 
 class StreamRole(IntEnum):
@@ -358,6 +364,28 @@ class ObjectType(IntEnum):
     CURVE = 4
     LATTICE = 5
     CAMERA = 6
+
+
+class ParentType(IntEnum):
+    """How an object follows its parent."""
+
+    OBJECT = 0
+    ARMATURE = 1
+    LATTICE = 2
+    VERTEX = 3
+    VERTEX_3 = 4
+    BONE = 5
+
+
+class InheritScale(IntEnum):
+    """How a bone takes its parent's scale."""
+
+    FULL = 0
+    FIX_SHEAR = 1
+    ALIGNED = 2
+    AVERAGE = 3
+    NONE = 4
+    NONE_LEGACY = 5
 
 
 class RotationMode(IntEnum):
@@ -521,13 +549,15 @@ class AreaShape(IntEnum):
 
 
 class BoneFlags(IntFlag):
-    """The low bits of a BONE_INFO entry."""
+    """The low bits of a BONE_INFO entry; InheritScale sits above them."""
 
     NONE = 0
     CONNECTED = 1
     DEFORM = 2
     INHERIT_ROTATION = 4
-    INHERIT_SCALE = 8
+
+
+BONE_INHERIT_SCALE_SHIFT = 8
 
 
 class SectionFlags(IntFlag):

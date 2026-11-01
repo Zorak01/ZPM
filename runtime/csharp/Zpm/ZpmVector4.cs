@@ -3,19 +3,17 @@ using System.Runtime.InteropServices;
 
 namespace Zpm;
 
-/// <summary>Four floats, as stored: a color, or rotation values.</summary>
+/// <summary>Four floats, as stored: a color, rotation values, or a matrix row.</summary>
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 public readonly struct ZpmVector4
 {
-    /// <summary>First value.</summary>
-    public readonly float x;
+    public readonly float x, y, z, w;
 
-    /// <summary>Second value.</summary>
-    public readonly float y;
-
-    /// <summary>Third value.</summary>
-    public readonly float z;
-
-    /// <summary>Fourth value.</summary>
-    public readonly float w;
+    public ZpmVector4(float x, float y, float z, float w)
+    {
+        this.x = x;
+        this.y = y;
+        this.z = z;
+        this.w = w;
+    }
 }

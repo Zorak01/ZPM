@@ -26,8 +26,8 @@ smallest earlier experiment, which had to decode all of it first.
 | Vertex colors | Multiple named RGBA layers, stored per vertex or face corner; 8-bit or float values; linear or sRGB | Working |
 | Custom attributes | Named exact data on vertices, face corners, edges, faces, or the whole mesh; named values on any resource | Working |
 | Materials and textures | Application-neutral materials: shared fields, any shading model, named parameters, texture slots with named roles, samplers, UV transforms, UDIM tiles, image links or embedded images. Blender node graphs are kept too | Working |
-| Objects and hierarchy | Mesh, empty, armature, light, curve, lattice and camera objects, names, transforms, parenting, bone parenting, collections, shared meshes, and collection instances | Working |
-| Bones and rigs | Bone head, tail, roll, parenting, envelopes, flags, display settings, pose data and control shapes | Working |
+| Objects and hierarchy | Mesh, empty, armature, light, curve, lattice and camera objects, names, transforms, every parent type including bones and vertices, collections, shared meshes, collection instances, per-object materials, and world matrices worked out by the reader | Working |
+| Bones and rigs | Bone head, tail, roll, parenting, envelopes, flags, scale inheritance, bone collections, display settings, pose data and control shapes; rest, bind, pose and skinning matrices worked out by the reader | Working |
 | Skinning | Named vertex groups and painted weights, the armature each mesh object follows, and each group's bone | Working |
 | Blendshapes | Named shape targets, changed vertices, values, ranges, relative and absolute targets, in-betweens, and normal and tangent changes | Working |
 | Rig behavior | Modifiers, constraints and drivers, with their links, kept for the application that made them; not a portable evaluator | Working |

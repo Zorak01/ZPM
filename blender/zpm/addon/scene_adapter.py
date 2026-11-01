@@ -18,6 +18,7 @@ from ..format import (
     Lattice,
     Light,
     PoseChannel,
+    Reference,
     Scene,
     SceneObject,
     SceneSpace,
@@ -28,10 +29,12 @@ from ..format.container.layout import (
     NO_INDEX,
     AreaShape,
     HandleType,
+    InheritScale,
     LightType,
     LightUnit,
     ObjectFlags,
     ObjectType,
+    ParentType,
     ResourceKind,
     RotationMode,
     SkinFlags,
@@ -93,6 +96,33 @@ _BONE_FIELDS = {
     "tail_radius",
 }
 _SHAPE_TRANSFORM = "custom_shape_transform"
+_INHERIT_SCALES = {mode.name: mode for mode in InheritScale}
+_PARENT_TYPES = {kind.name: kind for kind in ParentType}
+_OBJECT_FIELDS = {
+    "data",
+    "location",
+    "scale",
+    "rotation_mode",
+    "rotation_quaternion",
+    "rotation_euler",
+    "rotation_axis_angle",
+    "parent",
+    "parent_type",
+    "parent_bone",
+    "parent_vertices",
+    "matrix_parent_inverse",
+    "matrix_world",
+    "matrix_local",
+    "matrix_basis",
+    "hide_viewport",
+    "hide_render",
+    "hide_select",
+    "instance_collection",
+    "instance_type",
+    "active_material_index",
+    "active_shape_key_index",
+}
+_OBJECT_SLOT_LINK = "OBJECT"
 _CURVE_POINT_FIELDS = 4
 _LATTICE_POINT_AXES = 3
 _ROTATION_MODES = {mode.name: mode for mode in RotationMode}
@@ -167,15 +197,39 @@ def _capture_armature(armature: bpy.types.Armature) -> Armature:
                 bone.use_connect,
                 bone.use_deform,
                 bone.use_inherit_rotation,
-                bone.inherit_scale != "NONE",
+                _INHERIT_SCALES[bone.inherit_scale],
                 rna_values.capture_rna(bone, {}, skip=_BONE_FIELDS),
                 rna_values.capture_properties(bone),
             )
             for bone in bones
         ],
         rna_values.capture_rna(armature, {}),
+        _capture_bone_collections(armature),
         rna_values.capture_properties(armature),
     )
+
+
+def _capture_bone_collections(armature: bpy.types.Armature) -> list:
+    return [
+        {
+            "name": collection.name,
+            "parent": collection.parent.name if collection.parent else "",
+            "is_visible": collection.is_visible,
+            "bones": [bone.name for bone in collection.bones],
+        }
+        for collection in armature.collections_all
+    ]
+
+
+def _apply_bone_collections(armature: bpy.types.Armature, stored: list) -> None:
+    made = {}
+    for item in stored:
+        parent = made.get(item["parent"])
+        collection = armature.collections.new(item["name"], parent=parent)
+        collection.is_visible = item["is_visible"]
+        made[item["name"]] = collection
+        for name in item["bones"]:
+            collection.assign(armature.bones[name])
 
 
 def _capture_stack(items, object_index: dict) -> list:
@@ -485,6 +539,16 @@ class _SceneCapture:
             rotation=_rotation_of(obj),
             scale=tuple(obj.scale),
             parent_inverse=tuple(v for row in obj.matrix_parent_inverse for v in row),
+            parent_type=_PARENT_TYPES[obj.parent_type],
+            parent_vertices=tuple(obj.parent_vertices),
+            settings=rna_values.capture_rna(
+                obj, self._object_index, skip=_OBJECT_FIELDS
+            ),
+            material_overrides=[
+                {"slot": at, "material": self._materials.material_index(slot.material)}
+                for at, slot in enumerate(obj.material_slots)
+                if slot.link == _OBJECT_SLOT_LINK and slot.material is not None
+            ],
         )
         if obj.parent_type == _BONE_PARENT and obj.parent is not None:
             bones = [bone.name for bone in obj.parent.data.bones]
@@ -578,7 +642,19 @@ class _SceneCapture:
             self._capture_animation(),
             self._materials.extensions,
             rna_values.capture_properties(self._scene),
+            self._capture_scene_settings(),
         )
+
+    def _capture_scene_settings(self) -> dict:
+        scene = self._scene
+        settings = {
+            "frame_start": scene.frame_start,
+            "frame_end": scene.frame_end,
+            "frame_current": scene.frame_current,
+        }
+        if scene.camera is not None and scene.camera.name in self._object_index:
+            settings["camera"] = Reference(self._object_index[scene.camera.name])
+        return settings
 
 
 def capture_scene(
@@ -633,7 +709,7 @@ def _create_armature_bones(armature: bpy.types.Armature, source: Armature, obj) 
             edit.tail_radius = bone.tail_radius
             edit.use_deform = bone.is_deform
             edit.use_inherit_rotation = bone.inherits_rotation
-            edit.inherit_scale = "FULL" if bone.inherits_scale else "NONE"
+            edit.inherit_scale = bone.inherit_scale.name
             rna_values.apply_rna(edit, bone.settings, [])
             if bone.parent != NO_INDEX:
                 edit.parent = edits[bone.parent]
@@ -643,6 +719,7 @@ def _create_armature_bones(armature: bpy.types.Armature, source: Armature, obj) 
         bpy.context.view_layer.objects.active = active
     rna_values.apply_rna(armature, source.settings, [obj])
     rna_values.apply_properties(armature, source.properties)
+    _apply_bone_collections(armature, source.bone_collections)
     for bone in source.bones:
         rna_values.apply_properties(armature.bones[bone.name], bone.properties)
 
@@ -721,13 +798,15 @@ class _SceneBuilder:
             if item.parent == NO_INDEX:
                 continue
             obj.parent = objects[item.parent]
+            obj.parent_type = item.parent_type.name
+            if item.parent_type in (ParentType.VERTEX, ParentType.VERTEX_3):
+                obj.parent_vertices = item.parent_vertices
             matrix = item.parent_inverse
             obj.matrix_parent_inverse = Matrix(
                 [matrix[at : at + 4] for at in range(0, 16, 4)]
             )
             if item.parent_bone != NO_INDEX:
                 parent = source.objects[item.parent]
-                obj.parent_type = _BONE_PARENT
                 obj.parent_bone = (
                     source.armatures[parent.data].bones[item.parent_bone].name
                 )
@@ -736,6 +815,11 @@ class _SceneBuilder:
         source = self._source
         for item, obj in zip(source.objects, objects, strict=True):
             rna_values.apply_properties(obj, item.properties)
+            rna_values.apply_rna(obj, item.settings, objects)
+            for override in item.material_overrides:
+                slot = obj.material_slots[override["slot"]]
+                slot.link = _OBJECT_SLOT_LINK
+                slot.material = self._materials[override["material"]]
             _apply_modifiers(obj, item.modifiers, objects)
             _apply_constraints(obj, item.constraints, objects)
             if item.object_type == ObjectType.ARMATURE and item.data != NO_INDEX:
@@ -887,6 +971,9 @@ class _SceneBuilder:
             self._created,
         )
         rna_values.apply_properties(self._context.scene, source.properties)
+        camera = source.settings.get("camera")
+        if camera is not None and self._context.scene.camera is None:
+            self._context.scene.camera = objects[camera.index]
         roots = [
             obj
             for item, obj in zip(source.objects, objects, strict=True)

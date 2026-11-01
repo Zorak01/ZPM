@@ -18,6 +18,7 @@ public unsafe struct ZpmSceneView
     ZpmSceneTable<ulong> _meshStarts, _payloadStarts;
     ZpmSceneTable<uint> _collectionParents, _collectionMemberStarts, _collectionMembers;
     ZpmSceneTable<uint> _armatureBoneStarts, _skinStarts, _skinBones;
+    ZpmSceneTable<uint> _objectOrder, _objectChildStarts, _objectChildren, _boneOrder, _boneChildStarts, _boneChildren;
     ZpmSceneTable<ZpmObject> _objects;
     ZpmSceneTable<ZpmPoseChannel> _poseChannels;
     ZpmSceneTable<ZpmMaterial> _materials;
@@ -159,6 +160,12 @@ public unsafe struct ZpmSceneView
             case ZpmSectionKind.MaterialInfo: return _materials.TryBind(section, length);
             case ZpmSectionKind.TextureSlots: return _textureSlots.TryBind(section, length);
             case ZpmSectionKind.TextureUvNames: _textureUvNames = ZpmNames.Bind(section); return true;
+            case ZpmSectionKind.ObjectOrder: return _objectOrder.TryBind(section, length);
+            case ZpmSectionKind.ObjectChildStarts: return _objectChildStarts.TryBind(section, length);
+            case ZpmSectionKind.ObjectChildren: return _objectChildren.TryBind(section, length);
+            case ZpmSectionKind.BoneOrder: return _boneOrder.TryBind(section, length);
+            case ZpmSectionKind.BoneChildStarts: return _boneChildStarts.TryBind(section, length);
+            case ZpmSectionKind.BoneChildren: return _boneChildren.TryBind(section, length);
             case ZpmSectionKind.TextureRoles: _textureRoles = ZpmNames.Bind(section); return true;
             case ZpmSectionKind.CameraNames: _cameraNames = ZpmNames.Bind(section); return true;
             case ZpmSectionKind.CurveNames: _curveNames = ZpmNames.Bind(section); return true;
@@ -208,6 +215,29 @@ public unsafe struct ZpmSceneView
         return _meshes != null && end >= start && end <= (ulong)_meshesLength
             && ZpmMeshView.TryOpen(_meshes + start, (long)(end - start), out view);
     }
+
+    /// <summary>
+    /// Returns the object at one place in evaluation order, where each comes after its parent, so one
+    /// pass places everything with no recursion. A file with no parents stores no table.
+    /// </summary>
+    public readonly uint GetObjectInOrder(uint position) => _objectOrder.count != 0 ? _objectOrder[position] : position;
+
+    /// <summary>Returns how many children an object has.</summary>
+    public readonly uint GetObjectChildCount(uint obj) =>
+        _objectChildStarts.count != 0 ? _objectChildStarts[obj + 1] - _objectChildStarts[obj] : 0;
+
+    /// <summary>Returns one child of an object.</summary>
+    public readonly uint GetObjectChild(uint obj, uint child) => _objectChildren[_objectChildStarts[obj] + child];
+
+    /// <summary>Returns the bone at one place in evaluation order, by its index across all armatures.</summary>
+    public readonly uint GetBoneInOrder(uint position) => _boneOrder.count != 0 ? _boneOrder[position] : position;
+
+    /// <summary>Returns how many children a bone has, by its index across all armatures.</summary>
+    public readonly uint GetBoneChildCount(uint bone) =>
+        _boneChildStarts.count != 0 ? _boneChildStarts[bone + 1] - _boneChildStarts[bone] : 0;
+
+    /// <summary>Returns one child of a bone, by indices across all armatures.</summary>
+    public readonly uint GetBoneChild(uint bone, uint child) => _boneChildren[_boneChildStarts[bone] + child];
 
     /// <summary>Returns one object in place. The index must be below objectCount.</summary>
     public readonly ref readonly ZpmObject GetObject(uint index) => ref _objects[index];
@@ -309,10 +339,32 @@ public unsafe struct ZpmSceneView
     public readonly bool Validate() =>
         ValidateNames() && ValidateMeshes() && ValidateObjects() && ValidateCollections()
         && ValidateMaterials() && ValidateImages() && ValidateLights() && ValidateArmatures()
+        && ValidateHierarchy(_objectOrder, _objectChildStarts, _objectChildren, _objects.count)
+        && ValidateHierarchy(_boneOrder, _boneChildStarts, _boneChildren, _bones.count)
         && ValidateExtensions() && _curves.Validate(_limit) && _lattices.Validate(_limit)
         && _curveNames.count == _curves.curveCount && _latticeNames.count == _lattices.latticeCount
         && _clipNames.count == _animation.clipCount
         && _animation.Validate(_limit, this, _values.strings.count) && _values.Validate(_limit, objectCount, this);
+
+    /// <summary>Proves hierarchy tables stay in range. A wrong order gives wrong numbers, never a bad read.</summary>
+    static bool ValidateHierarchy(in ZpmSceneTable<uint> order, in ZpmSceneTable<uint> starts, in ZpmSceneTable<uint> children, uint count)
+    {
+        if (order.count == 0)
+            return starts.count == 0 && children.count == 0;
+        if (order.count != count || !ValidateStarts(starts, count, children.count))
+            return false;
+        for (uint i = 0; i < count; i++)
+        {
+            if (order[i] >= count)
+                return false;
+        }
+        for (uint i = 0; i < children.count; i++)
+        {
+            if (children[i] >= count)
+                return false;
+        }
+        return true;
+    }
 
     /// <summary>A required extension is one this reader cannot know, so the file is refused.</summary>
     readonly bool ValidateExtensions()
@@ -396,7 +448,7 @@ public unsafe struct ZpmSceneView
         for (uint i = 0; i < count; i++)
         {
             ref readonly ZpmObject item = ref _objects[i];
-            if (item.type > ZpmObjectType.Camera || item.rotationMode > ZpmRotationMode.Zyx
+            if (item.type > ZpmObjectType.Camera || item.parentType > ZpmParentType.Bone || item.rotationMode > ZpmRotationMode.Zyx
                 || !IsLink(item.data, GetDataCount(item.type)) || !IsLink(item.parent, count)
                 || !IsLink(item.skinArmature, count) || !IsLink(item.instanceCollection, collectionCount)
                 || (ulong)item.firstPoseChannel + item.poseChannelCount > _poseChannels.count)

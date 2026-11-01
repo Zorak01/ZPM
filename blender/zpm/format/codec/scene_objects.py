@@ -4,15 +4,19 @@
 
 from ..container.layout import (
     BONE_INFO,
+    BONE_INHERIT_SCALE_SHIFT,
     LIGHT_INFO,
+    NO_INDEX,
     OBJECT_INFO,
     POSE_CHANNEL,
     AreaShape,
     BoneFlags,
+    InheritScale,
     LightType,
     LightUnit,
     ObjectFlags,
     ObjectType,
+    ParentType,
     RotationMode,
     SectionKind,
     SkinFlags,
@@ -67,6 +71,8 @@ def _encode_objects(objects: list) -> list:
             item.instance_collection,
             item.skin_armature,
             item.skin_flags,
+            item.parent_type,
+            *item.parent_vertices,
             *item.location,
             *item.rotation,
             *item.scale,
@@ -130,7 +136,8 @@ def _encode_lights(lights: list) -> list:
     ]
 
 
-def _bone_flags(bone: Bone) -> BoneFlags:
+def pack_bone_flags(bone: Bone) -> int:
+    """Return a bone's flag bits with its scale inheritance above them."""
     flags = BoneFlags.NONE
     if bone.is_connected:
         flags |= BoneFlags.CONNECTED
@@ -138,9 +145,7 @@ def _bone_flags(bone: Bone) -> BoneFlags:
         flags |= BoneFlags.DEFORM
     if bone.inherits_rotation:
         flags |= BoneFlags.INHERIT_ROTATION
-    if bone.inherits_scale:
-        flags |= BoneFlags.INHERIT_SCALE
-    return flags
+    return int(flags) | bone.inherit_scale << BONE_INHERIT_SCALE_SHIFT
 
 
 def _encode_armatures(armatures: list) -> list:
@@ -151,7 +156,7 @@ def _encode_armatures(armatures: list) -> list:
     records = b"".join(
         BONE_INFO.pack(
             bone.parent,
-            _bone_flags(bone),
+            pack_bone_flags(bone),
             *bone.head,
             *bone.tail,
             bone.roll,
@@ -171,8 +176,63 @@ def _encode_armatures(armatures: list) -> list:
     return sections
 
 
+def _parents_first(parents: list) -> list:
+    """Return indices so that each comes after its parent. Parents must not loop."""
+    order = []
+    placed = [False] * len(parents)
+    for start in range(len(parents)):
+        chain = []
+        at = start
+        while at != NO_INDEX and not placed[at]:
+            chain.append(at)
+            at = parents[at]
+        for item in reversed(chain):
+            placed[item] = True
+            order.append(item)
+    return order
+
+
+def _hierarchy_sections(parents: list, order, starts, children) -> list:
+    """Return evaluation order and child lists, so readers need no working memory."""
+    if not any(parent != NO_INDEX for parent in parents):
+        return []
+    kids = [[] for _ in parents]
+    for index, parent in enumerate(parents):
+        if parent != NO_INDEX:
+            kids[parent].append(index)
+    return [
+        *indices_section(order, _parents_first(parents)),
+        *indices_section(starts, starts_of(kids)),
+        *indices_section(children, [kid for group in kids for kid in group]),
+    ]
+
+
+def _all_bone_parents(armatures: list) -> list:
+    """Return each bone's parent, as an index across all armatures."""
+    parents = []
+    for armature in armatures:
+        first = len(parents)
+        parents += [
+            bone.parent if bone.parent == NO_INDEX else first + bone.parent
+            for bone in armature.bones
+        ]
+    return parents
+
+
 def encode_objects_and_rigs(scene: Scene) -> list:
     return [
+        *_hierarchy_sections(
+            [item.parent for item in scene.objects],
+            SectionKind.OBJECT_ORDER,
+            SectionKind.OBJECT_CHILD_STARTS,
+            SectionKind.OBJECT_CHILDREN,
+        ),
+        *_hierarchy_sections(
+            _all_bone_parents(scene.armatures),
+            SectionKind.BONE_ORDER,
+            SectionKind.BONE_CHILD_STARTS,
+            SectionKind.BONE_CHILDREN,
+        ),
         *_encode_objects(scene.objects),
         *_encode_collections(scene.collections),
         *_encode_lights(scene.lights),
@@ -221,17 +281,19 @@ def read_objects(sections: SectionReader) -> list:
                 values[1],
                 values[2],
                 values[3],
+                checked_enum(ParentType, values[9]),
+                values[10:13],
                 checked_enum(RotationMode, values[4]),
                 ObjectFlags(values[5]),
                 values[6],
-                values[9:12],
-                values[12:16],
-                values[16:19],
-                values[19:35],
+                values[13:16],
+                values[16:20],
+                values[20:23],
+                values[23:39],
                 values[7],
                 SkinFlags(values[8]),
                 skin[starts[index] : starts[index + 1]],
-                _read_pose(sections, values[35], values[36], channels),
+                _read_pose(sections, values[39], values[40], channels),
             )
         )
     return objects
@@ -272,7 +334,7 @@ def read_lights(sections: SectionReader) -> list:
 
 
 def _unpack_bone(name: str, values: tuple) -> Bone:
-    flags = BoneFlags(values[1])
+    flags = BoneFlags(values[1] & ((1 << BONE_INHERIT_SCALE_SHIFT) - 1))
     return Bone(
         name,
         values[0],
@@ -285,7 +347,7 @@ def _unpack_bone(name: str, values: tuple) -> Bone:
         bool(flags & BoneFlags.CONNECTED),
         bool(flags & BoneFlags.DEFORM),
         bool(flags & BoneFlags.INHERIT_ROTATION),
-        bool(flags & BoneFlags.INHERIT_SCALE),
+        checked_enum(InheritScale, values[1] >> BONE_INHERIT_SCALE_SHIFT),
     )
 
 

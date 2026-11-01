@@ -55,6 +55,7 @@ from zpm.format import (
     snap_mesh,
 )
 from zpm.format.codec.quantize import decode_normal, encode_normal
+from zpm.format.codec.scene_tables import read_indices
 from zpm.format.container.layout import (
     DIRECTORY_ENTRY,
     FILE_HEADER,
@@ -63,11 +64,13 @@ from zpm.format.container.layout import (
     AlphaMode,
     AreaShape,
     HandleType,
+    InheritScale,
     KeyMode,
     LightType,
     LightUnit,
     ObjectFlags,
     ObjectType,
+    ParentType,
     ResourceKind,
     RotationMode,
     SamplerFilter,
@@ -80,7 +83,7 @@ from zpm.format.container.layout import (
     TrackValue,
     align,
 )
-from zpm.format.container.sections import Section, write_file
+from zpm.format.container.sections import Section, SectionReader, write_file
 from zpm.format.processing.animation import reduce_track
 from zpm.format.processing.reordering import reorder_mesh
 
@@ -755,6 +758,7 @@ def sample_scene() -> Scene:
                 0,
                 parent=0,
                 parent_bone=1,
+                parent_type=ParentType.BONE,
                 skin_armature=0,
                 skin_flags=SkinFlags.VERTEX_GROUPS,
                 skin_bones=[0, NO_INDEX],
@@ -774,6 +778,11 @@ def sample_scene() -> Scene:
                 ObjectType.LIGHT,
                 0,
                 properties={"note": "key", "level": 3, "on": True},
+                settings={"pass_index": 3},
+                material_overrides=[{"slot": 0, "material": 1}],
+                parent=1,
+                parent_type=ParentType.VERTEX_3,
+                parent_vertices=(4, 5, 6),
                 modifiers=[
                     {"name": "Mod", "type": "X", "settings": {"object": Reference(0)}}
                 ],
@@ -824,7 +833,7 @@ def sample_scene() -> Scene:
                         head_radius=0.25,
                         tail_radius=0.125,
                         is_connected=True,
-                        inherits_scale=False,
+                        inherit_scale=InheritScale.AVERAGE,
                         settings={"bbone_x": 0.5},
                     ),
                 ],
@@ -936,10 +945,29 @@ def sample_scene() -> Scene:
             Extension("studio.notes", 2, False, b"keep me"),
         ],
         {"author": "test", "tags": ["a", "b"], "inner": {"depth": 1}},
+        {"frame_start": 1, "camera": Reference(7)},
     )
 
 
 class SceneTests(unittest.TestCase):
+    def test_hierarchy_tables_place_parents_first(self):
+        scene = Scene(
+            objects=[
+                SceneObject("Child", parent=2),
+                SceneObject("Alone"),
+                SceneObject("Middle", parent=3),
+                SceneObject("Root"),
+            ]
+        )
+        regions = map_file(encode_scene(scene))
+        names = {region.name for region in regions}
+        self.assertTrue({"OBJECT_ORDER", "OBJECT_CHILDREN"} <= names)
+        data = encode_scene(scene)
+        reader = SectionReader(data)
+        order = read_indices(reader, SectionKind.OBJECT_ORDER, 4)
+        self.assertLess(order.index(3), order.index(2))
+        self.assertLess(order.index(2), order.index(0))
+
     def test_keys_on_a_line_are_dropped_and_the_rest_stay_close(self):
         times = [float(key) for key in range(100)]
         values = [2.0 * time for time in times[:50]] + [

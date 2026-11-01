@@ -141,6 +141,19 @@ def check_whole_scene(directory):
     empty.animation_data.action.name = "Slide"
     shader.inputs["IOR"].default_value = 1.25
     spine_pose.custom_shape_transform = rig.pose.bones["Hip"]
+    armature.bones["Spine"].inherit_scale = "AVERAGE"
+    arms = armature.collections.new("Arms")
+    arms.assign(armature.bones["Spine"])
+    empty.empty_display_size = 2.5
+    empty.delta_location = (0, 0, 1)
+    vertex_child = bpy.data.objects.new("VertexChild", None)
+    bpy.context.collection.objects.link(vertex_child)
+    vertex_child.parent = copy
+    vertex_child.parent_type = "VERTEX"
+    vertex_child.parent_vertices = (2, 0, 0)
+    override = bpy.data.materials.new("OnlyCopy")
+    copy.material_slots[0].link = "OBJECT"
+    copy.material_slots[0].material = override
     image["source_note"] = "scan"
     group["team"] = 7
     body.data["cost"] = 3
@@ -166,7 +179,7 @@ def check_whole_scene(directory):
     material.node_tree.links.new(noise.outputs[0], shader.inputs["Roughness"])
 
     bpy.ops.object.select_all(action="DESELECT")
-    for obj in (rig, body, copy, light, empty, road, cage, eye, shape):
+    for obj in (rig, body, copy, light, empty, road, cage, eye, shape, vertex_child):
         obj.select_set(True)
     path = str(Path(directory) / "scene.zpm")
     assert bpy.ops.export_mesh.zpm(filepath=path, embed_textures=True) == {"FINISHED"}
@@ -182,6 +195,7 @@ def check_whole_scene(directory):
         "CageObject",
         "Eye",
         "Shape",
+        "VertexChild",
     }
     assert stored.materials[0].metallic == 0.25
     assert stored.images[0].name == "Paint"
@@ -206,6 +220,7 @@ def check_whole_scene(directory):
         "CageObject",
         "Eye",
         "Shape",
+        "VertexChild",
     }
     assert made["Body"].parent == made["Rig"]
     assert tuple(made["Body"].location) == (1, 2, 3)
@@ -264,6 +279,16 @@ def check_whole_scene(directory):
     graph_nodes = {node.bl_idname for node in skin.node_tree.nodes}
     assert "ShaderNodeTexNoise" in graph_nodes
     assert posed.custom_shape_transform.name == "Hip"
+    assert made["Rig"].data.bones["Spine"].inherit_scale == "AVERAGE"
+    assert made["Rig"].data.collections_all["Arms"].bones[0].name == "Spine"
+    assert made["Marker"].empty_display_size == 2.5
+    assert tuple(made["Marker"].delta_location) == (0, 0, 1)
+    assert made["VertexChild"].parent == made["Copy"]
+    assert made["VertexChild"].parent_type == "VERTEX"
+    assert made["VertexChild"].parent_vertices[0] == 2
+    assert made["Copy"].material_slots[0].link == "OBJECT"
+    assert made["Copy"].material_slots[0].material.name.startswith("OnlyCopy")
+    assert made["Body"].material_slots[0].link == "DATA"
     imported_image = next(
         block for block in bpy.data.images if block.get("source_note") == "scan"
     )

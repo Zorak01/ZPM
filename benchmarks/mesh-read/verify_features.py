@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT.parents[1] / "tests"))
 from run import READER, write_fixture, write_surface  # noqa: E402
 from test_format import authored_mesh, holed_mesh, sample_scene  # noqa: E402
 from zpm.format import decode, encode, encode_scene  # noqa: E402
-from zpm.format.codec.scene_objects import _bone_flags  # noqa: E402
+from zpm.format.codec.scene_objects import pack_bone_flags  # noqa: E402
 from zpm.format.container.layout import TrackValue  # noqa: E402
 
 _FUZZ_SEED = 1
@@ -102,7 +102,7 @@ def _verify_scene(dotnet: str, folder: Path) -> None:
             {
                 "name": b.name,
                 "parent": b.parent,
-                "flags": int(_bone_flags(b)),
+                "flags": pack_bone_flags(b),
                 "roll": b.roll,
             }
             for a in source.armatures

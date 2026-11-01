@@ -117,7 +117,7 @@ Tables hold fixed records of 4-byte fields, read in place. Links are indices, wi
 | --- | --- | --- |
 | 4 | `SPACE` | Float32 meters per unit, up axis, forward axis, two zero bytes. Absent means 1 m, +Z up, -Y forward |
 | 200, 201 | `SCENE_MESH_STARTS`, `SCENE_MESHES` | UInt64 start per mesh plus a total, then the mesh files joined |
-| 202, 203 | `OBJECT_NAMES`, `OBJECT_INFO` | 148 bytes per object: type, data, parent, parent bone, rotation mode, flags, instance collection, skin armature, skin flags, location, rotation, scale, parent inverse, first pose channel, pose channel count |
+| 202, 203 | `OBJECT_NAMES`, `OBJECT_INFO` | 164 bytes per object: type, data, parent, parent bone, rotation mode, flags, instance collection, skin armature, skin flags, parent type, three parent vertices, location, rotation, scale, parent inverse, first pose channel, pose channel count |
 | 204 | `POSE_CHANNELS` | 48 bytes per channel: bone, location, rotation, scale, rotation mode |
 | 205–208 | `COLLECTION_*` | Names, parents, member starts, members |
 | 209, 210 | `MATERIAL_NAMES`, `MATERIAL_INFO` | 64 bytes per material: base color, metallic, roughness, emission, strength, normal scale, alpha cutoff, alpha mode, flags, first slot, slot count |
@@ -128,7 +128,7 @@ Tables hold fixed records of 4-byte fields, read in place. Links are indices, wi
 | 219, 220 | `IMAGE_PAYLOAD_STARTS`, `IMAGE_PAYLOADS` | UInt64 starts, then original encoded image bytes, each distinct file once |
 | 221, 222 | `LIGHT_NAMES`, `LIGHT_INFO` | 56 bytes per light: type, unit, color, power, flags, area shape, radius, spot angle, spot blend, sun angle, area size |
 | 223, 224 | `ARMATURE_NAMES`, `ARMATURE_BONE_STARTS` | Names and where each armature's bones start |
-| 225, 226 | `BONE_NAMES`, `BONE_INFO` | 48 bytes per bone: parent, flags, head, tail, roll, envelope distance, head radius, tail radius |
+| 225, 226 | `BONE_NAMES`, `BONE_INFO` | 48 bytes per bone: parent, flags (1 connected, 2 deform, 4 inherits rotation, scale inheritance << 8), head, tail, roll, envelope distance, head radius, tail radius |
 | 227, 228 | `SKIN_STARTS`, `SKIN_BONES` | For each object, the bone for each of its mesh's vertex groups |
 | 229 | `TEXTURE_ROLES` | What each texture slot feeds, as a name. `base_color`, `metallic`, `roughness`, `normal`, `emission` and `alpha` are shared; any other name is allowed |
 | 230 | `VALUE_STRINGS` | Name table shared by value trees and animation |
@@ -147,6 +147,8 @@ Tables hold fixed records of 4-byte fields, read in place. Links are indices, wi
 | 263 | `TRACK_INFO` | 52 bytes per track: owner kind, owner, path string, array index, value type, target kind, components, flags, time set, key count, first value, first mode, first handle |
 | 264, 265 | `TIME_STARTS`, `TIMES` | Distinct lists of key times |
 | 266–268 | `KEY_VALUES`, `KEY_MODES`, `KEY_HANDLES` | Key columns. Modes hold mode, left handle type << 8, right handle type << 16 |
+| 272–274 | `OBJECT_ORDER`, `OBJECT_CHILD_STARTS`, `OBJECT_CHILDREN` | Objects with parents before children, and each object's children. Absent when nothing has a parent |
+| 275–277 | `BONE_ORDER`, `BONE_CHILD_STARTS`, `BONE_CHILDREN` | The same for bones, by index across all armatures |
 | 269–271 | `EXTENSION_NAMES`, `EXTENSION_INFO`, `EXTENSION_PAYLOADS` | Name, then version, flags (1 = required), start, length, then the bytes |
 
 Section kinds from `0x8000` up are optional: a reader skips any it does not know. A required extension a reader

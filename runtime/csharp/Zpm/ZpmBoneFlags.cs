@@ -3,7 +3,7 @@ using System;
 
 namespace Zpm;
 
-/// <summary>How a bone behaves.</summary>
+/// <summary>How a bone behaves. ZpmBone.inheritScale reads its scale inheritance.</summary>
 [Flags]
 public enum ZpmBoneFlags : uint
 {
@@ -11,5 +11,4 @@ public enum ZpmBoneFlags : uint
     Connected = 1,
     Deform = 2,
     InheritRotation = 4,
-    InheritScale = 8,
 }

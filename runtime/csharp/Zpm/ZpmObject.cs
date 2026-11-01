@@ -10,7 +10,7 @@ public readonly struct ZpmObject
     /// <summary>What it is, which says what data indexes.</summary>
     public readonly ZpmObjectType type;
 
-    /// <summary>Its mesh, armature or light.</summary>
+    /// <summary>Its mesh, armature, light, curve, lattice or camera.</summary>
     public readonly uint data;
 
     /// <summary>Its parent object.</summary>
@@ -34,6 +34,18 @@ public readonly struct ZpmObject
     /// <summary>How it follows that armature.</summary>
     public readonly ZpmSkinFlags skinFlags;
 
+    /// <summary>How it follows its parent.</summary>
+    public readonly ZpmParentType parentType;
+
+    /// <summary>First parent vertex, for vertex parents.</summary>
+    public readonly uint parentVertex0;
+
+    /// <summary>Second parent vertex, for three-vertex parents.</summary>
+    public readonly uint parentVertex1;
+
+    /// <summary>Third parent vertex, for three-vertex parents.</summary>
+    public readonly uint parentVertex2;
+
     /// <summary>Position relative to its parent.</summary>
     public readonly ZpmVector3 location;
 
@@ -43,7 +55,7 @@ public readonly struct ZpmObject
     /// <summary>Scale per axis.</summary>
     public readonly ZpmVector3 scale;
 
-    /// <summary>The matrix between it and its parent.</summary>
+    /// <summary>The matrix between it and its parent, row by row.</summary>
     public readonly ZpmMatrix4 parentInverse;
 
     /// <summary>Where its pose channels start.</summary>

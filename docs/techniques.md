@@ -302,6 +302,30 @@ parent chain loops.
 **Cost:** records store every field, so a default material costs its whole 64 bytes. This is tiny beside a mesh but
 not the smallest it could be: a table of 100,000 objects takes 14.8 MB uncompressed.
 
+### Hierarchies with no working memory
+
+**Problem:** To place a scene, a reader normally builds child lists and sorts parents before children, allocating as
+it goes, every time it loads.
+
+**Technique:** The file stores both: an order with parents first, and each item's children. Placing everything is one
+pass with a single output buffer and no recursion. Files with no parents store neither.
+
+**Cost:** 4 bytes per object for the order, and 8 for child lists.
+
+### Rest, bind and pose matrices worked out on demand
+
+**Problem:** Other formats store a matrix per bone that head, tail and roll already imply, and they can disagree.
+
+**Technique:** Only head, tail and roll are stored, and the reader calculates the rest of it: rest, inverse bind, pose
+and skinning matrices, and every object's world matrix, without allocating.
+
+**Numbers:** `benchmarks/quality/rig_math.py` compares 12 matrices with what Blender calculates: Euler, quaternion and
+axis-angle rotations, roll, a bone pointing straight down, connected bones, nonuniform scale, and bone parents.
+Largest difference: 0.0000018.
+
+**Limits:** constraints, drivers and modifiers aren't run, nor object delta transforms. Vertex parents need mesh data,
+so `GetWorldMatrices` says when it could not place one exactly. Partial bone inheritance is treated as full.
+
 ### Objects share data
 
 **Technique:** Objects using one mesh point at it, each with its own placement, so 1,000 copies cost 1,000 records

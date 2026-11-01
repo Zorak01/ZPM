@@ -35,6 +35,8 @@ static unsafe class Program
                 return MeasureSurface(arguments[1]);
             case "dump-scene":
                 return DumpScene(arguments[1]);
+            case "dump-rig":
+                return DumpRig(arguments[1]);
             case "fuzz-scene":
                 return FuzzScene(arguments[1], int.Parse(arguments[2]), int.Parse(arguments[3]));
             case "fuzz":
@@ -550,7 +552,7 @@ static unsafe class Program
                 {
                     uint bone = scene.GetFirstBone(a) + b;
                     scene.TryGetBoneName(bone, out byte* name, out uint length);
-                    bones.Add(new { name = Text(name, length), scene.GetBone(bone).parent, flags = (uint)scene.GetBone(bone).flags, roll = scene.GetBone(bone).roll });
+                    bones.Add(new { name = Text(name, length), scene.GetBone(bone).parent, flags = scene.GetBone(bone).storedFlags, roll = scene.GetBone(bone).roll });
                 }
             }
             var lights = new List<float>();
@@ -629,6 +631,48 @@ static unsafe class Program
         return 0;
     }
 
+    static float[] Flatten(in ZpmMatrix4 m) => new[]
+    {
+        m.row0.x, m.row0.y, m.row0.z, m.row0.w,
+        m.row1.x, m.row1.y, m.row1.z, m.row1.w,
+        m.row2.x, m.row2.y, m.row2.z, m.row2.w,
+        m.row3.x, m.row3.y, m.row3.z, m.row3.w,
+    };
+
+    /// <summary>Prints every matrix the reader works out, by name, so Python can compare it with Blender.</summary>
+    static int DumpRig(string path)
+    {
+        byte[] bytes = File.ReadAllBytes(path);
+        fixed (byte* data = bytes)
+        {
+            if (!ZpmSceneView.TryOpen(data, bytes.Length, out ZpmSceneView scene) || !scene.Validate())
+                throw new InvalidDataException("Scene failed validation");
+            var transforms = new ZpmSceneTransforms(scene);
+            var world = new ZpmMatrix4[scene.objectCount];
+            var result = new Dictionary<string, float[]>();
+            fixed (ZpmMatrix4* w = world)
+                transforms.GetWorldMatrices(w);
+            for (uint i = 0; i < scene.objectCount; i++)
+            {
+                scene.TryGetObjectName(i, out byte* name, out uint length);
+                string objectName = Text(name, length);
+                result["world:" + objectName] = Flatten(world[i]);
+                ref readonly ZpmObject item = ref scene.GetObject(i);
+                if (item.type != ZpmObjectType.Armature)
+                    continue;
+                for (uint b = 0; b < scene.GetBoneCount(item.data); b++)
+                {
+                    scene.TryGetBoneName(scene.GetFirstBone(item.data) + b, out byte* boneName, out uint boneLength);
+                    string key = objectName + ":" + Text(boneName, boneLength);
+                    result["rest:" + key] = Flatten(transforms.GetBoneRestMatrix(item.data, b));
+                    result["pose:" + key] = Flatten(transforms.GetBonePoseMatrix(i, b));
+                }
+            }
+            Console.WriteLine(JsonSerializer.Serialize(result));
+        }
+        return 0;
+    }
+
     static string Text(byte* utf8, uint length) => System.Text.Encoding.UTF8.GetString(utf8, (int)length);
 
     static int FuzzScene(string path, int seed, int count)
@@ -699,6 +743,12 @@ static unsafe class Program
         {
             for (uint b = 0; b < scene.GetBoneCount(a); b++)
                 scene.GetBone(scene.GetFirstBone(a) + b);
+        }
+        for (uint i = 0; i < scene.objectCount; i++)
+        {
+            scene.GetObject(scene.GetObjectInOrder(i));
+            for (uint k = 0; k < scene.GetObjectChildCount(i); k++)
+                scene.GetObject(scene.GetObjectChild(i, k));
         }
         ZpmCurves curves = scene.curves;
         for (uint c = 0; c < curves.curveCount; c++)

@@ -153,6 +153,12 @@ public enum ZpmSectionKind : ushort
     ExtensionNames = 269,
     ExtensionInfo = 270,
     ExtensionPayloads = 271,
+    ObjectOrder = 272,
+    ObjectChildStarts = 273,
+    ObjectChildren = 274,
+    BoneOrder = 275,
+    BoneChildStarts = 276,
+    BoneChildren = 277,
 }
 
 /// <summary>A section's place in a corner stream, added to the stream's first kind.</summary>

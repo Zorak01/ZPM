@@ -25,6 +25,7 @@ from test_format import (  # noqa: E402
     shared_map_mesh,
     split_vertex_mesh,
     strip_mesh,
+    summed_weight_mesh,
     uv_fit_mesh,
 )
 from zpm.format import decode, encode, encode_scene  # noqa: E402
@@ -174,6 +175,7 @@ def main():
         _verify("uv fit", uv_fit_mesh(), dotnet, Path(directory))
         _verify("split vertices", split_vertex_mesh(), dotnet, Path(directory))
         _verify("shared map", shared_map_mesh(), dotnet, Path(directory))
+        _verify("summed weights", summed_weight_mesh(), dotnet, Path(directory))
         _verify_scene(dotnet, Path(directory))
 
 

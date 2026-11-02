@@ -24,6 +24,7 @@ from ..container.layout import (
     AXIS_COUNT,
     MAX_GRID_VALUE,
     NO_GRID,
+    WEIGHT_TOTAL,
     float_bits,
     float_from_bits,
 )
@@ -33,6 +34,7 @@ from .faces import corner_normals_from_faces, face_lists, has_face_normals
 GRID_BITS = 20
 _FACE_NORMAL_MIN_COSINE = math.cos(math.radians(0.1))
 _TANGENT_WIDTH = 4
+_WEIGHT_SUM_TOLERANCE = 1e-3
 _SAME_NORMAL_STEPS = 1
 
 
@@ -167,6 +169,47 @@ def _distinct_seams(mesh: Mesh) -> dict:
     }
 
 
+def _share_out(values: list) -> list:
+    """Return whole steps adding up exactly, spares to the largest remainders."""
+    total = sum(values)
+    exact = [value / total * WEIGHT_TOTAL for value in values]
+    steps = [int(value) for value in exact]
+    spare = WEIGHT_TOTAL - sum(steps)
+    by_remainder = sorted(range(len(values)), key=lambda at: steps[at] - exact[at])
+    for at in by_remainder[:spare]:
+        steps[at] += 1
+    return steps
+
+
+def _snap_weights(mesh: Mesh) -> dict:
+    """Return weights on a 12-bit grid adding up to exactly 1, largest first.
+
+    Only when every vertex has weights and they already add up to 1. Otherwise weights
+    stay in their order on the 16-bit grid.
+    """
+    offsets = mesh.weight_offsets
+    values = mesh.weight_values
+    rows = [
+        values[offsets[vertex] : offsets[vertex + 1]]
+        for vertex in range(len(offsets) - 1)
+    ]
+    if not rows or any(abs(sum(row) - 1.0) > _WEIGHT_SUM_TOLERANCE for row in rows):
+        return {
+            "weight_values": array("f", [decode_unit(encode_unit(v)) for v in values])
+        }
+    groups = array("I")
+    snapped = array("f")
+    for vertex, row in enumerate(rows):
+        steps = _share_out(list(row))
+        first = offsets[vertex]
+        order = sorted(
+            range(len(row)), key=lambda at: (-steps[at], mesh.weight_groups[first + at])
+        )
+        groups.extend(mesh.weight_groups[first + at] for at in order)
+        snapped.extend(steps[at] / WEIGHT_TOTAL for at in order)
+    return {"weight_groups": groups, "weight_values": snapped}
+
+
 def snap_mesh(mesh: Mesh) -> Mesh:
     """Return the mesh as the file will hold it.
 
@@ -195,10 +238,11 @@ def snap_mesh(mesh: Mesh) -> Mesh:
             name: _snap_color(layer) for name, layer in mesh.color_layers.items()
         },
     }
-    for name in ("edge_creases", "vertex_creases", "weight_values"):
+    for name in ("edge_creases", "vertex_creases"):
         changes[name] = array(
             "f", [decode_unit(encode_unit(value)) for value in getattr(mesh, name)]
         )
+    changes.update(_snap_weights(mesh))
     exponent = grid_exponent(mesh)
     step = None if exponent == NO_GRID else math.ldexp(1.0, exponent)
     if step:

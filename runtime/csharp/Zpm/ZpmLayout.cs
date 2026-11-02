@@ -196,6 +196,7 @@ public enum ZpmSectionFlags : byte
     ByPosition = 8,
     CoarseFit = 16,
     SharedMap = 32,
+    WeightSum = 64,
 }
 
 /// <summary>Fixed byte layout of a file; docs/mesh-core.md is the written contract.</summary>
@@ -220,6 +221,7 @@ public static class ZpmLayout
     public const int NoGrid = int.MinValue;
     public const float NormalMax = 4095f;
     public const float UvGridScale = 65536f;
+    public const uint WeightTotal = 4095;
     public const int FitShift = 16;
     public const int FitCoarseShift = 10;
     public const float UnitMax = 65535f;

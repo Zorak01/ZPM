@@ -49,7 +49,7 @@ public unsafe struct ZpmMeshView
     bool _hasFaceMaterials, _hasHoles, _hasCornerSharp, _hasSmoothingGroups, _hasCreaseChains, _hasCreaseChainVertices;
     ZpmColumn _faceMaterials, _holeStarts, _cornerSharp, _smoothingGroups, _creaseChainOffsets, _creaseChainVertices;
     uint* _colorFormats;
-    bool _hasWeights, _hasWeightGroups, _hasWeightValues, _hasWeightSets;
+    bool _hasWeights, _hasWeightGroups, _hasWeightValues, _hasWeightSets, _hasWeightSums;
     ZpmColumn _weightOffsets, _weightGroups, _weightValues, _weightSets;
 
     public readonly uint vertexCount => _vertexCount;
@@ -194,6 +194,7 @@ public unsafe struct ZpmMeshView
             case ZpmSectionKind.WeightValues:
                 _weightValues = ZpmColumn.Bind(section, flags);
                 _hasWeightValues = true;
+                _hasWeightSums = (flags & ZpmSectionFlags.WeightSum) != 0;
                 return true;
             case ZpmSectionKind.TangentMethod:
                 _tangentMethod = ZpmNames.Bind(section);
@@ -627,8 +628,14 @@ public unsafe struct ZpmMeshView
         if (!_hasWeightGroups || !_hasWeightValues || (!_hasWeightSets && _weightOffsets.count != (ulong)_vertexCount + 1)
             || !_weightOffsets.ValidateLayout(_limit) || !_weightGroups.ValidateLayout(_limit) || !_weightValues.ValidateLayout(_limit))
             return false;
-        uint total = _weightValues.count;
-        if (_weightGroups.count != total || !_weightValues.ValidateBelow(ZpmLayout.UnitLimit) || !_weightGroups.ValidateBelow(_groupNames.count))
+        uint total = _weightGroups.count;
+        if (_weightOffsets.count == 0 || !_weightGroups.ValidateBelow(_groupNames.count))
+            return false;
+        uint rows = _weightOffsets.count - 1;
+        ulong expected = _hasWeightSums ? (ulong)total - rows : total;
+        if (_hasWeightSums && rows > total)
+            return false;
+        if (_weightValues.count != expected || !_weightValues.ValidateBelow(_hasWeightSums ? ZpmLayout.WeightTotal + 1 : ZpmLayout.UnitLimit))
             return false;
         uint previous = 0;
         for (uint i = 0; i < _weightOffsets.count; i++)
@@ -638,7 +645,24 @@ public unsafe struct ZpmMeshView
                 return false;
             previous = offset;
         }
-        return previous == total;
+        return previous == total && (!_hasWeightSums || ValidateWeightSums(rows));
+    }
+
+    /// <summary>Walks every row: each must have a weight, and the stored ones must leave a last.</summary>
+    readonly bool ValidateWeightSums(uint rows)
+    {
+        for (uint row = 0; row < rows; row++)
+        {
+            uint start = _weightOffsets.Get(row), end = _weightOffsets.Get(row + 1);
+            if (end == start)
+                return false;
+            ulong sum = 0;
+            for (uint at = start; at + 1 < end; at++)
+                sum += _weightValues.Get(at - row);
+            if (sum > ZpmLayout.WeightTotal)
+                return false;
+        }
+        return true;
     }
 
     /// <summary>Finds one color layer by walking the directory. Returns false when it does not exist. Keep the result.</summary>
@@ -687,6 +711,20 @@ public unsafe struct ZpmMeshView
         uint row = GetWeightRow(vertex);
         uint start = _weightOffsets.Get(row);
         uint count = _weightOffsets.Get(row + 1) - start;
+        if (_hasWeightSums)
+        {
+            uint used = 0;
+            for (uint i = 0; i + 1 < count; i++)
+            {
+                uint step = _weightValues.Get(start - row + i);
+                used += step;
+                groups[i] = _weightGroups.Get(start + i);
+                weights[i] = step / (float)ZpmLayout.WeightTotal;
+            }
+            groups[count - 1] = _weightGroups.Get(start + count - 1);
+            weights[count - 1] = (ZpmLayout.WeightTotal - used) / (float)ZpmLayout.WeightTotal;
+            return count;
+        }
         for (uint i = 0; i < count; i++)
         {
             groups[i] = _weightGroups.Get(start + i);

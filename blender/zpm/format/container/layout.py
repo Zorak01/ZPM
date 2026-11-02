@@ -53,6 +53,7 @@ NO_GRID = -(2**31)
 MAX_GRID_VALUE = 1 << 24
 NORMAL_BITS = 12
 UV_GRID_BITS = 16
+WEIGHT_TOTAL = 4095
 FIT_SHIFT = 16
 FIT_COARSE_SHIFT = 10
 COLOR_GRID_BITS = 16
@@ -589,6 +590,7 @@ class SectionFlags(IntFlag):
     BY_POSITION = 8
     COARSE_FIT = 16
     SHARED_MAP = 32
+    WEIGHT_SUM = 64
 
 
 def align(length: int) -> int:

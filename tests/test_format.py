@@ -174,6 +174,23 @@ def _split_normal(vertex: int) -> tuple:
     return math.sin(angle), 0.0, math.cos(angle)
 
 
+def summed_weight_mesh() -> Mesh:
+    mesh = grid_mesh(8)
+    mesh.vertex_groups = ["A", "B", "C"]
+    offsets, groups, values = array("I", [0]), array("I"), array("f")
+    for vertex in range(mesh.vertex_count):
+        share = (vertex % 5 + 1) / 8
+        groups.extend((1, 2, 0))
+        values.extend((share, 1 - share - 0.125, 0.125))
+        offsets.append(len(values))
+    mesh.weight_offsets, mesh.weight_groups, mesh.weight_values = (
+        offsets,
+        groups,
+        values,
+    )
+    return mesh
+
+
 def shared_map_mesh() -> Mesh:
     mesh = grid_mesh(12)
     first = array("f")
@@ -644,6 +661,29 @@ class CodecTests(unittest.TestCase):
         self.assertEqual(
             stored.positions[15:18].tobytes(), expected.positions[15:18].tobytes()
         )
+
+    def test_weights_adding_up_to_one_store_no_last_value(self):
+        mesh = summed_weight_mesh()
+        data = encode(mesh)
+        regions = {region.name: region for region in map_file(data)}
+        self.assertTrue(regions["WEIGHT_VALUES"].flags & SectionFlags.WEIGHT_SUM)
+        again = decode(data)
+        for vertex in range(again.vertex_count):
+            start, end = again.weight_offsets[vertex], again.weight_offsets[vertex + 1]
+            row = again.weight_values[start:end]
+            self.assertAlmostEqual(sum(row), 1.0, places=5)
+            self.assertEqual(list(row), sorted(row, reverse=True))
+        self.assertTrue(same_geometry(snap_mesh(mesh), again))
+
+    def test_weights_not_adding_up_to_one_stay_as_they_are(self):
+        mesh = grid_mesh(3)
+        mesh.vertex_groups = ["A", "B"]
+        mesh.weight_offsets = array("I", [v * 2 for v in range(mesh.vertex_count + 1)])
+        mesh.weight_groups = array("I", [1, 0] * mesh.vertex_count)
+        mesh.weight_values = array("f", [0.25, 0.5] * mesh.vertex_count)
+        again = decode(encode(mesh))
+        self.assertEqual(list(again.weight_groups[:2]), [1, 0])
+        self.assertAlmostEqual(again.weight_values[1], 0.5, places=4)
 
     def test_surface_data_round_trip_and_follows_reordering(self):
         source = surface_mesh()

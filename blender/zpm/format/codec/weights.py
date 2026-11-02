@@ -4,27 +4,53 @@
 
 Vertices with exactly the same weights can share one row, found through one more
 column, whenever that is smaller. A row is one lookup further than a vertex.
+
+Weights adding up to exactly 1 on the 12-bit grid store no last value in each row, since
+the others say what it is. A row's values then start at its group offset minus its row
+number. WEIGHT_SUM on the values column says so.
 """
 
 from array import array
 
-from ..container.layout import SectionKind
+from ..container.layout import WEIGHT_TOTAL, SectionFlags, SectionKind
 from ..container.sections import Section, SectionReader, column_section, stored_bytes
 from ..errors import FormatError
 from ..mesh import Mesh
 from ..storage.names import encode_names, read_names
 from .quantize import decode_unit, encode_unit
 
+_ON_GRID_TOLERANCE = 1e-6
 
-def _row_columns(offsets: list, groups: list, values: list) -> list:
+
+def _row_columns(offsets: list, groups: list, values: list, *, sums: bool) -> list:
+    extra = SectionFlags.WEIGHT_SUM if sums else SectionFlags.NONE
+    if sums:
+        values = [
+            value
+            for start, end in zip(offsets, offsets[1:], strict=False)
+            for value in values[start : end - 1]
+        ]
     return [
         column_section(SectionKind.WEIGHT_OFFSETS, offsets),
         column_section(SectionKind.WEIGHT_GROUPS, groups),
-        column_section(SectionKind.WEIGHT_VALUES, values),
+        column_section(SectionKind.WEIGHT_VALUES, values, extra),
     ]
 
 
-def _shared_rows(mesh: Mesh, stored: list) -> list:
+def _sum_steps(mesh: Mesh) -> list | None:
+    """Return weights as whole steps, if every row adds up to exactly 1."""
+    offsets = mesh.weight_offsets
+    steps = [round(value * WEIGHT_TOTAL) for value in mesh.weight_values]
+    for step, value in zip(steps, mesh.weight_values, strict=True):
+        if abs(step / WEIGHT_TOTAL - value) > _ON_GRID_TOLERANCE:
+            return None
+    for start, end in zip(offsets, offsets[1:], strict=False):
+        if end == start or sum(steps[start:end]) != WEIGHT_TOTAL:
+            return None
+    return steps
+
+
+def _shared_rows(mesh: Mesh, stored: list, *, sums: bool) -> list:
     """Return the columns with each distinct set of weights stored once."""
     rows = {}
     row_of_vertex = []
@@ -40,7 +66,7 @@ def _shared_rows(mesh: Mesh, stored: list) -> list:
         row_of_vertex.append(rows[key])
     return [
         column_section(SectionKind.WEIGHT_SET_OF_VERTEX, row_of_vertex),
-        *_row_columns(offsets, groups, values),
+        *_row_columns(offsets, groups, values, sums=sums),
     ]
 
 
@@ -51,11 +77,13 @@ def encode_weights(mesh: Mesh) -> list:
         names = encode_names(mesh.vertex_groups)
         sections.append(Section(SectionKind.GROUP_NAMES, names))
     if mesh.weight_values:
-        stored = [encode_unit(value) for value in mesh.weight_values]
+        steps = _sum_steps(mesh)
+        sums = steps is not None
+        stored = steps if sums else [encode_unit(v) for v in mesh.weight_values]
         plain = _row_columns(
-            list(mesh.weight_offsets), list(mesh.weight_groups), stored
+            list(mesh.weight_offsets), list(mesh.weight_groups), stored, sums=sums
         )
-        shared = _shared_rows(mesh, stored)
+        shared = _shared_rows(mesh, stored, sums=sums)
         sections += shared if stored_bytes(shared) < stored_bytes(plain) else plain
     return sections
 
@@ -81,7 +109,12 @@ def read_weights(sections: SectionReader, vertex_count: int) -> dict:
     if any(a > b for a, b in zip(offsets, offsets[1:], strict=False)):
         raise FormatError("Weight offsets must rise")
     groups = sections.column(SectionKind.WEIGHT_GROUPS, total)
-    values = [decode_unit(v) for v in sections.column(SectionKind.WEIGHT_VALUES, total)]
+    if sections.flags(SectionKind.WEIGHT_VALUES) & SectionFlags.WEIGHT_SUM:
+        values = _read_sum_values(sections, offsets, total)
+    else:
+        values = [
+            decode_unit(v) for v in sections.column(SectionKind.WEIGHT_VALUES, total)
+        ]
     if has_rows:
         rows = sections.column(SectionKind.WEIGHT_SET_OF_VERTEX, vertex_count)
         if rows and max(rows) + 1 >= count:
@@ -91,6 +124,21 @@ def read_weights(sections: SectionReader, vertex_count: int) -> dict:
     fields["weight_groups"] = array("I", groups)
     fields["weight_values"] = array("f", values)
     return fields
+
+
+def _read_sum_values(sections: SectionReader, offsets: list, total: int) -> list:
+    rows = len(offsets) - 1
+    stored = iter(sections.column(SectionKind.WEIGHT_VALUES, total - rows))
+    values = []
+    for start, end in zip(offsets, offsets[1:], strict=False):
+        if end == start:
+            raise FormatError("A row with a weight sum has no weights")
+        row = [next(stored) for _ in range(end - start - 1)]
+        if sum(row) > WEIGHT_TOTAL:
+            raise FormatError("A row's weights add up to more than 1")
+        row.append(WEIGHT_TOTAL - sum(row))
+        values += [step / WEIGHT_TOTAL for step in row]
+    return values
 
 
 def _expand_rows(rows: list, offsets: list, groups: list, values: list) -> tuple:

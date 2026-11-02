@@ -508,6 +508,7 @@ def check_attributes_and_shape_keys(directory):
     actual = snap_mesh(mesh_adapter.capture_mesh(imported.data))
     assert same_geometry(actual, expected, compare_normals=False)
     bpy.context.scene.unit_settings.scale_length = 1.0
+    check_shape_extremes(obj, imported)
     print("PASS: custom attributes, shape keys and units")
 
 
@@ -657,6 +658,31 @@ def check_points_hair_volumes_and_topology(directory):
     assert tree.animation_data.drivers[0].driver.expression == "0.5"
     scene.frame_start, scene.frame_end = frames
     print("PASS: point clouds, hair, volumes, speakers, node drivers and topology")
+
+
+def check_shape_extremes(source, imported):
+    """Shapes at negative and combined values move the surface as they did."""
+    second = source.shape_key_add(name="Frown", from_mix=False)
+    second.data[3].co.x += 0.2
+    with tempfile.TemporaryDirectory() as directory:
+        path = str(Path(directory) / "extremes.zpm")
+        export_alone(source, path)
+        before = set(bpy.data.objects.keys())
+        assert bpy.ops.import_mesh.zpm(filepath=path) == {"FINISHED"}
+        again = bpy.data.objects[(set(bpy.data.objects.keys()) - before).pop()]
+    for values in ((-1.0, 0.0), (1.0, 1.0), (-1.0, 1.0)):
+        for obj in (source, again):
+            keys = obj.data.shape_keys.key_blocks
+            keys["Smile"].value, keys["Frown"].value = values
+        bpy.context.view_layer.update()
+        graph = bpy.context.evaluated_depsgraph_get()
+        moved = [obj.evaluated_get(graph).to_mesh().vertices for obj in (source, again)]
+        # Reordering renumbers vertices, so compare each axis's sorted places.
+        for axis in range(3):
+            places = [sorted(v.co[axis] for v in vertices) for vertices in moved]
+            worst = max(abs(a - b) for a, b in zip(*places, strict=True))
+            assert worst < 1e-4, (values, axis, worst)
+    assert imported is not again
 
 
 def check_holes_are_refused():

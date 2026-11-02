@@ -275,6 +275,18 @@ those meshes store none. This adds real size for now: about 20% on `DamagedHelme
 weights start, and because offsets climb steadily, they compress well. A vertex's weights are one lookup
 away.
 
+### Weights adding up to 1 lose their last value
+
+**Problem:** Weights are the largest part of a rigged mesh, and normalized weights say the same thing twice.
+
+**Technique:** When every vertex's weights already add up to 1, they go on a 12-bit grid with spare steps given by largest
+remainder, so each row adds up exactly, sorted largest first. Each row then stores no last value. Any other mesh keeps its
+weights in order on the 16-bit grid.
+
+**Numbers:** `CesiumMan` weights 19,232 to 10,550 bytes (1.82x). `benchmarks/quality/weight_test.py` poses every bone at up to
+69° and reports the worst move: 0.0044% of the mesh's size on `CesiumMan`, 0.0028% on `RiggedFigure`. A 16-bit grid is
+1.3x larger, 10 bits gains 13% more at 4x the error, 8 bits 27% more at 16x.
+
 ### Vertices with equal weights share a row
 
 **Technique:** Rigged meshes repeat the same weights across many vertices. Each distinct set is stored once, with
@@ -567,6 +579,7 @@ renders, so this may overstate ZPM's part. A less extreme glossy surface and dir
 | Coding a no-link face's vertices relative to its first | 7% larger on those faces | Distances from the newest are already short |
 | Strip blocks of 768 corners | About 0.35%, no mesh changes sides | Random corner and edge reads 2x slower |
 | Whole-mesh adaptive coding, to chase Draco | Still 1.2x to 1.3x larger than Draco | Gives up every read in place |
+| One vertex list for all blendshape targets (union mask) | 3.2x larger on a test face rig of 30 local targets | Every target then stores every vertex |
 | Branch-free strip vertices | Whole reads about 1.3x slower | The branch predicts better than expected |
 | Smaller blocks with their own widths and bases | About 1% at best, often larger | The width reflects real variation, not outliers |
 | Merging exact duplicate vertices | 1.31x on samurai | Vertices must stay as Blender has them |

@@ -515,6 +515,11 @@ def apply_vertex_groups(mesh: Mesh, obj: bpy.types.Object) -> None:
     """Add a mesh's vertex groups and weights to the object using it."""
     groups = [obj.vertex_groups.new(name=name) for name in mesh.vertex_groups]
     if not mesh.weight_offsets:
+        # With no weight data at all, Blender lets a shape key using a group move
+        # everything. An empty group should move nothing. Adding and removing makes it.
+        if groups and mesh.vertex_count:
+            groups[0].add([0], 1.0, "REPLACE")
+            groups[0].remove([0])
         return
     for vertex in range(mesh.vertex_count):
         start, end = mesh.weight_offsets[vertex], mesh.weight_offsets[vertex + 1]

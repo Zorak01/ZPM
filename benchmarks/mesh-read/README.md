@@ -1,5 +1,34 @@
 # Mesh read benchmarks
 
+## Latest run: 2026-11-02
+
+Run `20261102T222054Z`, [raw JSON](results/20261102T222054Z.json), in 58 s. Connectivity only: positions, faces, corners and edges.
+
+| Fixture | Bytes | Read all (µs) | Random vertex (ns) | Random corner (ns) | Random edge (ns) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| quad_grid | 28,296 | 214 | 23 | 12 | 28 |
+| triangle_grid | 100,560 | 310 | 27 | 306 | 619 |
+| shuffled_quad_ids | 28,296 | 209 | 22 | 12 | 27 |
+| mixed_tri_quad_ngon | 116,880 | 429 | 29 | 457 | 943 |
+| disjoint_ngons | 366,776 | 1,634 | 26 | 5 | 16 |
+| random_triangle_indices | 209,688 | 409 | 14 | 5 | 15 |
+| repository_obj418 | 8,508 | 16 | 18 | 5 | 12 |
+| loose_nonmanifold | 264 | 0 | 10 | 4 | 7 |
+| float_bit_patterns | 228 | 0 | 13 | 5 | 15 |
+| wire_only | 200 | 0 | 11 | 0 | 7 |
+| empty_mesh | 88 | 0 | 0 | 0 | 0 |
+| 04263 | 63,388 | 120 | 21 | 13 | 27 |
+| 04362 | 3,148 | 13 | 37 | 13 | 25 |
+| 11375 | 436 | 1 | 21 | 2 | 7 |
+| minotaur | 8,216 | 24 | 36 | 329 | 712 |
+| samurai | 13,168 | 39 | 37 | 390 | 803 |
+| werewolf | 7,644 | 19 | 31 | 326 | 679 |
+
+Packed bases and 4-bit widths took a random vertex read from about 25 ns to about 45 ns in exchange for smaller files. A
+random corner decodes part of a strip block, so read many corners with `GetCorners` or a `ZpmCornerCursor`.
+
+The sections below are from the older run of 2026-10-31.
+
 Measured **2026-10-31** (run `20261031T070333Z`) on an AMD Ryzen Z1 Extreme, Windows 11,
 .NET 10 with tiered compilation off. [Raw JSON](results/20261031T070333Z.json) |
 [CSV](results/20261031T070333Z.csv)

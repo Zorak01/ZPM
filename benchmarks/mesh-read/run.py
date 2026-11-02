@@ -2,7 +2,9 @@
 """Measure reads of ZPM files next to the frozen mesh-core codec, on one host.
 
 Published mesh-core timings came from another machine, so they are never compared here:
-the frozen codec is rerun in the same session, with the same runtime.
+the frozen codec is rerun in the same session, with the same runtime. Encoding runs side
+by side before any read is timed, so its own times are rough. Verifying and fuzzing wait
+until all timing is done, then run side by side too.
 """
 
 import argparse
@@ -19,6 +21,7 @@ import sys
 import time
 from array import array
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
@@ -32,6 +35,7 @@ FIXTURE_MAGIC = b"ZMS1"
 FUZZ_LIMIT_BYTES = 300_000
 FUZZ_TRIALS = 500
 FUZZ_SEED = 72641
+CHECK_WORKERS = 8
 
 sys.path.insert(0, str(REPOSITORY / "blender"))
 
@@ -214,6 +218,30 @@ def collect_fixtures(private_folder: Path | None) -> list:
     return fixtures
 
 
+def prepare_files(path: Path, packets: Path) -> float:
+    """Encode one fixture, prove the result, write its files, and return encode time."""
+    packets.mkdir(parents=True)
+    mesh = load_fixture(path)
+    clock = time.perf_counter()
+    data = encode(mesh)
+    encode_ms = (time.perf_counter() - clock) * 1000
+    (packets / "mesh.zpm").write_bytes(data)
+    decoded = decode(data)
+    if not same_geometry(snap_mesh(mesh), decoded):
+        raise ValueError(f"File does not match its source mesh: {path.name}")
+    write_fixture(decoded, packets / "expected.zms")
+    surface_mesh = load_surface(path.with_suffix(".surface"), mesh)
+    if surface_mesh is not None:
+        surface_data = encode(surface_mesh)
+        (packets / "surface.zpm").write_bytes(surface_data)
+        surface_decoded = decode(surface_data)
+        if not same_geometry(snap_mesh(surface_mesh), surface_decoded):
+            raise ValueError(f"Surface file does not match its source: {path.name}")
+        write_fixture(surface_decoded, packets / "surface_expected.zms")
+        write_surface(surface_decoded, packets / "surface_expected.surface")
+    return encode_ms
+
+
 def measure_frozen(dotnet, env, path, packets, common) -> list:
     frozen = run_json([dotnet, str(FROZEN), "encode", str(path), str(packets)], env=env)
     smallest = min(frozen["variants"], key=lambda variant: variant["bytes"])
@@ -267,10 +295,23 @@ def main():
     destination = ROOT / "runs" / run_id
     destination.mkdir(parents=True)
     rows = []
-    fuzz = []
-    for label, kind, path in collect_fixtures(args.private_fixtures):
+    verifying = []
+    fuzzing = []
+    fixtures = collect_fixtures(args.private_fixtures)
+    with ProcessPoolExecutor(CHECK_WORKERS) as encoders:
+        encode_times = dict(
+            zip(
+                [label for label, _, _ in fixtures],
+                encoders.map(
+                    prepare_files,
+                    [path for _, _, path in fixtures],
+                    [destination / "packets" / label for label, _, _ in fixtures],
+                ),
+                strict=True,
+            )
+        )
+    for label, kind, path in fixtures:
         packets = destination / "packets" / label
-        packets.mkdir(parents=True)
         mesh = load_fixture(path)
         common = {
             "fixture": label,
@@ -282,19 +323,16 @@ def main():
         }
         rows += measure_frozen(dotnet, frozen_env, path, packets, common)
 
-        encode_clock = time.perf_counter()
-        data = encode(mesh)
-        encode_ms = (time.perf_counter() - encode_clock) * 1000
         file_path = packets / "mesh.zpm"
-        file_path.write_bytes(data)
-        decoded = decode(data)
-        if not same_geometry(snap_mesh(mesh), decoded):
-            raise ValueError(f"File does not match its source mesh: {label}")
-        expected_path = packets / "expected.zms"
-        write_fixture(decoded, expected_path)
-        subprocess.run(
-            [dotnet, str(READER), "verify", str(expected_path), str(file_path)],
-            check=True,
+        data = file_path.read_bytes()
+        verifying.append(
+            [
+                dotnet,
+                str(READER),
+                "verify",
+                str(packets / "expected.zms"),
+                str(file_path),
+            ]
         )
         view = run_json([dotnet, str(READER), "measure", str(file_path)])
         rows.append(
@@ -304,23 +342,16 @@ def main():
                 "method": "zpm",
                 "reader": "in-place view",
                 "stored_bytes": len(data),
-                "encode_ms": encode_ms,
+                "encode_ms": encode_times[label],
                 "full_read_us": view["read_all_ns"] / 1000,
                 "first_read_us": (view["open_ns"] + view["random_face_ns"]) / 1000,
                 **view,
             }
         )
-        surface_mesh = load_surface(path.with_suffix(".surface"), mesh)
-        if surface_mesh is not None:
-            surface_data = encode(surface_mesh)
-            surface_path = packets / "surface.zpm"
-            surface_path.write_bytes(surface_data)
-            surface_decoded = decode(surface_data)
-            if not same_geometry(snap_mesh(surface_mesh), surface_decoded):
-                raise ValueError(f"Surface file does not match its source: {label}")
-            write_fixture(surface_decoded, packets / "surface_expected.zms")
-            write_surface(surface_decoded, packets / "surface_expected.surface")
-            subprocess.run(
+        surface_path = packets / "surface.zpm"
+        if surface_path.exists():
+            surface_data = surface_path.read_bytes()
+            verifying.append(
                 [
                     dotnet,
                     str(READER),
@@ -328,8 +359,7 @@ def main():
                     str(packets / "surface_expected.zms"),
                     str(surface_path),
                     str(packets / "surface_expected.surface"),
-                ],
-                check=True,
+                ]
             )
             surface_view = run_json([dotnet, str(READER), "measure", str(surface_path)])
             rows.append(
@@ -345,18 +375,28 @@ def main():
             data = surface_data
             file_path = surface_path
         if len(data) <= FUZZ_LIMIT_BYTES:
-            result = run_json(
-                [
-                    dotnet,
-                    str(READER),
-                    "fuzz",
-                    str(file_path),
-                    str(FUZZ_SEED),
-                    str(FUZZ_TRIALS),
-                ]
+            fuzzing.append(
+                (
+                    label,
+                    [
+                        dotnet,
+                        str(READER),
+                        "fuzz",
+                        str(file_path),
+                        str(FUZZ_SEED),
+                        str(FUZZ_TRIALS),
+                    ],
+                )
             )
-            fuzz.append({"fixture": label, **result})
         print(f"Measured {label}", flush=True)
+    with ThreadPoolExecutor(CHECK_WORKERS) as checks:
+        list(checks.map(lambda command: subprocess.run(command, check=True), verifying))
+        fuzz = list(
+            checks.map(
+                lambda task: {"fixture": task[0], **run_json(task[1])},
+                fuzzing,
+            )
+        )
 
     runtimes = subprocess.check_output([dotnet, "--list-runtimes"], text=True)
     metadata = {

@@ -80,13 +80,77 @@ def _build_rig() -> list:
     held.parent_type = "BONE"
     held.parent_bone = "Loose"
     held.location = (0.1, 0.1, 0.1)
+    delta = bpy.data.objects.new("Delta", None)
+    bpy.context.collection.objects.link(delta)
+    delta.location = (1, 2, 3)
+    delta.delta_location = (0.5, 0.25, -1)
+    delta.rotation_mode = "XZY"
+    delta.rotation_euler = (0.2, 0.4, 0.6)
+    delta.delta_rotation_euler = (0.3, -0.1, 0.5)
+    delta.scale = (1, 2, 3)
+    delta.delta_scale = (2, 0.5, 1.5)
+    turned = bpy.data.objects.new("DeltaTurned", None)
+    bpy.context.collection.objects.link(turned)
+    turned.rotation_mode = "QUATERNION"
+    turned.rotation_quaternion = (0.9, 0.1, 0.2, 0.3)
+    turned.delta_rotation_quaternion = (0.8, 0.4, -0.2, 0.1)
+
+    base_mesh = bpy.data.meshes.new("Base")
+    base_mesh.from_pydata(
+        [(0, 0, 0), (2, 0, 0.5), (0.5, 3, 1), (-1, 1, 2)], [], [(0, 1, 2), (0, 2, 3)]
+    )
+    base = bpy.data.objects.new("Base", base_mesh)
+    bpy.context.collection.objects.link(base)
+    base.location = (3, -1, 2)
+    base.rotation_mode = "XYZ"
+    base.rotation_euler = (0.4, 0.3, 0.2)
+    base.scale = (2, 1, 0.5)
+    single = bpy.data.objects.new("OnVertex", None)
+    bpy.context.collection.objects.link(single)
+    single.parent = base
+    single.parent_type = "VERTEX"
+    single.parent_vertices = (2, 0, 0)
+    single.location = (0.1, 0.2, 0.3)
+    triple = bpy.data.objects.new("OnTriangle", None)
+    bpy.context.collection.objects.link(triple)
+    triple.parent = base
+    triple.parent_type = "VERTEX_3"
+    triple.parent_vertices = (0, 1, 2)
+    triple.location = (0.1, 0.2, 0.3)
     bpy.context.view_layer.update()
-    return [rig, child, grandchild, held]
+    return [rig, child, grandchild, held, delta, turned, base, single, triple]
+
+
+def _add_inheriting_bones(rig) -> None:
+    """One child per way of taking a parent's scale, with and without its rotation."""
+    armature = rig.data
+    bpy.context.view_layer.objects.active = rig
+    bpy.ops.object.mode_set(mode="EDIT")
+    names = []
+    for mode in ("FULL", "FIX_SHEAR", "ALIGNED", "AVERAGE", "NONE", "NONE_LEGACY"):
+        for inherits in (True, False):
+            name = f"{mode}-{inherits}"
+            bone = armature.edit_bones.new(name)
+            bone.head = (1.5, 0.2, 0.4)
+            bone.tail = (1.9, 1.0, 0.3)
+            bone.roll = 0.3
+            bone.parent = armature.edit_bones["Loose"]
+            bone.inherit_scale = mode
+            bone.use_inherit_rotation = inherits
+            names.append(name)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    for name in names:
+        pose = rig.pose.bones[name]
+        pose.location = (0.2, 0.1, -0.1)
+        pose.rotation_quaternion = (0.95, 0.1, -0.2, 0.05)
+        pose.scale = (1.2, 1.2, 1.2)
+    bpy.context.view_layer.update()
 
 
 def main():
     folder = Path(sys.argv[sys.argv.index("--") + 1])
     objects = _build_rig()
+    _add_inheriting_bones(objects[0])
     save(folder / "rig.zpm", scene_adapter.capture_scene(bpy.context.scene, objects))
     expected = {}
     for obj in objects:

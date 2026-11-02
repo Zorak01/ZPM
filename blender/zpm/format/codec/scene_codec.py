@@ -13,6 +13,7 @@ from ..container.layout import (
     FILE_HEADER,
     NO_INDEX,
     ObjectType,
+    ParentType,
     ResourceKind,
     SectionKind,
     TrackValue,
@@ -104,11 +105,26 @@ def _with_meshes_moved(track, remap: dict):
     return replace(track, values=[remap[value] for value in track.values])
 
 
+def _meshes_with_named_vertices(scene: Scene) -> set:
+    """Return meshes whose vertices objects are parented to by number."""
+    return {
+        scene.objects[item.parent].data
+        for item in scene.objects
+        if item.parent != NO_INDEX
+        and item.parent_type in (ParentType.VERTEX, ParentType.VERTEX_3)
+        and scene.objects[item.parent].object_type == ObjectType.MESH
+    }
+
+
 def encode_scene(scene: Scene) -> bytes:
     """Return file bytes for a validated scene. Meshes encode as encode describes."""
     scene.validate()
     deduplicated = _without_repeated_meshes(scene)
-    meshes = [encode(mesh) for mesh in deduplicated.meshes]
+    named_vertices = _meshes_with_named_vertices(deduplicated)
+    meshes = [
+        encode(mesh, keep_vertex_order=index in named_vertices)
+        for index, mesh in enumerate(deduplicated.meshes)
+    ]
     strings = StringTable()
     sections = [
         *encode_space(scene.space),

@@ -57,16 +57,19 @@ from .weights import encode_weights, read_weights
 _SHORT_ID_LIMIT = 65536
 
 
-def encode(mesh: Mesh) -> bytes:
+def encode(mesh: Mesh, *, keep_vertex_order: bool = False) -> bytes:
     """Return the smallest file bytes for a validated mesh.
 
     Values snap as snap_mesh describes. Faces, vertices and edges are reordered only
     when that makes the file smaller. Costs seconds on large meshes; reading the
-    result costs nothing extra.
+    result costs nothing extra. keep_vertex_order is for a mesh something else names
+    vertices of, as a vertex parent does.
     """
     mesh.validate()
     snapped = snap_mesh(mesh)
     as_stored = _encode_mesh(snapped)
+    if keep_vertex_order:
+        return as_stored
     reordered = _encode_mesh(reorder_mesh(snapped))
     return reordered if len(reordered) < len(as_stored) else as_stored
 

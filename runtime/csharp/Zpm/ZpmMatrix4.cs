@@ -52,6 +52,67 @@ public readonly struct ZpmMatrix4
             new(0f, 0f, 0f, 1f));
     }
 
+    /// <summary>Returns the matrix with its first three columns scaled by these amounts.</summary>
+    public ZpmMatrix4 ScaleColumns(float x, float y, float z) => new(
+        new(row0.x * x, row0.y * y, row0.z * z, row0.w),
+        new(row1.x * x, row1.y * y, row1.z * z, row1.w),
+        new(row2.x * x, row2.y * y, row2.z * z, row2.w),
+        row3);
+
+    /// <summary>Returns the length of each of the first three columns: the scale along each axis.</summary>
+    public ZpmVector3 GetColumnLengths() => new(
+        MathF.Sqrt(row0.x * row0.x + row1.x * row1.x + row2.x * row2.x),
+        MathF.Sqrt(row0.y * row0.y + row1.y * row1.y + row2.y * row2.y),
+        MathF.Sqrt(row0.z * row0.z + row1.z * row1.z + row2.z * row2.z));
+
+    /// <summary>Returns the determinant of the upper 3x3 part: how much it changes volume.</summary>
+    public float GetVolumeScale() =>
+        row0.x * (row1.y * row2.z - row1.z * row2.y)
+        - row0.y * (row1.x * row2.z - row1.z * row2.x)
+        + row0.z * (row1.x * row2.y - row1.y * row2.x);
+
+    /// <summary>Returns the matrix with each of its first three columns at length 1.</summary>
+    public ZpmMatrix4 WithoutScale()
+    {
+        ZpmVector3 lengths = GetColumnLengths();
+        return ScaleColumns(1f / lengths.x, 1f / lengths.y, 1f / lengths.z);
+    }
+
+    /// <summary>
+    /// Returns the matrix with shear removed: its Y axis stays, and the others become square to it,
+    /// keeping their lengths. Costs a few square roots.
+    /// </summary>
+    public ZpmMatrix4 WithoutShear()
+    {
+        ZpmVector3 lengths = GetColumnLengths();
+        float yx = row0.y / lengths.y, yy = row1.y / lengths.y, yz = row2.y / lengths.y;
+        float dotX = row0.x * yx + row1.x * yy + row2.x * yz;
+        float xx = row0.x - dotX * yx, xy = row1.x - dotX * yy, xz = row2.x - dotX * yz;
+        float inverse = 1f / MathF.Sqrt(xx * xx + xy * xy + xz * xz);
+        xx *= inverse;
+        xy *= inverse;
+        xz *= inverse;
+        float zx = xy * yz - xz * yy, zy = xz * yx - xx * yz, zz = xx * yy - xy * yx;
+        return new(
+            new(xx * lengths.x, yx * lengths.y, zx * lengths.z, row0.w),
+            new(xy * lengths.x, yy * lengths.y, zy * lengths.z, row1.w),
+            new(xz * lengths.x, yz * lengths.y, zz * lengths.z, row2.w),
+            row3);
+    }
+
+    /// <summary>Returns the point p moved by this matrix.</summary>
+    public ZpmVector3 TransformPoint(in ZpmVector3 p) => new(
+        row0.x * p.x + row0.y * p.y + row0.z * p.z + row0.w,
+        row1.x * p.x + row1.y * p.y + row1.z * p.z + row1.w,
+        row2.x * p.x + row2.y * p.y + row2.z * p.z + row2.w);
+
+    /// <summary>Returns the matrix with its position replaced.</summary>
+    public ZpmMatrix4 WithPosition(in ZpmVector3 p) =>
+        new(new(row0.x, row0.y, row0.z, p.x), new(row1.x, row1.y, row1.z, p.y), new(row2.x, row2.y, row2.z, p.z), row3);
+
+    /// <summary>Returns the matrix's position.</summary>
+    public ZpmVector3 GetPosition() => new(row0.w, row1.w, row2.w);
+
     /// <summary>Returns a translation matrix.</summary>
     public static ZpmMatrix4 CreateTranslation(float x, float y, float z) =>
         new(new(1f, 0f, 0f, x), new(0f, 1f, 0f, y), new(0f, 0f, 1f, z), new(0f, 0f, 0f, 1f));

@@ -623,6 +623,28 @@ class CodecTests(unittest.TestCase):
         self.assertEqual(stored.clips[0].tracks[0].values, [0, 1])
         self.assertEqual(stored.objects[0].data, 1)
 
+    def test_a_vertex_parent_keeps_its_mesh_in_vertex_order(self):
+        mesh = real_fixture()
+        scene = Scene(
+            meshes=[mesh],
+            objects=[
+                SceneObject("Base", ObjectType.MESH, 0),
+                SceneObject(
+                    "Follower",
+                    ObjectType.EMPTY,
+                    NO_INDEX,
+                    0,
+                    parent_type=ParentType.VERTEX,
+                    parent_vertices=(5, 0, 0),
+                ),
+            ],
+        )
+        stored = decode_scene(encode_scene(scene)).meshes[0]
+        expected = snap_mesh(mesh)
+        self.assertEqual(
+            stored.positions[15:18].tobytes(), expected.positions[15:18].tobytes()
+        )
+
     def test_surface_data_round_trip_and_follows_reordering(self):
         source = surface_mesh()
         decoded = decode(encode(source))

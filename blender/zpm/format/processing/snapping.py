@@ -28,11 +28,12 @@ from ..container.layout import (
     float_from_bits,
 )
 from ..mesh import ColorLayer, Mesh
-from .faces import corner_normals_from_faces, face_lists
+from .faces import corner_normals_from_faces, face_lists, has_face_normals
 
 GRID_BITS = 20
 _FACE_NORMAL_MIN_COSINE = math.cos(math.radians(0.1))
 _TANGENT_WIDTH = 4
+_SAME_NORMAL_STEPS = 1
 
 
 def grid_exponent(mesh: Mesh) -> int:
@@ -68,16 +69,8 @@ def normals_match_faces(mesh: Mesh) -> bool:
     """
     if mesh.has_custom_normals or mesh.hole_starts or not mesh.corner_normals:
         return False
-    derived = corner_normals_from_faces(mesh.positions, face_lists(mesh))
-    if derived is None:
-        return False
-    stored = mesh.corner_normals
-    return all(
-        derived[at] * stored[at]
-        + derived[at + 1] * stored[at + 1]
-        + derived[at + 2] * stored[at + 2]
-        >= _FACE_NORMAL_MIN_COSINE
-        for at in range(0, len(stored), AXIS_COUNT)
+    return has_face_normals(
+        mesh.positions, face_lists(mesh), mesh.corner_normals, _FACE_NORMAL_MIN_COSINE
     )
 
 
@@ -136,6 +129,30 @@ def _snap_groups(values: array, width: int, encode, decode) -> array:
     )
 
 
+def _snap_normals(mesh: Mesh) -> array:
+    """Return 12-bit normals, with a vertex's corners one grid step apart made equal.
+
+    Corners of a smooth vertex often land one step apart from rounding alone, and each
+    would cost a stored exception. This moves a normal by at most about 0.05 degrees.
+    Corners further apart are real splits and stay.
+    """
+    normals = mesh.corner_normals
+    if not normals:
+        return array("f")
+    first_of_vertex = {}
+    snapped = array("f")
+    for corner, vertex in enumerate(mesh.corners):
+        at = corner * AXIS_COUNT
+        stored = encode_normal(*normals[at : at + AXIS_COUNT])
+        first = first_of_vertex.setdefault(vertex, stored)
+        is_close = (
+            abs(stored[0] - first[0]) <= _SAME_NORMAL_STEPS
+            and abs(stored[1] - first[1]) <= _SAME_NORMAL_STEPS
+        )
+        snapped.extend(decode_normal(*(first if is_close else stored)))
+    return snapped
+
+
 def _snap_color(layer: ColorLayer) -> ColorLayer:
     if not layer.is_float:
         return layer
@@ -158,14 +175,13 @@ def snap_mesh(mesh: Mesh) -> Mesh:
     equal, so shared points cannot crack apart. The step is a power of two, so
     snapping again changes nothing.
     Normals and tangents become 12-bit directions, or normals their faces' when those
-    match. UVs go on a 1 / 2^20 grid, float colors on 1 / 2^16, creases and weights to
+    match, and a vertex's corners one step apart become equal. UVs go on a 1 /
+    2^16 grid, float colors on 1 / 2^16, creases and weights to
     16 bits. RGBA8 colors stay exact. A UV layer's seams are dropped when they equal
     the mesh's own. Custom attributes stay exact.
     """
     changes = {
-        "corner_normals": _snap_groups(
-            mesh.corner_normals, AXIS_COUNT, encode_normal, decode_normal
-        ),
+        "corner_normals": _snap_normals(mesh),
         "tangent_layers": {
             name: _snap_groups(layer, _TANGENT_WIDTH, encode_tangent, decode_tangent)
             for name, layer in mesh.tangent_layers.items()
@@ -189,7 +205,8 @@ def snap_mesh(mesh: Mesh) -> Mesh:
         changes["positions"] = _snap_to_grid(mesh.positions, step)
     changes["shape_targets"] = _snap_targets(mesh, step)
     snapped = replace(mesh, **changes)
-    if normals_match_faces(snapped):
+    # Judged before snapping, which can turn a tiny face by far more than it moves it.
+    if normals_match_faces(mesh):
         snapped.corner_normals = corner_normals_from_faces(
             snapped.positions, face_lists(snapped)
         )

@@ -8,7 +8,9 @@ from enum import IntEnum, IntFlag
 MAGIC = b"ZPM\0"
 VERSION = 1
 FILE_HEADER = struct.Struct("<4sHHQ")
-DIRECTORY_ENTRY = struct.Struct("<HBBQ")
+DIRECTORY_ENTRY = struct.Struct("<HBBI")
+WIDE_DIRECTORY_ENTRY = struct.Struct("<HBBQ")
+LARGEST_NARROW_FILE = (1 << 32) - 1
 MESH_INFO = struct.Struct("<6IiI")
 SPACE = struct.Struct("<fBBH")
 OBJECT_INFO = struct.Struct("<13I26f2I")
@@ -31,12 +33,13 @@ BONE_INFO = struct.Struct("<2I10f")
 INDEX = struct.Struct("<I")
 BYTE_OFFSET = struct.Struct("<Q")
 SHAPE_INFO = struct.Struct("<2I5fI")
-COLUMN_COUNT = struct.Struct("<I")
+COLUMN_HEAD = struct.Struct("<IIBB")
+WIDTH_NIBBLE_MAX = 15
 TAIL_BYTES = 32
 ALIGNMENT = 4
 
 BLOCK_SIZE = 64
-BLOCKS_PER_GROUP = 8
+BLOCKS_PER_GROUP = 16
 MAX_WIDTH = 32
 MAX_SLOPE = 127
 MAX_UNIFORM_ARITY = 255
@@ -49,7 +52,9 @@ DEFAULT_MAX_BYTES = 512 * 1024 * 1024
 NO_GRID = -(2**31)
 MAX_GRID_VALUE = 1 << 24
 NORMAL_BITS = 12
-UV_GRID_BITS = 20
+UV_GRID_BITS = 16
+FIT_SHIFT = 16
+FIT_COARSE_SHIFT = 10
 COLOR_GRID_BITS = 16
 OFFSET_GRID_BITS = 16
 UNIT_MAX = 65535
@@ -136,6 +141,12 @@ class SectionKind(IntEnum):
     UV_EXCEPTION_MASK = 86
     UV_EXCEPTION_A = 87
     UV_EXCEPTION_B = 88
+    UV_FIT_A_X = 89
+    UV_FIT_A_Y = 90
+    UV_FIT_A_Z = 91
+    UV_FIT_B_X = 92
+    UV_FIT_B_Y = 93
+    UV_FIT_B_Z = 94
     TANGENT_METHOD = 95
     TANGENT_REPEAT_MASK = 96
     TANGENT_DISTANCES = 97
@@ -174,6 +185,7 @@ class SectionKind(IntEnum):
     ATTRIBUTE_NAMES = 160
     ATTRIBUTE_FORMATS = 161
     ATTRIBUTE_VALUES = 162
+    ATTRIBUTE_STRINGS = 163
     SHAPE_NAMES = 170
     SHAPE_GROUP_NAMES = 171
     SHAPE_INFO = 172
@@ -189,6 +201,9 @@ class SectionKind(IntEnum):
     SHAPE_TANGENT_Y = 182
     SHAPE_TANGENT_Z = 183
     SHAPE_LIST_STARTS = 184
+    CORNER_STRIP_STARTS = 185
+    CORNER_STRIP_NEWEST = 186
+    CORNER_STRIP_BITS = 187
     SCENE_MESH_STARTS = 200
     SCENE_MESHES = 201
     OBJECT_NAMES = 202
@@ -281,6 +296,7 @@ class StreamRole(IntEnum):
     EXCEPTION_MASK = 6
     EXCEPTION_A = 7
     EXCEPTION_B = 8
+    FIT_A_X = 9
 
 
 class ColorFormat(IntFlag):
@@ -314,7 +330,10 @@ class AttributeDomain(IntEnum):
 
 
 class AttributeType(IntEnum):
-    """How one component of a custom attribute is stored. All are exact."""
+    """How one component of a custom attribute is stored. All are exact.
+
+    A string is an index into the attribute's own list of distinct strings.
+    """
 
     BOOL = 0
     INT8 = 1
@@ -324,6 +343,7 @@ class AttributeType(IntEnum):
     INT32 = 5
     UINT32 = 6
     FLOAT32 = 7
+    STRING = 8
 
 
 class AttributeMeaning(IntEnum):
@@ -487,6 +507,7 @@ class TrackFlags(IntFlag):
     NONE = 0
     BAKED = 1
     SPHERICAL_ROTATION = 2
+    SPARSE = 4
 
 
 class KeyMode(IntEnum):
@@ -564,6 +585,10 @@ class SectionFlags(IntFlag):
     NONE = 0
     HAS_SLOPES = 1
     SIGNED_INDICES = 2
+    SHORT_GROUPS = 4
+    BY_POSITION = 8
+    COARSE_FIT = 16
+    SHARED_MAP = 32
 
 
 def align(length: int) -> int:

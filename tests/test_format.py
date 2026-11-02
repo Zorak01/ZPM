@@ -75,6 +75,7 @@ from zpm.format.container.layout import (
     RotationMode,
     SamplerFilter,
     SamplerWrap,
+    SectionFlags,
     SectionKind,
     SkinFlags,
     SplineFlags,
@@ -85,6 +86,7 @@ from zpm.format.container.layout import (
 )
 from zpm.format.container.sections import Section, SectionReader, write_file
 from zpm.format.processing.animation import reduce_track
+from zpm.format.processing.faces import face_lists
 from zpm.format.processing.reordering import reorder_mesh
 
 
@@ -138,6 +140,57 @@ def real_fixture() -> Mesh:
         values[v * 3 + f : v * 3 + f + c],
         values[v * 3 + f + c :],
     )
+
+
+def split_vertex_mesh() -> Mesh:
+    source = grid_mesh(12)
+    count = source.vertex_count
+    positions = array("f", source.positions)
+    positions.extend(source.positions)
+    corners = array("I")
+    normals = array("f")
+    edges = array("I")
+    for face in range(source.face_count):
+        ring = source.corners[face * 4 : face * 4 + 4]
+        for vertex in ring:
+            corners.append(vertex + face % 2 * count)
+            normals.extend(_split_normal(vertex))
+        for j in range(4):
+            a = ring[j] + face % 2 * count
+            b = ring[(j + 1) % 4] + face % 2 * count
+            edges.extend((min(a, b), max(a, b)))
+    return Mesh(
+        positions,
+        array("I", [4] * source.face_count),
+        corners,
+        edges,
+        corner_normals=normals,
+        has_custom_normals=True,
+    )
+
+
+def _split_normal(vertex: int) -> tuple:
+    angle = vertex * 0.03
+    return math.sin(angle), 0.0, math.cos(angle)
+
+
+def shared_map_mesh() -> Mesh:
+    mesh = grid_mesh(12)
+    first = array("f")
+    second = array("f")
+    for corner in range(len(mesh.corners)):
+        pair = ((corner // 4 % 5) * 0.125, (corner % 4) * 0.125)
+        first.extend(pair)
+        second.extend((pair[0] + 0.5, pair[1] + 0.25))
+    mesh.uv_layers = {"A": first, "B": second}
+    mesh.attributes["label"] = Attribute(
+        AttributeDomain.POINT,
+        AttributeType.STRING,
+        1,
+        array("I", [v % 2 for v in range(mesh.vertex_count)]),
+        strings=["odd", "even"],
+    )
+    return mesh
 
 
 def surface_mesh() -> Mesh:
@@ -274,6 +327,76 @@ def holed_mesh() -> Mesh:
     )
 
 
+def strip_mesh() -> Mesh:
+    """Enough triangles to fill several strip blocks, with a far jump and a flip."""
+    side = 24
+    positions = array("f")
+    for y in range(side):
+        for x in range(side):
+            positions.extend((x, y, (x * y) % 5))
+    corners = array("I")
+    for y in range(side - 1):
+        for x in range(side - 1):
+            v = y * side + x
+            corners.extend((v, v + 1, v + side + 1, v, v + side + 1, v + side))
+    edges = set()
+    for at in range(0, len(corners), 3):
+        for j in range(3):
+            a, b = corners[at + j], corners[at + (j + 1) % 3]
+            edges.add((min(a, b), max(a, b)))
+    return Mesh(
+        positions,
+        array("I"),
+        corners,
+        array("I", [v for edge in sorted(edges) for v in edge]),
+        arity=3,
+    )
+
+
+def quad_and_triangle_mesh() -> Mesh:
+    """Quads and triangles side by side, with a few larger faces."""
+    side = 20
+    positions = array("f")
+    for y in range(side):
+        for x in range(side):
+            positions.extend((x, y, (x * y) % 3))
+    sizes = array("I")
+    corners = array("I")
+    edges = set()
+    for y in range(side - 1):
+        for x in range(side - 1):
+            v = y * side + x
+            quad = (v, v + 1, v + side + 1, v + side)
+            faces = (
+                [quad[:3], (quad[0], quad[2], quad[3])] if (x + y) % 3 == 0 else [quad]
+            )
+            for face in faces:
+                sizes.append(len(face))
+                corners.extend(face)
+                for at, vertex in enumerate(face):
+                    other = face[(at + 1) % len(face)]
+                    edges.add((min(vertex, other), max(vertex, other)))
+    return Mesh(
+        positions,
+        sizes,
+        corners,
+        array("I", [v for edge in sorted(edges) for v in edge]),
+    )
+
+
+def uv_fit_mesh() -> Mesh:
+    """UVs that follow position, with some corners that disagree."""
+    mesh = grid_mesh(40)
+    rows = mesh.positions
+    values = array("f")
+    for corner, vertex in enumerate(mesh.corners):
+        u = rows[vertex * 3] * 0.0125
+        v = rows[vertex * 3 + 1] * -0.0125
+        values.extend((u + 0.5, v) if corner % 97 == 0 else (u, v))
+    mesh.uv_layers = {"Flat": values}
+    return mesh
+
+
 def empty_mesh() -> Mesh:
     return Mesh(array("f"), array("I"), array("I"), array("I"))
 
@@ -381,9 +504,124 @@ class CodecTests(unittest.TestCase):
 
     def test_reordered_real_mesh_uses_the_compact_sections(self):
         names = {region.name for region in map_file(encode(real_fixture()))}
-        self.assertIn("CORNER_BACK_DISTANCES", names)
+        self.assertTrue(names & {"CORNER_STRIP_BITS", "CORNER_BACK_DISTANCES"})
         self.assertIn("EDGE_FIRST_USE", names)
         self.assertNotIn("EDGE_CORNERS", names)
+
+    def test_split_vertices_share_a_normal_through_their_position(self):
+        mesh = split_vertex_mesh()
+        data = encode(mesh)
+        regions = {region.name: region for region in map_file(data)}
+        self.assertTrue(regions["NORMAL_VERTEX_A"].flags & SectionFlags.BY_POSITION)
+        again = decode(data)
+        self.assertEqual(again.vertex_count, mesh.vertex_count)
+        for corner, vertex in enumerate(again.corners):
+            x, y = again.positions[vertex * 3], again.positions[vertex * 3 + 1]
+            expected = _split_normal(round(x) - round(y) * 12)
+            self.assertAlmostEqual(
+                again.corner_normals[corner * 3 + 2], expected[2], delta=0.003
+            )
+
+    def test_string_attributes_round_trip_and_follow_reordering(self):
+        mesh = grid_mesh(6)
+        labels = ["left", "right", "\u00e9t\u00e9"]
+        mesh.attributes["label"] = Attribute(
+            AttributeDomain.POINT,
+            AttributeType.STRING,
+            1,
+            array("I", [v % 3 for v in range(mesh.vertex_count)]),
+            strings=labels,
+        )
+        expected = {
+            tuple(mesh.positions[v * 3 : v * 3 + 3]): labels[v % 3]
+            for v in range(mesh.vertex_count)
+        }
+        again = decode(encode(mesh))
+        stored = again.attributes["label"]
+        self.assertEqual(stored.value_type, AttributeType.STRING)
+        for vertex, index in enumerate(stored.values):
+            at = tuple(again.positions[vertex * 3 : vertex * 3 + 3])
+            self.assertEqual(stored.strings[index], expected[at])
+
+    def test_string_attribute_naming_a_missing_string_is_refused(self):
+        mesh = grid_mesh(3)
+        mesh.attributes["label"] = Attribute(
+            AttributeDomain.FACE,
+            AttributeType.STRING,
+            1,
+            array("I", [5] * mesh.face_count),
+            strings=["only"],
+        )
+        with self.assertRaises(FormatError):
+            encode(mesh)
+
+    def test_a_layer_splitting_like_the_first_shares_its_map(self):
+        data = encode(shared_map_mesh())
+        names = {region.name for region in map_file(data)}
+        self.assertIn("UV_REPEAT_MASK", names)
+        self.assertNotIn("UV_REPEAT_MASK[1]", names)
+        again = decode(data)
+        for a, b in zip(again.uv_layers["A"], again.uv_layers["B"], strict=True):
+            self.assertIn(round(b - a, 4), (0.5, 0.25))
+
+    def test_sparse_tracks_store_only_what_changed(self):
+        track = Track(
+            ResourceKind.SCENE,
+            0,
+            "weights",
+            [1.0, 2.0, 3.0],
+            [1, 2, 3, 9, 7],
+            value_type=TrackValue.INT,
+            components=3,
+            changed=[True, True, True, False, True, False, False, False, True],
+        )
+        scene = Scene(clips=[Clip("Morph", tracks=[track])])
+        stored = decode_scene(encode_scene(scene)).clips[0].tracks[0]
+        self.assertEqual(stored.changed, track.changed)
+        self.assertEqual(stored.expanded_values(), [1, 2, 3, 1, 9, 3, 1, 9, 7])
+        track.changed[0] = False
+        with self.assertRaises(FormatError):
+            encode_scene(scene)
+
+    def test_bakes_and_image_variants_round_trip_and_are_checked(self):
+        bake = {"role": "base_color", "image": 1, "settings": {"samples": 64}}
+        variant = {"image": 1, "format": "ktx2", "policy": {"quality": 128}}
+        scene = Scene(
+            materials=[Material("Skin", bakes=[bake])],
+            images=[Image("Source", variants=[variant]), Image("Baked")],
+        )
+        stored = decode_scene(encode_scene(scene))
+        self.assertEqual(stored.materials[0].bakes, [bake])
+        self.assertEqual(stored.images[0].variants, [variant])
+        scene.images[0].variants = [{"image": 9, "format": "ktx2", "policy": {}}]
+        with self.assertRaises(FormatError):
+            encode_scene(scene)
+
+    def test_keys_naming_a_mesh_follow_it_when_repeats_are_removed(self):
+        scene = Scene(
+            meshes=[triangle(), triangle(), grid_mesh(3)],
+            objects=[SceneObject("A", ObjectType.MESH, 2)],
+            clips=[
+                Clip(
+                    "Swap",
+                    tracks=[
+                        Track(
+                            ResourceKind.OBJECT,
+                            0,
+                            "data",
+                            [1.0, 2.0],
+                            [1, 2],
+                            value_type=TrackValue.REFERENCE,
+                            target_kind=ResourceKind.MESH,
+                        )
+                    ],
+                )
+            ],
+        )
+        stored = decode_scene(encode_scene(scene))
+        self.assertEqual(len(stored.meshes), 2)
+        self.assertEqual(stored.clips[0].tracks[0].values, [0, 1])
+        self.assertEqual(stored.objects[0].data, 1)
 
     def test_surface_data_round_trip_and_follows_reordering(self):
         source = surface_mesh()
@@ -408,6 +646,89 @@ class CodecTests(unittest.TestCase):
         mesh.has_custom_normals = True
         names = {region.name for region in map_file(encode(mesh))}
         self.assertTrue(any(name.startswith("NORMAL_") for name in names))
+
+    def test_uvs_that_follow_position_are_predicted_from_it(self):
+        mesh = grid_mesh(40)
+        rows = mesh.positions
+        mesh.uv_layers = {
+            "Flat": array(
+                "f",
+                [
+                    part
+                    for vertex in mesh.corners
+                    for part in (
+                        rows[vertex * 3] * 0.0125,
+                        rows[vertex * 3 + 1] * -0.0125,
+                    )
+                ],
+            )
+        }
+        data = encode(mesh)
+        names = {region.name for region in map_file(data)}
+        self.assertIn("UV_FIT_A_X", names)
+        self.assertTrue(same_geometry(snap_mesh(mesh), decode(data)))
+
+    def test_corners_one_step_apart_share_a_normal(self):
+        mesh = triangle()
+        mesh.corners = array("I", [0, 1, 2, 0, 2, 1])
+        mesh.face_sizes = array("I", [3, 3])
+        close = decode_normal(2000, 2000)
+        nudged = decode_normal(2001, 2000)
+        far = decode_normal(2100, 2000)
+        mesh.corner_normals = array(
+            "f", [*close, *close, *close, *nudged, *far, *close]
+        )
+        snapped = snap_mesh(mesh).corner_normals
+        self.assertEqual(snapped[0:3], snapped[9:12])
+        self.assertNotEqual(snapped[6:9], snapped[12:15])
+        again = snap_mesh(snap_mesh(mesh)).corner_normals
+        self.assertEqual(snapped.tobytes(), again.tobytes())
+
+    def test_quads_and_mixed_faces_can_use_strips(self):
+        mesh = quad_and_triangle_mesh()
+        data = encode(mesh)
+        names = {region.name for region in map_file(data)}
+        self.assertIn("CORNER_STRIP_BITS", names)
+        self.assertTrue(same_geometry(snap_mesh(mesh), decode(data)))
+
+    def test_strips_keep_winding_when_they_turn_a_face(self):
+        mesh = strip_mesh()
+        decoded = decode(encode(mesh))
+        wound = {
+            min(tuple(face[at:] + face[:at]) for at in range(3))
+            for face in (
+                [tuple(mesh.positions[v * 3 : v * 3 + 3]) for v in f]
+                for f in face_lists(snap_mesh(mesh))
+            )
+        }
+        result = {
+            min(tuple(face[at:] + face[:at]) for at in range(3))
+            for face in (
+                [tuple(decoded.positions[v * 3 : v * 3 + 3]) for v in f]
+                for f in face_lists(decoded)
+            )
+        }
+        self.assertEqual(wound, result)
+
+    def test_triangles_can_use_strips_and_read_back_exactly(self):
+        mesh = strip_mesh()
+        data = encode(mesh)
+        names = {region.name for region in map_file(data)}
+        self.assertIn("CORNER_STRIP_BITS", names)
+        self.assertTrue(same_geometry(snap_mesh(mesh), decode(data)))
+
+    def test_faces_with_no_area_do_not_stop_flat_normals(self):
+        mesh = Mesh(
+            array("f", [0, 0, 0, 1, 0, 0, 0, 1, 0, 2, 0, 0, 3, 0, 0, 4, 0, 0]),
+            array("I", [3, 3]),
+            array("I", [0, 1, 2, 3, 4, 5]),
+            array("I", [0, 1, 1, 2, 0, 2, 3, 4, 4, 5, 3, 5]),
+            corner_normals=array("f", [0.0, 0.0, 1.0] * 6),
+        )
+        data = encode(mesh)
+        names = {region.name for region in map_file(data)}
+        self.assertFalse(any(name.startswith("NORMAL_") for name in names))
+        self.assertEqual(len(decode(data).corner_normals), 18)
 
     def test_colors_tangents_and_weights_round_trip(self):
         source = surface_mesh()
@@ -625,7 +946,7 @@ class CodecTests(unittest.TestCase):
         first_entry = FILE_HEADER.size
         last_section = DIRECTORY_ENTRY.unpack_from(
             source, first_entry + (count - 1) * DIRECTORY_ENTRY.size
-        )[2]
+        )[3]
         for offset, value in (
             (0, 0),  # magic
             (4, 9),  # version
@@ -937,6 +1258,15 @@ def sample_scene() -> Scene:
                         [0, 1],
                         value_type=TrackValue.REFERENCE,
                         target_kind=ResourceKind.MESH,
+                    ),
+                    Track(
+                        ResourceKind.OBJECT,
+                        0,
+                        "shape_weights",
+                        [1.0, 5.0],
+                        [0.25, 0.5, 0.75],
+                        components=2,
+                        changed=[True, True, False, True],
                     ),
                 ],
             )

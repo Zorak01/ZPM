@@ -10,10 +10,12 @@ from ..storage.column import encode_column, read_column
 from .layout import (
     DIRECTORY_ENTRY,
     FILE_HEADER,
+    LARGEST_NARROW_FILE,
     MAGIC,
     OPTIONAL_KIND_START,
     TAIL_BYTES,
     VERSION,
+    WIDE_DIRECTORY_ENTRY,
     SectionFlags,
     SectionKind,
     align,
@@ -46,16 +48,24 @@ def stored_bytes(sections: list) -> int:
     return sum(align(len(section.data)) + DIRECTORY_ENTRY.size for section in sections)
 
 
+def directory_entry_for(file_bytes: int) -> struct.Struct:
+    """Return a file's directory entry: only a file past 4 GiB needs wide offsets."""
+    return (
+        DIRECTORY_ENTRY if file_bytes <= LARGEST_NARROW_FILE else WIDE_DIRECTORY_ENTRY
+    )
+
+
 def write_file(sections: list) -> bytes:
     """Join sections in rising kind and layer order, behind their directory."""
     ordered = sorted(sections, key=lambda section: (section.kind, section.layer))
-    offset = FILE_HEADER.size + len(ordered) * DIRECTORY_ENTRY.size
+    narrow_bytes = FILE_HEADER.size + len(ordered) * DIRECTORY_ENTRY.size + TAIL_BYTES
+    narrow_bytes += sum(align(len(section.data)) for section in ordered)
+    entry = directory_entry_for(narrow_bytes)
+    offset = FILE_HEADER.size + len(ordered) * entry.size
     directory = bytearray()
     body = bytearray()
     for section in ordered:
-        directory += DIRECTORY_ENTRY.pack(
-            section.kind, section.flags, section.layer, offset
-        )
+        directory += entry.pack(section.kind, section.flags, section.layer, offset)
         padded = align(len(section.data))
         body += section.data + bytes(padded - len(section.data))
         offset += padded
@@ -75,15 +85,14 @@ class SectionReader:
         if file_bytes != len(data):
             raise FormatError("File length does not match its header")
         limit = file_bytes - TAIL_BYTES
-        expected = FILE_HEADER.size + count * DIRECTORY_ENTRY.size
+        entry = directory_entry_for(file_bytes)
+        expected = FILE_HEADER.size + count * entry.size
         if expected > limit:
             raise FormatError("File directory is truncated")
         if any(data[limit:]):
             raise FormatError("File tail is not zero")
         entries = [
-            DIRECTORY_ENTRY.unpack_from(
-                data, FILE_HEADER.size + index * DIRECTORY_ENTRY.size
-            )
+            entry.unpack_from(data, FILE_HEADER.size + index * entry.size)
             for index in range(count)
         ]
         self._sections = {}

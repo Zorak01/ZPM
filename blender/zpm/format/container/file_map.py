@@ -10,10 +10,12 @@ from ..storage.names import names_length
 from .layout import (
     DIRECTORY_ENTRY,
     FILE_HEADER,
+    LARGEST_NARROW_FILE,
     MESH_INFO,
     OPTIONAL_KIND_START,
     SPACE,
     TAIL_BYTES,
+    WIDE_DIRECTORY_ENTRY,
     SectionFlags,
     SectionKind,
     align,
@@ -61,6 +63,7 @@ _RAW_KINDS = {
     SectionKind.BONE_INFO,
     SectionKind.SKIN_STARTS,
     SectionKind.SKIN_BONES,
+    SectionKind.CORNER_STRIP_BITS,
     SectionKind.VALUE_NODES,
     SectionKind.VALUE_OWNERS,
     SectionKind.CURVE_INFO,
@@ -84,6 +87,7 @@ _RAW_KINDS = {
 }
 _NAME_KINDS = {
     SectionKind.UV_NAMES,
+    SectionKind.ATTRIBUTE_STRINGS,
     SectionKind.COLOR_NAMES,
     SectionKind.GROUP_NAMES,
     SectionKind.MATERIAL_SLOT_NAMES,
@@ -139,13 +143,15 @@ def map_file(data: bytes) -> list:
     """
     count = FILE_HEADER.unpack_from(data)[2]
     limit = len(data) - TAIL_BYTES
+    entry = (
+        DIRECTORY_ENTRY if len(data) <= LARGEST_NARROW_FILE else WIDE_DIRECTORY_ENTRY
+    )
     regions = [
         FileRegion("FILE_HEADER", 0, FILE_HEADER.size),
-        FileRegion("DIRECTORY", FILE_HEADER.size, count * DIRECTORY_ENTRY.size),
+        FileRegion("DIRECTORY", FILE_HEADER.size, count * entry.size),
     ]
     entries = [
-        DIRECTORY_ENTRY.unpack_from(data, FILE_HEADER.size + i * DIRECTORY_ENTRY.size)
-        for i in range(count)
+        entry.unpack_from(data, FILE_HEADER.size + i * entry.size) for i in range(count)
     ]
     for index, (raw_kind, raw_flags, layer, offset) in enumerate(entries):
         end = entries[index + 1][3] if index + 1 < count else limit

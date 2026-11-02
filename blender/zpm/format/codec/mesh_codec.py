@@ -31,7 +31,12 @@ from .corners import (
 )
 from .edges import encode_edge_endpoints, encode_edges, read_edges
 from .materials import encode_materials, read_materials
-from .positions import encode_positions, read_positions
+from .positions import (
+    encode_positions,
+    first_use_ids,
+    read_position_ids,
+    read_positions,
+)
 from .shapes import encode_shapes, read_shapes
 from .surface import (
     encode_marks,
@@ -86,9 +91,10 @@ def _encode_mesh(mesh: Mesh) -> bytes:
     if vertex_count:
         positions, unique_count = encode_positions(mesh, exponent)
         sections += positions
+    position_ids = first_use_ids(mesh) if unique_count != vertex_count else None
     arity = _uniform_arity(sizes) if corners else 0
     if corners:
-        sections += encode_corners(corners, face_count, arity)
+        sections += encode_corners(corners, sizes, arity)
         if not arity:
             sections.append(encode_face_starts(sizes, len(corners)))
         sections += encode_holes(mesh.hole_starts)
@@ -106,12 +112,12 @@ def _encode_mesh(mesh: Mesh) -> bytes:
     if normals_match_faces(mesh):
         flags |= MeshFlags.NORMALS_FROM_FACES
     elif mesh.corner_normals:
-        sections += encode_normals(mesh)
-    sections += encode_tangents(mesh)
+        sections += encode_normals(mesh, position_ids)
+    sections += encode_tangents(mesh, position_ids)
     sections += encode_tangent_method(mesh)
     sections += encode_attributes(mesh)
     sections += encode_shapes(mesh, exponent)
-    sections += encode_uv_layers(mesh)
+    sections += encode_uv_layers(mesh, exponent, position_ids)
     sections += encode_uv_seams(mesh)
     sections += encode_materials(mesh)
     sections += encode_colors(mesh)
@@ -163,10 +169,11 @@ def decode(data: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
         raise FormatError("Invalid uniform face layout")
 
     positions = array("f", read_positions(sections, vertices, unique, exponent))
-    corners = read_corners(sections, corner_count, faces, arity)
+    position_ids = read_position_ids(sections, vertices, unique)
     mixed = corner_count and not arity
     stored_sizes = read_face_sizes(sections, corner_count, faces) if mixed else []
     sizes = [arity] * faces if arity else stored_sizes
+    corners = read_corners(sections, corner_count, sizes, arity)
     holes = read_holes(sections)
     if holes and edge_count and not sections.has(SectionKind.EDGE_FIRST):
         raise FormatError("Edges in a mesh with holes must store their endpoints")
@@ -186,11 +193,13 @@ def decode(data: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
             array(code, corners),
             array(code, edges),
             arity=arity,
-            corner_normals=read_normals(sections, corners),
+            corner_normals=read_normals(sections, corners, position_ids),
             has_custom_normals=bool(MeshFlags(flags) & MeshFlags.CUSTOM_NORMALS),
-            uv_layers=read_uv_layers(sections, corners),
+            uv_layers=read_uv_layers(
+                sections, corners, positions, exponent, position_ids
+            ),
             uv_seams=read_uv_seams(sections, edge_count),
-            tangent_layers=read_tangents(sections, corners),
+            tangent_layers=read_tangents(sections, corners, position_ids),
             hole_starts=holes,
             tangent_method=read_tangent_method(sections),
             attributes=read_attributes(sections, sizes),
@@ -203,9 +212,6 @@ def decode(data: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
     except OverflowError as error:
         raise FormatError("Topology references a missing vertex") from error
     if MeshFlags(flags) & MeshFlags.NORMALS_FROM_FACES:
-        derived = corner_normals_from_faces(positions, face_lists(mesh))
-        if derived is None:
-            raise FormatError("A face with no area cannot supply a normal")
-        mesh.corner_normals = derived
+        mesh.corner_normals = corner_normals_from_faces(positions, face_lists(mesh))
     mesh.validate()
     return mesh

@@ -1,0 +1,1012 @@
+{
+  "run_id": "20261102T180253Z",
+  "started_utc": "2026-11-02T18:02:53.542809+00:00",
+  "draco": "DracoPy",
+  "position_bits": 20,
+  "normal_bits": 12,
+  "uv_bits": 16,
+  "results": [
+    {
+      "mesh": "Avocado",
+      "encode_seconds": 0.06964839994907379,
+      "faces": 682,
+      "kept_vertices": 406,
+      "corners": 2046,
+      "merged_vertices": 406,
+      "has_uvs": true,
+      "zpm_bytes": 7088,
+      "zpm_bytes_without_edges": 6764,
+      "zpm_zstd_bytes": 6690,
+      "zpm_full_read_us": 28.28,
+      "zpm_full_read_stored_us": 3.96,
+      "zpm_allocated_bytes": 0,
+      "normals_from_faces": false,
+      "draco": {
+        "bytes": 4680,
+        "decode_us": 255.1000022018949
+      },
+      "draco_geometry_only": 2423,
+      "meshopt": {
+        "vertices": 406,
+        "stored": {
+          "positions": 2790,
+          "normals": 1184,
+          "uvs": 1508,
+          "indices": 773
+        },
+        "decode_us": 10.376,
+        "decoded_bytes": 17928,
+        "bytes": 6255,
+        "zstd_bytes": 5847
+      },
+      "draco_same_vertices": {
+        "bytes": 4680,
+        "decode_us": 241.16667918860912
+      },
+      "meshopt_same_vertices": {
+        "vertices": 406,
+        "stored": {
+          "positions": 2790,
+          "normals": 1184,
+          "uvs": 1508,
+          "indices": 773
+        },
+        "decode_us": 12.168,
+        "decoded_bytes": 17928,
+        "bytes": 6255,
+        "zstd_bytes": 5847
+      }
+    },
+    {
+      "mesh": "BoomBox",
+      "encode_seconds": 0.6332748000277206,
+      "faces": 6036,
+      "kept_vertices": 3575,
+      "corners": 18108,
+      "merged_vertices": 3575,
+      "has_uvs": true,
+      "zpm_bytes": 56576,
+      "zpm_bytes_without_edges": 53712,
+      "zpm_zstd_bytes": 53518,
+      "zpm_full_read_us": 611.068,
+      "zpm_full_read_stored_us": 47.46,
+      "zpm_allocated_bytes": 0,
+      "normals_from_faces": false,
+      "draco": {
+        "bytes": 32446,
+        "decode_us": 2710.8333306387067
+      },
+      "draco_geometry_only": 17599,
+      "meshopt": {
+        "vertices": 3575,
+        "stored": {
+          "positions": 23618,
+          "normals": 10053,
+          "uvs": 10857,
+          "indices": 6889
+        },
+        "decode_us": 47.032,
+        "decoded_bytes": 158232,
+        "bytes": 51417,
+        "zstd_bytes": 46336
+      },
+      "draco_same_vertices": {
+        "bytes": 32446,
+        "decode_us": 2745.066691810886
+      },
+      "meshopt_same_vertices": {
+        "vertices": 3575,
+        "stored": {
+          "positions": 23618,
+          "normals": 10053,
+          "uvs": 10857,
+          "indices": 6889
+        },
+        "decode_us": 48.028,
+        "decoded_bytes": 158232,
+        "bytes": 51417,
+        "zstd_bytes": 46336
+      }
+    },
+    {
+      "mesh": "CesiumMan",
+      "encode_seconds": 0.5255786000052467,
+      "faces": 4672,
+      "kept_vertices": 3273,
+      "corners": 14016,
+      "merged_vertices": 2612,
+      "has_uvs": true,
+      "zpm_bytes": 40528,
+      "zpm_bytes_without_edges": 38276,
+      "zpm_zstd_bytes": 36114,
+      "zpm_full_read_us": 482.792,
+      "zpm_full_read_stored_us": 62.668,
+      "zpm_allocated_bytes": 0,
+      "normals_from_faces": false,
+      "draco": {
+        "bytes": 21759,
+        "decode_us": 2074.900005633632
+      },
+      "draco_geometry_only": 12153,
+      "meshopt": {
+        "vertices": 2612,
+        "stored": {
+          "positions": 15968,
+          "normals": 6125,
+          "uvs": 8158,
+          "indices": 5343
+        },
+        "decode_us": 38.116,
+        "decoded_bytes": 118752,
+        "bytes": 35594,
+        "zstd_bytes": 29122
+      },
+      "draco_same_vertices": {
+        "bytes": 21759,
+        "decode_us": 1958.0000080168247
+      },
+      "meshopt_same_vertices": {
+        "vertices": 3273,
+        "stored": {
+          "positions": 19076,
+          "normals": 6455,
+          "uvs": 10334,
+          "indices": 5636
+        },
+        "decode_us": 43.312,
+        "decoded_bytes": 134616,
+        "bytes": 41501,
+        "zstd_bytes": 36122
+      }
+    },
+    {
+      "mesh": "cow",
+      "encode_seconds": 0.4860216999659315,
+      "faces": 5804,
+      "kept_vertices": 2903,
+      "corners": 17412,
+      "merged_vertices": 17221,
+      "has_uvs": false,
+      "zpm_bytes": 29228,
+      "zpm_bytes_without_edges": 26496,
+      "zpm_zstd_bytes": 28051,
+      "zpm_full_read_us": 115.176,
+      "zpm_full_read_stored_us": 32.6,
+      "zpm_allocated_bytes": 0,
+      "normals_from_faces": true,
+      "draco": {
+        "bytes": 25398,
+        "decode_us": 3601.500027192136
+      },
+      "draco_geometry_only": 17616,
+      "meshopt": {
+        "vertices": 17221,
+        "stored": {
+          "positions": 108271,
+          "normals": 26129,
+          "indices": 5822
+        },
+        "decode_us": 175.48,
+        "decoded_bytes": 345184,
+        "bytes": 140222,
+        "zstd_bytes": 121502
+      },
+      "draco_same_vertices": {
+        "bytes": 25398,
+        "decode_us": 3573.600008773307
+      },
+      "meshopt_same_vertices": {
+        "vertices": 17221,
+        "stored": {
+          "positions": 108271,
+          "normals": 26129,
+          "indices": 5822
+        },
+        "decode_us": 144.28,
+        "decoded_bytes": 345184,
+        "bytes": 140222,
+        "zstd_bytes": 121502
+      }
+    },
+    {
+      "mesh": "DamagedHelmet",
+      "encode_seconds": 2.346719600027427,
+      "faces": 15452,
+      "kept_vertices": 14556,
+      "corners": 46356,
+      "merged_vertices": 14405,
+      "has_uvs": true,
+      "zpm_bytes": 192416,
+      "zpm_bytes_without_edges": 184796,
+      "zpm_zstd_bytes": 169639,
+      "zpm_full_read_us": 948.56,
+      "zpm_full_read_stored_us": 221.132,
+      "zpm_allocated_bytes": 0,
+      "normals_from_faces": false,
+      "draco": {
+        "bytes": 98931,
+        "decode_us": 10193.233339426419
+      },
+      "draco_geometry_only": 48632,
+      "meshopt": {
+        "vertices": 14405,
+        "stored": {
+          "positions": 93700,
+          "normals": 36402,
+          "uvs": 43638,
+          "indices": 16565
+        },
+        "decode_us": 209.468,
+        "decoded_bytes": 531144,
+        "bytes": 190305,
+        "zstd_bytes": 157654
+      },
+      "draco_same_vertices": {
+        "bytes": 98931,
+        "decode_us": 9781.066638727983
+      },
+      "meshopt_same_vertices": {
+        "vertices": 14556,
+        "stored": {
+          "positions": 94767,
+          "normals": 36842,
+          "uvs": 44186,
+          "indices": 16528
+        },
+        "decode_us": 197.38,
+        "decoded_bytes": 534768,
+        "bytes": 192323,
+        "zstd_bytes": 159063
+      }
+    },
+    {
+      "mesh": "Duck",
+      "encode_seconds": 0.65851570002269,
+      "faces": 4212,
+      "kept_vertices": 2399,
+      "corners": 12636,
+      "merged_vertices": 2399,
+      "has_uvs": true,
+      "zpm_bytes": 34228,
+      "zpm_bytes_without_edges": 32228,
+      "zpm_zstd_bytes": 32332,
+      "zpm_full_read_us": 482.28,
+      "zpm_full_read_stored_us": 33.108000000000004,
+      "zpm_allocated_bytes": 0,
+      "normals_from_faces": false,
+      "draco": {
+        "bytes": 23536,
+        "decode_us": 2130.8333380147815
+      },
+      "draco_geometry_only": 12727,
+      "meshopt": {
+        "vertices": 2399,
+        "stored": {
+          "positions": 16384,
+          "normals": 6591,
+          "uvs": 7316,
+          "indices": 4855
+        },
+        "decode_us": 38.452,
+        "decoded_bytes": 108120,
+        "bytes": 35146,
+        "zstd_bytes": 32387
+      },
+      "draco_same_vertices": {
+        "bytes": 23536,
+        "decode_us": 1903.8666893417637
+      },
+      "meshopt_same_vertices": {
+        "vertices": 2399,
+        "stored": {
+          "positions": 16384,
+          "normals": 6591,
+          "uvs": 7316,
+          "indices": 4855
+        },
+        "decode_us": 36.048,
+        "decoded_bytes": 108120,
+        "bytes": 35146,
+        "zstd_bytes": 32387
+      }
+    },
+    {
+      "mesh": "fandisk",
+      "encode_seconds": 1.4151065999176353,
+      "faces": 12946,
+      "kept_vertices": 6475,
+      "corners": 38838,
+      "merged_vertices": 21161,
+      "has_uvs": false,
+      "zpm_bytes": 65412,
+      "zpm_bytes_without_edges": 59340,
+      "zpm_zstd_bytes": 57792,
+      "zpm_full_read_us": 248.896,
+      "zpm_full_read_stored_us": 56.06399999999999,
+      "zpm_allocated_bytes": 0,
+      "normals_from_faces": true,
+      "draco": {
+        "bytes": 42097,
+        "decode_us": 6717.333337292075
+      },
+      "draco_geometry_only": 29055,
+      "meshopt": {
+        "vertices": 21161,
+        "stored": {
+          "positions": 128273,
+          "normals": 17993,
+          "indices": 14036
+        },
+        "decode_us": 203.31599999999997,
+        "decoded_bytes": 493928,
+        "bytes": 160302,
+        "zstd_bytes": 132917
+      },
+      "draco_same_vertices": {
+        "bytes": 42097,
+        "decode_us": 6719.900023502608
+      },
+      "meshopt_same_vertices": {
+        "vertices": 21161,
+        "stored": {
+          "positions": 128273,
+          "normals": 17993,
+          "indices": 14036
+        },
+        "decode_us": 212.06799999999998,
+        "decoded_bytes": 493928,
+        "bytes": 160302,
+        "zstd_bytes": 132917
+      }
+    },
+    {
+      "mesh": "Lantern",
+      "encode_seconds": 0.4605831999797374,
+      "faces": 3274,
+      "kept_vertices": 2463,
+      "corners": 9822,
+      "merged_vertices": 2467,
+      "has_uvs": true,
+      "zpm_bytes": 31440,
+      "zpm_bytes_without_edges": 29852,
+      "zpm_zstd_bytes": 25166,
+      "zpm_full_read_us": 370.48,
+      "zpm_full_read_stored_us": 61.071999999999996,
+      "zpm_allocated_bytes": 0,
+      "normals_from_faces": false,
+      "draco": {
+        "bytes": 18734,
+        "decode_us": 1617.900018269817
+      },
+      "draco_geometry_only": 9501,
+      "meshopt": {
+        "vertices": 2467,
+        "stored": {
+          "positions": 15125,
+          "normals": 6715,
+          "uvs": 6659,
+          "indices": 3748
+        },
+        "decode_us": 40.816,
+        "decoded_bytes": 98496,
+        "bytes": 32247,
+        "zstd_bytes": 23170
+      },
+      "draco_same_vertices": {
+        "bytes": 18734,
+        "decode_us": 1443.900012721618
+      },
+      "meshopt_same_vertices": {
+        "vertices": 2472,
+        "stored": {
+          "positions": 15117,
+          "normals": 6725,
+          "uvs": 6672,
+          "indices": 3748
+        },
+        "decode_us": 33.832,
+        "decoded_bytes": 98616,
+        "bytes": 32262,
+        "zstd_bytes": 23259
+      }
+    },
+    {
+      "mesh": "RiggedFigure",
+      "encode_seconds": 0.03121010004542768,
+      "faces": 256,
+      "kept_vertices": 370,
+      "corners": 768,
+      "merged_vertices": 317,
+      "has_uvs": false,
+      "zpm_bytes": 2908,
+      "zpm_bytes_without_edges": 2776,
+      "zpm_zstd_bytes": 2249,
+      "zpm_full_read_us": 8.988,
+      "zpm_full_read_stored_us": 3.2560000000000002,
+      "zpm_allocated_bytes": 0,
+      "normals_from_faces": false,
+      "draco": {
+        "bytes": 1637,
+        "decode_us": 159.90001459916434
+      },
+      "draco_geometry_only": 955,
+      "meshopt": {
+        "vertices": 317,
+        "stored": {
+          "positions": 2203,
+          "normals": 697,
+          "indices": 275
+        },
+        "decode_us": 5.86,
+        "decoded_bytes": 8144,
+        "bytes": 3175,
+        "zstd_bytes": 2669
+      },
+      "draco_same_vertices": {
+        "bytes": 1637,
+        "decode_us": 99.73331664999326
+      },
+      "meshopt_same_vertices": {
+        "vertices": 370,
+        "stored": {
+          "positions": 2560,
+          "normals": 786,
+          "indices": 278
+        },
+        "decode_us": 6.896,
+        "decoded_bytes": 8992,
+        "bytes": 3624,
+        "zstd_bytes": 3074
+      }
+    },
+    {
+      "mesh": "spot",
+      "encode_seconds": 0.7376759999897331,
+      "faces": 5856,
+      "kept_vertices": 2930,
+      "corners": 17568,
+      "merged_vertices": 17496,
+      "has_uvs": true,
+      "zpm_bytes": 48596,
+      "zpm_bytes_without_edges": 45844,
+      "zpm_zstd_bytes": 43287,
+      "zpm_full_read_us": 247.752,
+      "zpm_full_read_stored_us": 84.656,
+      "zpm_allocated_bytes": 0,
+      "normals_from_faces": true,
+      "draco": {
+        "bytes": 32862,
+        "decode_us": 4404.699973141153
+      },
+      "draco_geometry_only": 16529,
+      "meshopt": {
+        "vertices": 17496,
+        "stored": {
+          "positions": 113377,
+          "normals": 22901,
+          "uvs": 52390,
+          "indices": 5873
+        },
+        "decode_us": 202.33599999999998,
+        "decoded_bytes": 490176,
+        "bytes": 194541,
+        "zstd_bytes": 167462
+      },
+      "draco_same_vertices": {
+        "bytes": 32862,
+        "decode_us": 3995.700002027055
+      },
+      "meshopt_same_vertices": {
+        "vertices": 17496,
+        "stored": {
+          "positions": 113377,
+          "normals": 22901,
+          "uvs": 52390,
+          "indices": 5873
+        },
+        "decode_us": 217.33599999999998,
+        "decoded_bytes": 490176,
+        "bytes": 194541,
+        "zstd_bytes": 167462
+      }
+    },
+    {
+      "mesh": "stanford-bunny",
+      "encode_seconds": 8.890323400031775,
+      "faces": 69451,
+      "kept_vertices": 34834,
+      "corners": 208353,
+      "merged_vertices": 205571,
+      "has_uvs": false,
+      "zpm_bytes": 349684,
+      "zpm_bytes_without_edges": 317116,
+      "zpm_zstd_bytes": 320248,
+      "zpm_full_read_us": 1496.832,
+      "zpm_full_read_stored_us": 469.824,
+      "zpm_allocated_bytes": 0,
+      "normals_from_faces": true,
+      "draco": {
+        "bytes": 250617,
+        "decode_us": 54091.9000050053
+      },
+      "draco_geometry_only": 158339,
+      "meshopt": {
+        "vertices": 205571,
+        "stored": {
+          "positions": 1201293,
+          "normals": 254948,
+          "indices": 69566
+        },
+        "decode_us": 1942.112,
+        "decoded_bytes": 4122548,
+        "bytes": 1525807,
+        "zstd_bytes": 1153910
+      },
+      "draco_same_vertices": {
+        "bytes": 250617,
+        "decode_us": 58456.89998629192
+      },
+      "meshopt_same_vertices": {
+        "vertices": 205571,
+        "stored": {
+          "positions": 1201293,
+          "normals": 254948,
+          "indices": 69566
+        },
+        "decode_us": 1866.224,
+        "decoded_bytes": 4122548,
+        "bytes": 1525807,
+        "zstd_bytes": 1153910
+      }
+    },
+    {
+      "mesh": "suzanne",
+      "encode_seconds": 0.052280399948358536,
+      "faces": 500,
+      "kept_vertices": 507,
+      "corners": 1968,
+      "merged_vertices": 507,
+      "has_uvs": false,
+      "zpm_bytes": 6920,
+      "zpm_bytes_without_edges": 6608,
+      "zpm_zstd_bytes": 5698,
+      "zpm_full_read_us": 23.644000000000002,
+      "zpm_full_read_stored_us": 6.88,
+      "zpm_allocated_bytes": 0,
+      "normals_from_faces": false,
+      "draco": {
+        "bytes": 5247,
+        "decode_us": 238.19998993227878
+      },
+      "draco_geometry_only": 3668,
+      "meshopt": {
+        "vertices": 507,
+        "stored": {
+          "positions": 2215,
+          "normals": 1586,
+          "indices": 1146
+        },
+        "decode_us": 14.495999999999999,
+        "decoded_bytes": 19728,
+        "bytes": 4947,
+        "zstd_bytes": 4048
+      },
+      "draco_same_vertices": {
+        "bytes": 5247,
+        "decode_us": 268.0666511878371
+      },
+      "meshopt_same_vertices": {
+        "vertices": 507,
+        "stored": {
+          "positions": 2215,
+          "normals": 1586,
+          "indices": 1146
+        },
+        "decode_us": 12.255999999999998,
+        "decoded_bytes": 19728,
+        "bytes": 4947,
+        "zstd_bytes": 4048
+      }
+    },
+    {
+      "mesh": "teapot",
+      "encode_seconds": 0.6225748000433668,
+      "faces": 6320,
+      "kept_vertices": 3644,
+      "corners": 18960,
+      "merged_vertices": 14572,
+      "has_uvs": false,
+      "zpm_bytes": 26136,
+      "zpm_bytes_without_edges": 23132,
+      "zpm_zstd_bytes": 20251,
+      "zpm_full_read_us": 157.5,
+      "zpm_full_read_stored_us": 62.388000000000005,
+      "zpm_allocated_bytes": 0,
+      "normals_from_faces": true,
+      "draco": {
+        "bytes": 24603,
+        "decode_us": 2758.400010255476
+      },
+      "draco_geometry_only": 16833,
+      "meshopt": {
+        "vertices": 14572,
+        "stored": {
+          "positions": 84047,
+          "normals": 17294,
+          "indices": 6337
+        },
+        "decode_us": 121.8,
+        "decoded_bytes": 308992,
+        "bytes": 107678,
+        "zstd_bytes": 77486
+      },
+      "draco_same_vertices": {
+        "bytes": 24603,
+        "decode_us": 2784.3333470324674
+      },
+      "meshopt_same_vertices": {
+        "vertices": 14572,
+        "stored": {
+          "positions": 84047,
+          "normals": 17294,
+          "indices": 6337
+        },
+        "decode_us": 129.904,
+        "decoded_bytes": 308992,
+        "bytes": 107678,
+        "zstd_bytes": 77486
+      }
+    },
+    {
+      "mesh": "WaterBottle",
+      "encode_seconds": 0.5763556000310928,
+      "faces": 4510,
+      "kept_vertices": 2549,
+      "corners": 13530,
+      "merged_vertices": 2512,
+      "has_uvs": true,
+      "zpm_bytes": 33656,
+      "zpm_bytes_without_edges": 31516,
+      "zpm_zstd_bytes": 28108,
+      "zpm_full_read_us": 515.68,
+      "zpm_full_read_stored_us": 57.044,
+      "zpm_allocated_bytes": 0,
+      "normals_from_faces": false,
+      "draco": {
+        "bytes": 22510,
+        "decode_us": 1998.500005962948
+      },
+      "draco_geometry_only": 12585,
+      "meshopt": {
+        "vertices": 2512,
+        "stored": {
+          "positions": 15304,
+          "normals": 6843,
+          "uvs": 6709,
+          "indices": 5085
+        },
+        "decode_us": 37.912,
+        "decoded_bytes": 114408,
+        "bytes": 33941,
+        "zstd_bytes": 20207
+      },
+      "draco_same_vertices": {
+        "bytes": 22510,
+        "decode_us": 1873.0666488409042
+      },
+      "meshopt_same_vertices": {
+        "vertices": 2549,
+        "stored": {
+          "positions": 15524,
+          "normals": 6996,
+          "uvs": 6763,
+          "indices": 5110
+        },
+        "decode_us": 39.172,
+        "decoded_bytes": 115296,
+        "bytes": 34393,
+        "zstd_bytes": 20108
+      }
+    },
+    {
+      "mesh": "04263",
+      "encode_seconds": 1.3506074999459088,
+      "faces": 8444,
+      "kept_vertices": 16694,
+      "corners": 25332,
+      "merged_vertices": 16692,
+      "has_uvs": false,
+      "zpm_bytes": 89144,
+      "zpm_bytes_without_edges": 79532,
+      "zpm_zstd_bytes": 58595,
+      "zpm_full_read_us": 462.912,
+      "zpm_full_read_stored_us": 189.06799999999998,
+      "zpm_allocated_bytes": 0,
+      "normals_from_faces": false,
+      "draco": {
+        "bytes": 38449,
+        "decode_us": 4358.133339943985
+      },
+      "draco_geometry_only": 28882,
+      "meshopt": {
+        "vertices": 16692,
+        "stored": {
+          "positions": 114614,
+          "normals": 25786,
+          "indices": 8462
+        },
+        "decode_us": 131.012,
+        "decoded_bytes": 368400,
+        "bytes": 148862,
+        "zstd_bytes": 126792
+      },
+      "draco_same_vertices": {
+        "bytes": 38449,
+        "decode_us": 4730.466636829078
+      },
+      "meshopt_same_vertices": {
+        "vertices": 16694,
+        "stored": {
+          "positions": 114602,
+          "normals": 25789,
+          "indices": 8461
+        },
+        "decode_us": 136.864,
+        "decoded_bytes": 368432,
+        "bytes": 148852,
+        "zstd_bytes": 127057
+      }
+    },
+    {
+      "mesh": "04362",
+      "encode_seconds": 0.12588829989545047,
+      "faces": 576,
+      "kept_vertices": 1728,
+      "corners": 1728,
+      "merged_vertices": 1686,
+      "has_uvs": true,
+      "zpm_bytes": 9296,
+      "zpm_bytes_without_edges": 8972,
+      "zpm_zstd_bytes": 7579,
+      "zpm_full_read_us": 36.584,
+      "zpm_full_read_stored_us": 15.292,
+      "zpm_allocated_bytes": 0,
+      "normals_from_faces": false,
+      "draco": {
+        "bytes": 6906,
+        "decode_us": 343.80001792063314
+      },
+      "draco_geometry_only": 1945,
+      "meshopt": {
+        "vertices": 1686,
+        "stored": {
+          "positions": 12339,
+          "normals": 5829,
+          "uvs": 39,
+          "indices": 597
+        },
+        "decode_us": 21.991999999999997,
+        "decoded_bytes": 47376,
+        "bytes": 18804,
+        "zstd_bytes": 16355
+      },
+      "draco_same_vertices": {
+        "bytes": 6906,
+        "decode_us": 447.83332850784063
+      },
+      "meshopt_same_vertices": {
+        "vertices": 1728,
+        "stored": {
+          "positions": 12644,
+          "normals": 5950,
+          "uvs": 39,
+          "indices": 593
+        },
+        "decode_us": 17.712,
+        "decoded_bytes": 48384,
+        "bytes": 19226,
+        "zstd_bytes": 16551
+      }
+    },
+    {
+      "mesh": "11375",
+      "encode_seconds": 0.010265299933962524,
+      "faces": 40,
+      "kept_vertices": 104,
+      "corners": 120,
+      "merged_vertices": 42,
+      "has_uvs": true,
+      "zpm_bytes": 844,
+      "zpm_bytes_without_edges": 820,
+      "zpm_zstd_bytes": 499,
+      "zpm_full_read_us": 2.792,
+      "zpm_full_read_stored_us": 1.044,
+      "zpm_allocated_bytes": 0,
+      "normals_from_faces": false,
+      "draco": {
+        "bytes": 501,
+        "decode_us": 31.60000778734684
+      },
+      "draco_geometry_only": 278,
+      "meshopt": {
+        "vertices": 42,
+        "stored": {
+          "positions": 340,
+          "normals": 113,
+          "uvs": 27,
+          "indices": 87
+        },
+        "decode_us": 5.472,
+        "decoded_bytes": 1488,
+        "bytes": 567,
+        "zstd_bytes": 479
+      },
+      "draco_same_vertices": {
+        "bytes": 501,
+        "decode_us": 42.700014698008694
+      },
+      "meshopt_same_vertices": {
+        "vertices": 104,
+        "stored": {
+          "positions": 793,
+          "normals": 192,
+          "uvs": 27,
+          "indices": 57
+        },
+        "decode_us": 7.24,
+        "decoded_bytes": 2976,
+        "bytes": 1069,
+        "zstd_bytes": 821
+      }
+    },
+    {
+      "mesh": "minotaur",
+      "encode_seconds": 0.21256440004799515,
+      "faces": 1454,
+      "kept_vertices": 2190,
+      "corners": 4362,
+      "merged_vertices": 1045,
+      "has_uvs": false,
+      "zpm_bytes": 15692,
+      "zpm_bytes_without_edges": 14936,
+      "zpm_zstd_bytes": 13822,
+      "zpm_full_read_us": 62.903999999999996,
+      "zpm_full_read_stored_us": 22.268,
+      "zpm_allocated_bytes": 0,
+      "normals_from_faces": false,
+      "draco": {
+        "bytes": 8823,
+        "decode_us": 862.5666378065944
+      },
+      "draco_geometry_only": 5246,
+      "meshopt": {
+        "vertices": 1045,
+        "stored": {
+          "positions": 6510,
+          "normals": 3564,
+          "indices": 1713
+        },
+        "decode_us": 22.584,
+        "decoded_bytes": 34168,
+        "bytes": 11787,
+        "zstd_bytes": 10672
+      },
+      "draco_same_vertices": {
+        "bytes": 8823,
+        "decode_us": 606.8666698411107
+      },
+      "meshopt_same_vertices": {
+        "vertices": 2190,
+        "stored": {
+          "positions": 13694,
+          "normals": 7550,
+          "indices": 1497
+        },
+        "decode_us": 34.88,
+        "decoded_bytes": 52488,
+        "bytes": 22741,
+        "zstd_bytes": 19770
+      }
+    },
+    {
+      "mesh": "samurai",
+      "encode_seconds": 0.35486680001486093,
+      "faces": 2186,
+      "kept_vertices": 3682,
+      "corners": 6558,
+      "merged_vertices": 1729,
+      "has_uvs": false,
+      "zpm_bytes": 24624,
+      "zpm_bytes_without_edges": 23480,
+      "zpm_zstd_bytes": 20900,
+      "zpm_full_read_us": 127.34,
+      "zpm_full_read_stored_us": 59.456,
+      "zpm_allocated_bytes": 0,
+      "normals_from_faces": false,
+      "draco": {
+        "bytes": 13705,
+        "decode_us": 1049.7666662558913
+      },
+      "draco_geometry_only": 7928,
+      "meshopt": {
+        "vertices": 1729,
+        "stored": {
+          "positions": 10247,
+          "normals": 5786,
+          "indices": 2405
+        },
+        "decode_us": 23.108,
+        "decoded_bytes": 53896,
+        "bytes": 18438,
+        "zstd_bytes": 15912
+      },
+      "draco_same_vertices": {
+        "bytes": 13705,
+        "decode_us": 889.4666486109296
+      },
+      "meshopt_same_vertices": {
+        "vertices": 3682,
+        "stored": {
+          "positions": 21833,
+          "normals": 12320,
+          "indices": 2224
+        },
+        "decode_us": 37.684,
+        "decoded_bytes": 85144,
+        "bytes": 36377,
+        "zstd_bytes": 30352
+      }
+    },
+    {
+      "mesh": "werewolf",
+      "encode_seconds": 0.2118872000137344,
+      "faces": 1284,
+      "kept_vertices": 1511,
+      "corners": 3852,
+      "merged_vertices": 793,
+      "has_uvs": true,
+      "zpm_bytes": 13464,
+      "zpm_bytes_without_edges": 12808,
+      "zpm_zstd_bytes": 12032,
+      "zpm_full_read_us": 69.788,
+      "zpm_full_read_stored_us": 16.516,
+      "zpm_allocated_bytes": 0,
+      "normals_from_faces": false,
+      "draco": {
+        "bytes": 7544,
+        "decode_us": 563.7333185101548
+      },
+      "draco_geometry_only": 4639,
+      "meshopt": {
+        "vertices": 793,
+        "stored": {
+          "positions": 5561,
+          "normals": 2629,
+          "uvs": 33,
+          "indices": 1643
+        },
+        "decode_us": 15.835999999999999,
+        "decoded_bytes": 34440,
+        "bytes": 9866,
+        "zstd_bytes": 9270
+      },
+      "draco_same_vertices": {
+        "bytes": 7544,
+        "decode_us": 689.4333443293968
+      },
+      "meshopt_same_vertices": {
+        "vertices": 1511,
+        "stored": {
+          "positions": 10581,
+          "normals": 4985,
+          "uvs": 37,
+          "indices": 1370
+        },
+        "decode_us": 19.188,
+        "decoded_bytes": 51672,
+        "bytes": 16973,
+        "zstd_bytes": 15372
+      }
+    }
+  ]
+}

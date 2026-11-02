@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 using System;
 using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 
 namespace Zpm;
 
@@ -13,6 +15,10 @@ public unsafe struct ZpmAxis
     const int SignShift = 31;
     const int Stride = 3;
     const int LowBit = 1;
+    const int BatchValues = 64;
+    const int BatchSlack = 8;
+    const uint LargestStackPalette = 4096;
+    const int WideValues = 8;
 
     Storage _storage;
     uint _constant;
@@ -91,15 +97,17 @@ public unsafe struct ZpmAxis
                 for (uint i = 0; i < length; i++, destination += Stride)
                     *destination = OrderedToBits(*destination);
                 break;
+            case Storage.Palette when CanLoadPalette(length):
+            case Storage.SignedPalette when CanLoadPalette(length):
+                CopyThroughLoadedPalette(first, length, destination);
+                break;
             case Storage.Palette:
                 _indices.CopyTo(first, length, destination, Stride);
                 for (uint i = 0; i < length; i++, destination += Stride)
                     *destination = GridToBits((int)_values.Get(*destination));
                 break;
             case Storage.Grid:
-                _values.CopyTo(first, length, destination, Stride);
-                for (uint i = 0; i < length; i++, destination += Stride)
-                    *destination = GridToBits((int)*destination);
+                CopyGrid(first, length, destination);
                 break;
             case Storage.SignedPalette:
                 _indices.CopyTo(first, length, destination, Stride);
@@ -114,6 +122,66 @@ public unsafe struct ZpmAxis
                 for (uint i = 0; i < length; i++, destination += Stride)
                     *destination = _constant;
                 break;
+        }
+    }
+
+    readonly bool CanLoadPalette(uint length) => length >= BatchValues && _values.count <= LargestStackPalette;
+
+    /// <summary>Turns grid integers into float bits in place, eight per step where AVX2 exists.</summary>
+    readonly void ConvertGridToBits(uint* values, uint length)
+    {
+        uint i = 0;
+        if (Avx2.IsSupported)
+        {
+            Vector256<float> step = Vector256.Create(_step);
+            for (; i + WideValues <= length; i += WideValues)
+                (Avx.ConvertToVector256Single(Vector256.Load((int*)values + i)) * step).AsUInt32().Store(values + i);
+        }
+        for (; i < length; i++)
+            values[i] = GridToBits((int)values[i]);
+    }
+
+    [SkipLocalsInit]
+    readonly void CopyGrid(uint first, uint length, uint* destination)
+    {
+        uint* batch = stackalloc uint[BatchValues + BatchSlack];
+        while (length != 0)
+        {
+            uint take = Math.Min(BatchValues - (first & (BatchValues - 1)), length);
+            _values.CopyTo(first, take, batch, 1);
+            ConvertGridToBits(batch, take);
+            for (uint i = 0; i < take; i++, destination += Stride)
+                *destination = batch[i];
+            first += take;
+            length -= take;
+        }
+    }
+
+    /// <summary>Unpacks the palette once onto the stack, so each value is one array read, not a column read.</summary>
+    [SkipLocalsInit]
+    readonly void CopyThroughLoadedPalette(uint first, uint length, uint* destination)
+    {
+        uint* palette = stackalloc uint[(int)_values.count + BatchSlack];
+        _values.CopyTo(0, _values.count, palette, 1);
+        ConvertGridToBits(palette, _values.count);
+        uint* batch = stackalloc uint[BatchValues + BatchSlack];
+        bool isSigned = _storage == Storage.SignedPalette;
+        while (length != 0)
+        {
+            uint take = Math.Min(BatchValues - (first & (BatchValues - 1)), length);
+            _indices.CopyTo(first, take, batch, 1);
+            if (isSigned)
+            {
+                for (uint i = 0; i < take; i++, destination += Stride)
+                    *destination = palette[batch[i] >> LowBit] ^ (batch[i] << SignShift);
+            }
+            else
+            {
+                for (uint i = 0; i < take; i++, destination += Stride)
+                    *destination = palette[batch[i]];
+            }
+            first += take;
+            length -= take;
         }
     }
 

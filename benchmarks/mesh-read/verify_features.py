@@ -16,7 +16,17 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT.parents[1] / "tests"))
 
 from run import READER, write_fixture, write_surface  # noqa: E402
-from test_format import authored_mesh, holed_mesh, sample_scene  # noqa: E402
+from test_format import (  # noqa: E402
+    authored_mesh,
+    grid_mesh,
+    holed_mesh,
+    quad_and_triangle_mesh,
+    sample_scene,
+    shared_map_mesh,
+    split_vertex_mesh,
+    strip_mesh,
+    uv_fit_mesh,
+)
 from zpm.format import decode, encode, encode_scene  # noqa: E402
 from zpm.format.codec.scene_objects import pack_bone_flags  # noqa: E402
 from zpm.format.container.layout import TrackValue  # noqa: E402
@@ -127,7 +137,7 @@ def _verify_scene(dotnet: str, folder: Path) -> None:
             for t in clip.tracks
             for key, time in enumerate(t.times)
             for value in (
-                (time, t.values[key * t.components])
+                (time, t.expanded_values()[key * t.components])
                 if t.value_type == TrackValue.FLOAT
                 else (time,)
             )
@@ -158,6 +168,12 @@ def main():
     with tempfile.TemporaryDirectory() as directory:
         _verify("authored", authored_mesh(), dotnet, Path(directory))
         _verify("holed", holed_mesh(), dotnet, Path(directory))
+        _verify("strips", strip_mesh(), dotnet, Path(directory))
+        _verify("quads", grid_mesh(30), dotnet, Path(directory))
+        _verify("mixed", quad_and_triangle_mesh(), dotnet, Path(directory))
+        _verify("uv fit", uv_fit_mesh(), dotnet, Path(directory))
+        _verify("split vertices", split_vertex_mesh(), dotnet, Path(directory))
+        _verify("shared map", shared_map_mesh(), dotnet, Path(directory))
         _verify_scene(dotnet, Path(directory))
 
 

@@ -14,6 +14,12 @@ public unsafe struct ZpmBackReferences
     ZpmColumn _distances;
     uint _count;
 
+    const uint DistanceBlock = 64;
+    const int DistanceBufferLength = 128;
+
+    /// <summary>How many elements there are.</summary>
+    public readonly uint count => _count;
+
     /// <summary>How many new IDs the elements introduce in total.</summary>
     public readonly uint idCount => _count - _distances.count;
 
@@ -44,16 +50,28 @@ public unsafe struct ZpmBackReferences
     /// <summary>
     /// Spreads values out in place: the buffer starts with one group of width values per ID and
     /// ends with one group per element. A group's slot is never past the elements using it, so
-    /// working from the end overwrites nothing before it is read. Needs no second buffer.
+    /// working from the end overwrites nothing before it is read. Distances unpack a block at a
+    /// time on the stack, because reading them one by one was most of the cost.
     /// </summary>
     public readonly void ExpandAll(uint* values, uint width)
     {
         uint newest = idCount;
         uint repeated = _distances.count;
+        uint* distances = stackalloc uint[DistanceBufferLength];
+        uint loadedFrom = uint.MaxValue;
         for (uint element = _count; repeated != 0;)
         {
             element--;
-            uint source = _mask.IsSet(element) ? newest - 1 - _distances.Get(--repeated) : --newest;
+            uint isRepeat = _mask.IsSet(element) ? 1u : 0u;
+            repeated -= isRepeat;
+            if (repeated < loadedFrom)
+            {
+                loadedFrom = repeated & ~(DistanceBlock - 1);
+                _distances.CopyTo(loadedFrom, System.Math.Min(DistanceBlock, _distances.count - loadedFrom), distances, 1);
+            }
+            // A new ID reads a distance it then ignores, so the path does not depend on an unpredictable mask.
+            uint source = newest - 1 - (distances[repeated - loadedFrom] & (0u - isRepeat));
+            newest -= 1 - isRepeat;
             uint* from = values + source * width;
             uint* to = values + element * width;
             for (uint part = 0; part < width; part++)

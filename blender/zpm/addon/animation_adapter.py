@@ -8,10 +8,11 @@ import bpy
 from bpy_extras import anim_utils
 
 from ..format import Clip, Track
-from ..format.container.layout import HandleType, KeyMode, ResourceKind
+from ..format.container.layout import HandleType, KeyMode, ResourceKind, TrackValue
 from ..format.processing.animation import reduce_track
 
 NODE_TREE_PREFIX = "node_tree."
+WORLD_PREFIX = "world."
 _MODES = {mode.name: mode for mode in KeyMode}
 _HANDLES = {kind.name: kind for kind in HandleType}
 _KEY_FIELDS = 2
@@ -128,7 +129,11 @@ def apply_clips(clips: list, owner_block, created: list) -> None:
     for clip in clips:
         by_owner = {}
         for track in clip.tracks:
-            in_node_tree = track.path.startswith(NODE_TREE_PREFIX)
+            # Blender cannot key a swap of data. The modifiers making it are kept.
+            if track.value_type == TrackValue.REFERENCE:
+                continue
+            path = track.path.removeprefix(WORLD_PREFIX)
+            in_node_tree = path.startswith(NODE_TREE_PREFIX)
             key = (track.owner_kind, track.owner, in_node_tree)
             by_owner.setdefault(key, []).append(track)
         for (kind, owner, in_node_tree), tracks in by_owner.items():
@@ -143,7 +148,9 @@ def apply_clips(clips: list, owner_block, created: list) -> None:
             for track in tracks:
                 curve = action.fcurve_ensure_for_datablock(
                     block,
-                    track.path.removeprefix(NODE_TREE_PREFIX),
+                    track.path.removeprefix(WORLD_PREFIX).removeprefix(
+                        NODE_TREE_PREFIX
+                    ),
                     index=track.array_index,
                 )
                 _apply_track(curve, track)

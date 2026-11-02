@@ -27,6 +27,7 @@ _MAPPING_NODE = "MAPPING"
 _UV_MAP_NODE = "UVMAP"
 _UDIM_TOKEN = "<UDIM>"
 _MAX_WALK = 8
+WORLD_GRAPH = "\0world"
 _ROLE_INPUTS = {
     ROLE_BASE_COLOR: "Base Color",
     ROLE_METALLIC: "Metallic",
@@ -117,6 +118,17 @@ class MaterialCapture:
         for material in mesh.materials:
             if material is not None and material.name not in self._materials:
                 self._materials[material.name] = self._capture(material)
+
+    def add_world(self, world: bpy.types.World) -> None:
+        """Keep the world's node graph, and any images it uses."""
+        graph = _capture_graph(world)
+        if not graph:
+            return
+        self._graphs[WORLD_GRAPH] = graph
+        for node in world.node_tree.nodes:
+            image = getattr(node, "image", None)
+            if image is not None:
+                self._image_index(image)
 
     def _capture(self, material: bpy.types.Material) -> Material:
         result = Material(
@@ -275,6 +287,17 @@ def read_graphs(extensions: list) -> dict:
         if extension.name == BLENDER_NODE_GRAPHS:
             return json.loads(extension.payload)
     return {}
+
+
+def create_world(name: str, settings: dict, images: list, graphs: dict):
+    """Create a world with these settings and, if the file holds one, its node graph."""
+    world = bpy.data.worlds.new(name)
+    rna_values.apply_rna(world, settings, [])
+    if WORLD_GRAPH in graphs:
+        world.use_nodes = True
+        by_name = {image.name: image for image in images}
+        _apply_graph(world, graphs[WORLD_GRAPH], by_name)
+    return world
 
 
 def _find_image_node(socket):

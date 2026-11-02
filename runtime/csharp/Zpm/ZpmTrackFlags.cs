@@ -10,4 +10,5 @@ public enum ZpmTrackFlags : uint
     None = 0,
     Baked = 1,
     SphericalRotation = 2,
+    Sparse = 4,
 }

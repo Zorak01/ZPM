@@ -144,6 +144,7 @@ static unsafe class Program
                 Require(MathF.Abs(view.GetEdgeCrease(e) - reader.ReadSingle()) < Tolerance, "edge crease");
             }
             VerifyBulkStreams(view);
+            VerifyBulkFloats(view);
             for (uint f = 0; f < view.faceCount; f++)
                 Require(view.IsFaceFlat(f) == (reader.ReadByte() != 0), "flat face");
             for (uint v = 0; v < view.vertexCount; v++)
@@ -316,6 +317,78 @@ static unsafe class Program
         }
     }
 
+    /// <summary>Whole-mesh floats and the corner cursor must match reading one at a time.</summary>
+    static void VerifyBulkFloats(in ZpmMeshView view)
+    {
+        var positions = new uint[view.vertexCount * 3 + 3];
+        var corners = new uint[view.cornerCount + 1];
+        var sizes = new uint[view.faceCount + 1];
+        var edges = new uint[view.edgeCount * 2 + 2];
+        var values = new float[view.cornerCount * 3 + 3];
+        fixed (uint* p = positions, c = corners, s = sizes, e = edges)
+        fixed (float* v = values)
+        {
+            view.GetMesh(p, s, c, e);
+            if (view.hasNormals)
+            {
+                view.GetCornerNormals(c, p, v);
+                for (uint i = 0; i < view.cornerCount; i++)
+                {
+                    ZpmNormal normal = view.GetCornerNormal(i);
+                    Require(normal.x == v[i * 3] && normal.y == v[i * 3 + 1] && normal.z == v[i * 3 + 2], "bulk normal");
+                }
+            }
+            for (uint layer = 0; layer < view.uvLayerCount; layer++)
+            {
+                if (view.TryGetUvLayer(layer, out ZpmCornerStream uvs))
+                {
+                    view.GetCornerUvs(uvs, c, p, v);
+                    for (uint i = 0; i < view.cornerCount; i++)
+                    {
+                        ZpmUv uv = view.GetCornerUv(uvs, i);
+                        Require(uv.u == v[i * 2] && uv.v == v[i * 2 + 1], "bulk UV");
+                    }
+                }
+            }
+            for (uint layer = 0; layer < view.uvLayerCount; layer++)
+            {
+                if (view.TryGetUvLayer(layer, out ZpmCornerStream uvs))
+                {
+                    var pairs = new uint[Math.Max(view.vertexCount, view.cornerCount) * 2 + 2];
+                    fixed (uint* q = pairs)
+                    {
+                        uvs.CopyAllValues(c, view.cornerCount, p, view.gridStep, q);
+                        for (uint i = 0; i < view.cornerCount; i++)
+                        {
+                            ZpmUv uv = view.GetCornerUv(uvs, i);
+                            Require((int)q[i * 2] / ZpmLayout.UvGridScale == uv.u && (int)q[i * 2 + 1] / ZpmLayout.UvGridScale == uv.v, "all UV values");
+                        }
+                        if (uvs.TryCopyVertexPairs(view.vertexCount, p, view.gridStep, q))
+                        {
+                            for (uint i = 0; i < view.cornerCount; i++)
+                            {
+                                ZpmUv uv = view.GetCornerUv(uvs, i);
+                                Require((int)q[c[i] * 2] / ZpmLayout.UvGridScale == uv.u && (int)q[c[i] * 2 + 1] / ZpmLayout.UvGridScale == uv.v, "vertex pairs");
+                            }
+                        }
+                    }
+                }
+            }
+            if (view.TryGetCornerCursor(out ZpmCornerCursor cursor))
+            {
+                for (uint i = 0; i < view.cornerCount; i++)
+                    Require(cursor.Get(i) == c[i], "corner cursor");
+            }
+            var again = new uint[view.edgeCount * 2 + 2];
+            fixed (uint* a = again)
+            {
+                view.GetEdges(0, view.edgeCount, a);
+                for (uint i = 0; i < view.edgeCount * 2; i++)
+                    Require(a[i] == e[i], "edge range");
+            }
+        }
+    }
+
     /// <summary>The whole-mesh pair copy must match reading each corner on its own.</summary>
     static void VerifyBulkStreams(in ZpmMeshView view)
     {
@@ -372,7 +445,10 @@ static unsafe class Program
         return 0;
     }
 
-    /// <summary>Times reading a whole mesh with its normals and first UV layer, as other formats must.</summary>
+    /// <summary>
+    /// Times reading a whole mesh with its normals and first UV layer, as other formats must. Edges
+    /// are left out, as they are from the file sizes, because the other formats produce none.
+    /// </summary>
     static int MeasureSurface(string path)
     {
         const int Rounds = 9;
@@ -388,8 +464,9 @@ static unsafe class Program
         uint* edges = (uint*)NativeMemory.AlignedAlloc(view.edgeCount * 8 + 64, 64);
         float* normals = (float*)NativeMemory.AlignedAlloc(corners * 12 + 64, 64);
         float* uvValues = (float*)NativeMemory.AlignedAlloc(corners * 8 + 64, 64);
-        uint* normalValues = (uint*)NativeMemory.AlignedAlloc(corners * 8 + 64, 64);
-        uint* uvStored = (uint*)NativeMemory.AlignedAlloc(corners * 8 + 64, 64);
+        uint pairCount = Math.Max(corners, view.vertexCount);
+        uint* normalValues = (uint*)NativeMemory.AlignedAlloc(pairCount * 8 + 64, 64);
+        uint* uvStored = (uint*)NativeMemory.AlignedAlloc(pairCount * 8 + 64, 64);
         bool hasNormals = view.TryGetNormalStream(out ZpmCornerStream normalStream);
         var storedTimes = new double[Rounds];
         for (int round = 0; round < Rounds; round++)
@@ -397,15 +474,41 @@ static unsafe class Program
             long start = Stopwatch.GetTimestamp();
             for (int run = 0; run < RunsPerRound; run++)
             {
-                view.GetMesh(positions, sizes, cornerIds, edges);
-                if (hasNormals)
+                view.GetVertices(0, view.vertexCount, positions);
+                view.GetCorners(0, corners, cornerIds);
+                if (hasNormals && !normalStream.TryCopyVertexPairs(view.vertexCount, positions, view.gridStep, normalValues))
                     normalStream.CopyAllPairs(cornerIds, corners, normalValues);
-                if (hasUvs)
-                    uvs.CopyAllPairs(cornerIds, corners, uvStored);
+                if (hasUvs && !uvs.TryCopyVertexPairs(view.vertexCount, positions, view.gridStep, uvStored))
+                    uvs.CopyAllValues(cornerIds, corners, positions, view.gridStep, uvStored);
             }
             storedTimes[round] = (Stopwatch.GetTimestamp() - start) * 1e6 / Stopwatch.Frequency / RunsPerRound;
         }
         Array.Sort(storedTimes);
+        double TimeStage(Action read)
+        {
+            var stage = new double[Rounds];
+            for (int round = 0; round < Rounds; round++)
+            {
+                long start = Stopwatch.GetTimestamp();
+                for (int run = 0; run < RunsPerRound; run++)
+                    read();
+                stage[round] = (Stopwatch.GetTimestamp() - start) * 1e6 / Stopwatch.Frequency / RunsPerRound;
+            }
+            Array.Sort(stage);
+            return stage[Rounds / 2];
+        }
+        double positionsUs = TimeStage(() => view.GetVertices(0, view.vertexCount, positions));
+        double cornersUs = TimeStage(() => view.GetCorners(0, corners, cornerIds));
+        double normalsUs = !hasNormals ? 0 : TimeStage(() =>
+        {
+            if (!normalStream.TryCopyVertexPairs(view.vertexCount, positions, view.gridStep, normalValues))
+                normalStream.CopyAllPairs(cornerIds, corners, normalValues);
+        });
+        double uvsUs = !hasUvs ? 0 : TimeStage(() =>
+        {
+            if (!uvs.TryCopyVertexPairs(view.vertexCount, positions, view.gridStep, uvStored))
+                uvs.CopyAllValues(cornerIds, corners, positions, view.gridStep, uvStored);
+        });
         var times = new double[Rounds];
         long allocated = 0;
         for (int round = -1; round < Rounds; round++)
@@ -414,20 +517,12 @@ static unsafe class Program
             long start = Stopwatch.GetTimestamp();
             for (int run = 0; run < RunsPerRound; run++)
             {
-                view.GetMesh(positions, sizes, cornerIds, edges);
-                for (uint c = 0; c < corners; c++)
-                {
-                    ZpmNormal normal = view.GetCornerNormal(c);
-                    normals[c * 3] = normal.x;
-                    normals[c * 3 + 1] = normal.y;
-                    normals[c * 3 + 2] = normal.z;
-                }
-                for (uint c = 0; hasUvs && c < corners; c++)
-                {
-                    ZpmUv uv = view.GetCornerUv(uvs, c);
-                    uvValues[c * 2] = uv.u;
-                    uvValues[c * 2 + 1] = uv.v;
-                }
+                view.GetVertices(0, view.vertexCount, positions);
+                view.GetCorners(0, corners, cornerIds);
+                if (view.hasNormals)
+                    view.GetCornerNormals(cornerIds, positions, normals);
+                if (hasUvs)
+                    view.GetCornerUvs(uvs, cornerIds, positions, uvValues);
             }
             long stop = Stopwatch.GetTimestamp();
             if (round >= 0)
@@ -441,6 +536,10 @@ static unsafe class Program
         {
             zpm_full_read_us = times[Rounds / 2],
             zpm_full_read_stored_us = storedTimes[Rounds / 2],
+            zpm_positions_us = positionsUs,
+            zpm_corners_us = cornersUs,
+            zpm_normals_us = normalsUs,
+            zpm_uvs_us = uvsUs,
             zpm_allocated_bytes = allocated,
         }));
         return 0;

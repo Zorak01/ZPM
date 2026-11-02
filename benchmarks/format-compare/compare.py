@@ -32,7 +32,7 @@ ROUNDS = 5
 RUNS_PER_ROUND = 3
 POSITION_BITS = 20
 NORMAL_BITS = 12
-UV_BITS = 20
+UV_BITS = 16
 ZSTD_LEVEL = 19
 UV_SCALE = 1 << UV_BITS
 EDGE_REGIONS = ("EDGE_",)
@@ -63,7 +63,7 @@ def to_vertices(mesh, keep_vertices: bool) -> dict:
     Corners merge when they hold the same values. With keep_vertices they must also be
     the same Blender vertex, so these formats hold every vertex ZPM holds.
     """
-    exponent = grid_exponent(mesh.positions)
+    exponent = grid_exponent(mesh)
     step = math.ldexp(1.0, exponent)
     uv_name = sorted(mesh.uv_layers)[0] if mesh.uv_layers else None
     uvs = mesh.uv_layers[uv_name] if uv_name else None
@@ -169,7 +169,9 @@ def measure_draco_geometry(mesh) -> int:
     )
 
 
-def measure_meshopt(vertices: dict, package: Path, work: Path, node: str) -> dict:
+def measure_meshopt(
+    vertices: dict, package: Path, native: Path | None, work: Path, node: str
+) -> dict:
     path = work / "mesh.bin"
     header = struct.pack(
         "<4I",
@@ -194,6 +196,11 @@ def measure_meshopt(vertices: dict, package: Path, work: Path, node: str) -> dic
     compressor = zstandard.ZstdCompressor(level=ZSTD_LEVEL)
     measured["bytes"] = sum(measured["stored"].values())
     measured["zstd_bytes"] = len(compressor.compress(payload))
+    if native is not None:
+        timed = subprocess.run(
+            [str(native), str(path)], check=True, capture_output=True, text=True
+        )
+        measured["native"] = json.loads(timed.stdout)
     return measured
 
 
@@ -201,6 +208,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fixtures", type=Path, required=True, nargs="+")
     parser.add_argument("--meshopt", type=Path, required=True)
+    parser.add_argument("--meshopt-native", type=Path, default=None)
     args = parser.parse_args()
     node = shutil.which("node")
     dotnet = shutil.which("dotnet")
@@ -256,10 +264,12 @@ def main():
                 ),
                 "draco": measure_draco(vertices),
                 "draco_geometry_only": measure_draco_geometry(mesh),
-                "meshopt": measure_meshopt(vertices, args.meshopt, work, node),
+                "meshopt": measure_meshopt(
+                    vertices, args.meshopt, args.meshopt_native, work, node
+                ),
                 "draco_same_vertices": measure_draco(same_vertices),
                 "meshopt_same_vertices": measure_meshopt(
-                    same_vertices, args.meshopt, work, node
+                    same_vertices, args.meshopt, args.meshopt_native, work, node
                 ),
             }
         )

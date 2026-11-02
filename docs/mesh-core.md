@@ -36,14 +36,23 @@ Little-endian. Every byte belongs to exactly one named region, and `tools/zpm_ma
 | Region | Contents |
 | --- | --- |
 | File header | 16 bytes: magic `ZPM\0`, version (UInt16), section count (UInt16), file length (UInt64) |
-| Directory | 12 bytes per section: kind (UInt16), flags (Byte), layer (Byte), file offset (UInt64) |
+| Directory | 8 bytes per section: kind (UInt16), flags (Byte), layer (Byte), file offset (UInt32). A file past 4 GiB uses a UInt64 offset, 12 bytes per section |
 | Sections | Each padded with zeros to 4-byte alignment, contiguous, in rising kind then layer order |
 | Tail | 32 zero bytes, so readers can load whole words past the last value |
 
 A section's length is the distance to the next offset. A section is present only if the mesh needs
 it, so its presence is the layout choice: the file has no separate mode fields.
 
-Flag values: `1` the column stores slopes, `2` a palette index holds a sign in its low bit.
+Flag values: `1` the column stores slopes, `2` a palette index holds a sign in its low bit, `4` block offsets are UInt16,
+`8` a stream holds one pair per stored position rather than per vertex, `16` a stream's predictions use shift 10, not 16, `32` a UV layer uses layer 0's repeat map.
+
+A column is its count and lowest base (two UInt32), its lowest width and bits per base (two bytes), each block's base as a
+rise above the lowest, packed to the bit, slopes when flagged, each block's width as a 4-bit rise above the lowest, padding
+to 4 bytes, one offset per 16 blocks except the first, padding to 4 bytes, then the packed values. A rank mask is 8 bytes
+per 64 elements, plus a count of 2 bytes, or 4 when it covers more than 65,535 elements, padded to 4 bytes.
+
+An old strip vertex is a clear bit, then its distance plus 8 as an Exp-Golomb code: as many clear bits as it has bits past
+its lowest four, a set bit, then its bits below the top one. Thirteen clear bits and a set bit mean 32 whole bits follow.
 
 ## Sections
 
@@ -98,11 +107,14 @@ Flag values: `1` the column stores slopes, `2` a palette index holds a sign in i
 | 160 | `ATTRIBUTE_NAMES` | Name table | Custom attribute names |
 | 161 | `ATTRIBUTE_FORMATS` | UInt32 per attribute | Domain, type << 8, components << 16, meaning << 24 |
 | 162 | `ATTRIBUTE_VALUES` | Column, layered by attribute | All of component 0, then component 1 and so on. Floats as ordered bits, so exact |
+| 163 | `ATTRIBUTE_STRINGS` | Name table, layered by attribute | A string attribute's distinct strings; its values index them |
 | 170 | `SHAPE_NAMES` | Name table | Blendshape names, in evaluation order |
 | 171 | `SHAPE_GROUP_NAMES` | Name table | Vertex group limiting each target; empty for none |
 | 172 | `SHAPE_INFO` | 32 bytes per target | Reference, in-between-of, value, minimum, maximum, frame, in-between weight, flags (1 relative, 2 muted, interpolation << 8) |
 | 173 | `SHAPE_STARTS` | Column | Where each target's run starts, plus a final total |
 | 174 | `SHAPE_VERTICES` | Column | Rising vertex IDs each target changes |
+| 185, 186 | `CORNER_STRIP_STARTS`, `CORNER_STRIP_NEWEST` | Column | Per block of 384 corners: where its bits start (with a final total), and its next new vertex |
+| 187 | `CORNER_STRIP_BITS` | Bits | Faces of up to 32 corners, low bits first. See `storage/corner_strips.py`. Replaces other corner forms when smaller |
 | 184 | `SHAPE_LIST_STARTS` | Column | Where each target's list starts, present when targets share lists |
 | 175–177 | `SHAPE_POSITION_X/Y/Z` | Column | Signed grid steps from the base shape, or ordered bits of the target with no grid |
 | 178–183 | `SHAPE_NORMAL_*`, `SHAPE_TANGENT_*` | Column | Optional signed changes on a 1 / 2^16 grid |

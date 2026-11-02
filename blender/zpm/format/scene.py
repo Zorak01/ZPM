@@ -46,9 +46,16 @@ TREE_FIELDS = {
         "drivers",
     ),
     "Mesh": ("properties", "drivers"),
-    "Material": ("model", "parameters", "properties"),
-    "Image": ("properties",),
-    "Light": ("settings", "properties"),
+    "Material": (
+        "model",
+        "parameters",
+        "properties",
+        "drivers",
+        "node_drivers",
+        "bakes",
+    ),
+    "Image": ("properties", "variants"),
+    "Light": ("settings", "properties", "drivers"),
     "Armature": ("settings", "bone_collections", "properties"),
     "Bone": ("settings", "properties"),
     "Collection": ("properties",),
@@ -163,7 +170,9 @@ class Material:
 
     The fields are what real-time and offline renderers share. model is empty for
     plain metallic-roughness, or names another shading model. parameters holds the
-    named values a model has beyond these fields.
+    named values a model has beyond these fields. bakes lists approximations baked
+    from the source shading, as {"role", "image", "settings"}: which slot it stands in
+    for, its place in the image list, and what made it.
     """
 
     name: str
@@ -180,6 +189,9 @@ class Material:
     model: str = ""
     parameters: dict = field(default_factory=dict)
     properties: dict = field(default_factory=dict)
+    drivers: list = field(default_factory=list)
+    node_drivers: list = field(default_factory=list)
+    bakes: list = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +218,12 @@ class ImageTile:
 
 @dataclass(slots=True)
 class Image:
+    """One image.
+
+    variants lists other encodings of it, as {"image", "format", "policy"}: a place in
+    the image list, what it is encoded as, and the quality rule that made it.
+    """
+
     name: str
     color_space: str = ""
     width: int = 0
@@ -214,6 +232,7 @@ class Image:
     has_alpha: bool = False
     tiles: list = field(default_factory=list)
     properties: dict = field(default_factory=dict)
+    variants: list = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -235,6 +254,7 @@ class Light:
     area_height: float = 0.0
     settings: dict = field(default_factory=dict)
     properties: dict = field(default_factory=dict)
+    drivers: list = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -340,6 +360,10 @@ class Track:
     values holds components per key. key_modes and left and right handle types are
     empty when every key is linear. handles holds four floats per key: left time and
     value, right time and value. target_kind says what a REFERENCE key indexes.
+
+    changed, when not empty, makes the track sparse: one flag per component of every
+    key, and values holds only the flagged ones. Others keep their value from the key
+    before, so every component of the first key is flagged.
     """
 
     owner_kind: ResourceKind
@@ -356,6 +380,19 @@ class Track:
     left_handle_types: list = field(default_factory=list)
     right_handle_types: list = field(default_factory=list)
     handles: list = field(default_factory=list)
+    changed: list = field(default_factory=list)
+
+    def expanded_values(self) -> list:
+        """Return components per key, filling in what a sparse track leaves out."""
+        if not self.changed:
+            return self.values
+        remaining = iter(self.values)
+        result = []
+        for at, is_changed in enumerate(self.changed):
+            result.append(
+                next(remaining) if is_changed else result[at - self.components]
+            )
+        return result
 
 
 @dataclass(slots=True)
@@ -425,6 +462,7 @@ class Scene:
         self._validate_objects()
         self._validate_collections()
         self._validate_materials()
+        self._validate_image_links()
         for armature in self.armatures:
             count = len(armature.bones)
             for index, bone in enumerate(armature.bones):
@@ -443,8 +481,7 @@ class Scene:
             for track in clip.tracks:
                 if track.owner >= len(self.resources(track.owner_kind)):
                     raise FormatError(f"Track {track.path} has a missing owner")
-                if len(track.values) != len(track.times) * track.components:
-                    raise FormatError(f"Track {track.path} does not match its keys")
+                self._validate_key_count(track)
                 if any(
                     a > b for a, b in zip(track.times, track.times[1:], strict=False)
                 ):
@@ -453,6 +490,18 @@ class Scene:
                     limit = len(self.resources(track.target_kind))
                     if any(value >= limit for value in track.values):
                         raise FormatError(f"Track {track.path} keys something missing")
+
+    @staticmethod
+    def _validate_key_count(track: Track) -> None:
+        elements = len(track.times) * track.components
+        if track.changed:
+            is_whole = len(track.changed) == elements and sum(track.changed) == len(
+                track.values
+            )
+            if not is_whole or not all(track.changed[: track.components]):
+                raise FormatError(f"Track {track.path} has wrong change flags")
+        elif len(track.values) != elements:
+            raise FormatError(f"Track {track.path} does not match its keys")
 
     def _validate_curves_and_lattices(self) -> None:
         for curve in self.curves:
@@ -534,6 +583,13 @@ class Scene:
                 raise FormatError(f"Collection {collection.name} has a missing parent")
             if any(member >= len(self.objects) for member in collection.members):
                 raise FormatError(f"Collection {collection.name} has a missing object")
+
+    def _validate_image_links(self) -> None:
+        count = len(self.images)
+        links = [bake["image"] for m in self.materials for bake in m.bakes]
+        links += [variant["image"] for i in self.images for variant in i.variants]
+        if any(not 0 <= link < count for link in links):
+            raise FormatError("A bake or image variant names a missing image")
 
     def _validate_materials(self) -> None:
         for material in self.materials:

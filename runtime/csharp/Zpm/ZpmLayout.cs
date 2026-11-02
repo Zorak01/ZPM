@@ -48,7 +48,7 @@ public enum ZpmSectionKind : ushort
     UvSeams = 78,
     UvNames = 79,
     UvStream = 80,
-    UvStreamLast = 88,
+    UvStreamLast = 94,
     TangentMethod = 95,
     TangentStream = 96,
     TangentStreamLast = 104,
@@ -66,6 +66,7 @@ public enum ZpmSectionKind : ushort
     AttributeNames = 160,
     AttributeFormats = 161,
     AttributeValues = 162,
+    AttributeStrings = 163,
     ShapeNames = 170,
     ShapeGroupNames = 171,
     ShapeInfo = 172,
@@ -81,6 +82,9 @@ public enum ZpmSectionKind : ushort
     ShapeTangentY = 182,
     ShapeTangentZ = 183,
     ShapeListStarts = 184,
+    CornerStripStarts = 185,
+    CornerStripNewest = 186,
+    CornerStripBits = 187,
     SceneMeshStarts = 200,
     SceneMeshes = 201,
     ObjectNames = 202,
@@ -173,6 +177,12 @@ public enum ZpmStreamRole
     ExceptionMask = 6,
     ExceptionA = 7,
     ExceptionB = 8,
+    FitAX = 9,
+    FitAY = 10,
+    FitAZ = 11,
+    FitBX = 12,
+    FitBY = 13,
+    FitBZ = 14,
 }
 
 /// <summary>How a section is stored.</summary>
@@ -182,6 +192,10 @@ public enum ZpmSectionFlags : byte
     None = 0,
     HasSlopes = 1,
     SignedIndices = 2,
+    ShortGroups = 4,
+    ByPosition = 8,
+    CoarseFit = 16,
+    SharedMap = 32,
 }
 
 /// <summary>Fixed byte layout of a file; docs/mesh-core.md is the written contract.</summary>
@@ -190,7 +204,8 @@ public static class ZpmLayout
     public const uint Magic = 0x004D505A; // "ZPM\0"
     public const ushort Version = 1;
     public const int FileHeaderBytes = 16;
-    public const int DirectoryEntryBytes = 12;
+    public const int DirectoryEntryBytes = 8;
+    public const int WideDirectoryEntryBytes = 12;
     public const int MeshInfoBytes = 32;
     public const int SpaceBytes = 8;
     public const uint NoIndex = uint.MaxValue;
@@ -204,7 +219,9 @@ public static class ZpmLayout
     public const uint MinRingCorners = 3;
     public const int NoGrid = int.MinValue;
     public const float NormalMax = 4095f;
-    public const float UvGridScale = 1048576f;
+    public const float UvGridScale = 65536f;
+    public const int FitShift = 16;
+    public const int FitCoarseShift = 10;
     public const float UnitMax = 65535f;
     public const uint UnitLimit = 65536;
     public const float OffsetGridScale = 65536f;

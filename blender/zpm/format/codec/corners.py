@@ -20,6 +20,7 @@ from ..storage.back_references import (
     resolve_back_references,
     split_back_references,
 )
+from ..storage.corner_strips import encode_corner_strips, read_corner_strips
 from ..storage.rank_mask import encode_rank_mask, read_rank_mask
 from ..storage.select_bits import encode_select_bits, read_select_bits
 
@@ -36,11 +37,11 @@ def _encode_relative(corners: list, face_count: int, arity: int) -> list:
     return sections
 
 
-def encode_corners(corners: list, face_count: int, arity: int) -> list:
+def encode_corners(corners: list, sizes: list, arity: int) -> list:
     """Return the smallest legal form of the corner list."""
     best = [column_section(SectionKind.CORNER_IDS, corners)]
     if 3 <= arity <= MAX_RELATIVE_ARITY:
-        relative = _encode_relative(corners, face_count, arity)
+        relative = _encode_relative(corners, len(sizes), arity)
         if stored_bytes(relative) < stored_bytes(best):
             best = relative
     split = split_back_references(corners)
@@ -52,6 +53,9 @@ def encode_corners(corners: list, face_count: int, arity: int) -> list:
         ]
         if stored_bytes(by_distance) < stored_bytes(best):
             best = by_distance
+    strips = encode_corner_strips(corners, sizes)
+    if strips and stored_bytes(strips) < stored_bytes(best):
+        best = strips
     return best
 
 
@@ -80,11 +84,13 @@ def read_holes(sections: SectionReader) -> array:
 
 
 def read_corners(
-    sections: SectionReader, corner_count: int, face_count: int, arity: int
+    sections: SectionReader, corner_count: int, sizes: list, arity: int
 ) -> list:
     """Return one vertex ID per corner."""
     if not corner_count:
         return []
+    if sections.has(SectionKind.CORNER_STRIP_STARTS):
+        return read_corner_strips(sections, sizes)
     if sections.has(SectionKind.CORNER_REPEAT_MASK):
         marks = read_rank_mask(
             sections.raw(SectionKind.CORNER_REPEAT_MASK), corner_count
@@ -96,6 +102,7 @@ def read_corners(
         return sections.column(SectionKind.CORNER_IDS, corner_count)
     if not 3 <= arity <= MAX_RELATIVE_ARITY:
         raise FormatError("Invalid uniform face layout")
+    face_count = len(sizes)
     first = sections.column(SectionKind.CORNER_FIRST, face_count)
     corners = [0] * corner_count
     corners[0::arity] = first

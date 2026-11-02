@@ -7,14 +7,25 @@ from array import array
 from collections import deque
 from dataclasses import replace
 
-from ..container.layout import AXIS_COUNT, AttributeDomain
+from ..container.layout import (
+    AXIS_COUNT,
+    NO_GRID,
+    AttributeDomain,
+    bits_to_ordered,
+    float_bits,
+)
 from ..mesh import ColorLayer, Mesh
+from ..storage.back_references import split_back_references
+from ..storage.column import encode_column
+from ..storage.corner_strips import can_use_strips, encode_corner_strips
 from .faces import face_edges, face_lists
+from .snapping import grid_exponent
 
 _MORTON_BITS = 10
 _MORTON_MAX = (1 << _MORTON_BITS) - 1
 _UNSEEN_EDGE = float("inf")
 _CHANNELS = 4
+_CLUSTER_VERTICES = 128
 
 
 def _morton_code(x: int, y: int, z: int) -> int:
@@ -74,6 +85,147 @@ def _walk_faces(faces: list, starts: list, materials: list) -> list:
                         visited[neighbour] = True
                         waiting.append(neighbour)
     return walked
+
+
+def _cluster_faces(faces: list, starts: list, materials: list) -> list:
+    """Return face indices in small patches, grown across shared edges along the curve.
+
+    Vertices of one patch land near each other in the file, so their blocks need fewer
+    bits. It suits dense surfaces, where a wide walk scatters each block across the
+    model; reorder_mesh keeps whichever order is smaller.
+    """
+    faces_of_edge = {}
+    for index, face in enumerate(faces):
+        for key in face_edges(face):
+            faces_of_edge.setdefault(key, []).append(index)
+    placed = [False] * len(faces)
+    order = []
+    for start in starts:
+        if placed[start]:
+            continue
+        placed[start] = True
+        waiting = deque([start])
+        vertices = set()
+        while waiting and len(vertices) < _CLUSTER_VERTICES:
+            index = waiting.popleft()
+            order.append(index)
+            vertices.update(faces[index])
+            for key in face_edges(faces[index]):
+                for neighbour in faces_of_edge[key]:
+                    if (
+                        not placed[neighbour]
+                        and materials[neighbour] == materials[index]
+                    ):
+                        placed[neighbour] = True
+                        waiting.append(neighbour)
+        for index in waiting:
+            placed[index] = False
+    return order
+
+
+def _strip_faces(faces: list, starts: list, materials: list) -> list:
+    """Return face indices so each usually shares an edge with the one before it.
+
+    Goes deep along the surface, next to the neighbour most surrounded by placed faces,
+    so few strips end early. Stays inside one material.
+    """
+    faces_of_edge = {}
+    for index, face in enumerate(faces):
+        for key in face_edges(face):
+            faces_of_edge.setdefault(key, []).append(index)
+    placed = [False] * len(faces)
+    order = []
+
+    def touching(index: int) -> int:
+        return sum(
+            placed[other]
+            for key in face_edges(faces[index])
+            for other in faces_of_edge[key]
+        )
+
+    for start in starts:
+        if placed[start]:
+            continue
+        waiting = [start]
+        while waiting:
+            index = waiting.pop()
+            if placed[index]:
+                continue
+            placed[index] = True
+            order.append(index)
+            neighbours = [
+                other
+                for key in face_edges(faces[index])
+                for other in faces_of_edge[key]
+                if not placed[other] and materials[other] == materials[index]
+            ]
+            neighbours.sort(key=touching, reverse=True)
+            waiting.extend(reversed(neighbours))
+    return order
+
+
+def _strip_turns(faces: list, order: list) -> dict:
+    """Return how far to turn each face so it continues the strip before it.
+
+    A face continues when it holds an edge of the previous one the other way round, and
+    then has that edge first. Turning a face keeps its winding.
+    """
+    turns = {}
+    previous = None
+    for index in order:
+        face = faces[index]
+        turn = 0
+        if previous is not None:
+            shared = {
+                (previous[(edge + 1) % len(previous)], previous[edge])
+                for edge in range(1, len(previous))
+            }
+            for start, first in enumerate(face):
+                if (first, face[(start + 1) % len(face)]) in shared:
+                    turn = start
+                    break
+        turns[index] = turn
+        previous = face[turn:] + face[:turn]
+    return turns
+
+
+def _fits_strips(faces: list) -> bool:
+    return can_use_strips([len(face) for face in faces])
+
+
+def _turned(face: list, turn: int) -> list:
+    return face[turn:] + face[:turn]
+
+
+def _order_cost(mesh: Mesh, faces: list, order: list) -> int:
+    """Return what positions and corners would take in this order, stored simply."""
+    fits_strips = _fits_strips(faces)
+    turns = _strip_turns(faces, order) if fits_strips else {}
+    new_ids = {}
+    corners = []
+    for index in order:
+        for vertex in _turned(faces[index], turns.get(index, 0)):
+            corners.append(new_ids.setdefault(vertex, len(new_ids)))
+    positions = mesh.positions
+    exponent = grid_exponent(mesh)
+    cost = 0
+    for axis in range(AXIS_COUNT):
+        values = [positions[vertex * AXIS_COUNT + axis] for vertex in new_ids]
+        column = (
+            [bits_to_ordered(float_bits(value)) for value in values]
+            if exponent == NO_GRID
+            else [round(math.ldexp(value, -exponent)) for value in values]
+        )
+        cost += len(encode_column(column)[0])
+    split = split_back_references(corners)
+    plain = len(encode_column(split[1])[0]) if split else 0
+    if fits_strips:
+        sizes = [len(faces[index]) for index in order]
+        strips = sum(
+            len(section.data) for section in encode_corner_strips(corners, sizes)
+        )
+        return cost + min(plain, strips) if split else cost + strips
+    return cost + plain
 
 
 def _pick(buffer: array, order: list, width: int = 1) -> array:
@@ -153,7 +305,8 @@ def reorder_mesh(mesh: Mesh) -> Mesh:
     """Return the same shape with nearby faces, vertices and edges stored together.
 
     Vertices are numbered by first use, and edges in the order faces first reach them.
-    Winding and each face's first corner are kept. Edges are stored lower ID first.
+    Winding is kept. A face may start at another corner, to continue a strip. Edges
+    are stored lower ID first.
     All surface data follows. A mesh without faces, or with a non-finite position, is
     returned unchanged.
     """
@@ -162,10 +315,18 @@ def reorder_mesh(mesh: Mesh) -> Mesh:
     source_faces = face_lists(mesh)
     materials = list(mesh.face_materials) or [0] * mesh.face_count
     starts = sorted(_spatial_face_order(mesh, source_faces), key=materials.__getitem__)
-    order = _walk_faces(source_faces, starts, materials)
+    order = min(
+        (
+            _walk_faces(source_faces, starts, materials),
+            _cluster_faces(source_faces, starts, materials),
+            _strip_faces(source_faces, starts, materials),
+        ),
+        key=lambda candidate: _order_cost(mesh, source_faces, candidate),
+    )
+    turns = _strip_turns(source_faces, order) if _fits_strips(source_faces) else {}
     new_ids = {}
     for index in order:
-        for vertex in source_faces[index]:
+        for vertex in _turned(source_faces[index], turns.get(index, 0)):
             new_ids.setdefault(vertex, len(new_ids))
     for vertex in range(mesh.vertex_count):
         new_ids.setdefault(vertex, len(new_ids))
@@ -176,12 +337,19 @@ def reorder_mesh(mesh: Mesh) -> Mesh:
         first_corner.append(at)
         at += len(face)
     corner_order = [
-        first_corner[index] + position
+        first_corner[index]
+        + (position + turns.get(index, 0)) % len(source_faces[index])
         for index in order
         for position in range(len(source_faces[index]))
     ]
     new_corners = {old: new for new, old in enumerate(corner_order)}
-    faces = [[new_ids[vertex] for vertex in source_faces[index]] for index in order]
+    faces = [
+        [
+            new_ids[vertex]
+            for vertex in _turned(source_faces[index], turns.get(index, 0))
+        ]
+        for index in order
+    ]
     edge_order, edges = _reordered_edges(mesh, new_ids, faces)
     return replace(
         mesh,

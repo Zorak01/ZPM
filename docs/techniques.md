@@ -35,6 +35,24 @@ same width, so value J sits at bit `J × width`, with no need to walk through ea
 
 **Prior art:** frame-of-reference coding, common in databases and search engines, less so in mesh files.
 
+### Small block headers
+
+**Problem:** A block needs a base, a width, and a way to find it. At four bytes for a base, one for a width and four per
+eight blocks for an offset, that overhead was larger than the gap to meshopt on small meshes.
+
+**Technique:** A column stores its lowest base once, then each block's rise above it in only the bits the highest rise
+needs. Widths are four-bit rises above the lowest width: a block far narrower than the widest is simply stored wider,
+which real data rarely needs. An offset is kept per sixteen blocks, in two bytes when the data is under 64 KiB, and the
+first is not stored because it is always zero. Sixteen four-bit widths are one 64-bit word, so finding a block is one
+load and a few bit operations, with no loop.
+
+**Numbers:** `BoomBox` from 53,712 to about 51,800 bytes across this and the savings below. Reads are not slower.
+
+### Few bytes for a directory
+
+A directory entry takes eight bytes with a 32-bit offset. Only a scene past 4 GiB uses twelve, which its own header length
+says, so no flag is needed. A rank mask's counts take two bytes each when it covers at most 65,535 elements.
+
 ### A slope for values that climb
 
 **Technique:** Values that rise steadily are stored as `base + slope × J + small difference`. On a
@@ -126,6 +144,12 @@ the order faces reach them. It also tries the original order and keeps the small
 
 **Prior art:** vertex and face reordering is common in mesh optimizers.
 
+### Patches for dense surfaces
+
+**Problem:** A wide walk scatters 64 consecutive vertices across the model, so a block's positions need nearly all 20 bits per axis: 59 bits per vertex measured.
+
+**Technique:** The encoder also tries growing patches of about 128 vertices along the space-filling curve, and keeps whichever order is smaller. `stanford-bunny` positions fell from 263,124 to 235,331 bytes. It is chosen on big scans and not on most game models.
+
 ### Corners that say how far back they reach
 
 **Problem:** Corners were the biggest part of the file, and only about half of them use a new vertex.
@@ -138,6 +162,22 @@ after the walk those are tiny: 1.7 on average on samurai.
 count, so they must decode from the start. In ZPM the newest vertex at any corner is its rank in the
 mask, so any corner reads directly. **Result:** samurai's corners went from 9,464 to 2,539 bytes
 (3.7x), with a corner still costing about 3 ns.
+
+### Face strips in small blocks: the one thing that is not in place
+
+**Problem:** Draco's connectivity is about 8x smaller than ZPM's was. On `cow` Draco spent about 2,000 bytes on it
+against 17,874. Coding every stream would have gained only 1.21x, so a block layer everywhere was not worth it.
+
+**Technique:** Only face corners are coded, in blocks of 384 corners, for meshes whose faces all have up to 32 corners.
+A face usually shares an edge with the one before it. Faces are turned so that edge comes first, so a face only says
+which edge it continues from, usually one bit, and its new vertices: one bit for the next new one, or a short distance back. A fixed bit code needs no tables, and every other stream stays readable in place.
+
+**Numbers:** `cow` corners 17,874 to 5,844 bytes (3.1x), `stanford-bunny` 277,649 to 77,608 (3.6x), about 8 to 9 bits
+per triangle, with Draco near 2. Whole files fell about 1.32x overall, up to 1.62x. A whole mesh reads faster than before: `stanford-bunny` went from 19,372 to about 2,500 µs.
+
+**Cost:** one random corner went from about 8 ns to 200 to 500 ns, because it decodes up to its place in a block, on
+the stack, with no allocation. A random flat normal costs 1.2 to 2 µs. Use `GetMesh`, `GetCornerNormals` and
+`ZpmCornerCursor` to read many. Encoding `stanford-bunny` takes about 7 to 13 s in Python. All-triangle meshes have a separate fast path for whole reads, because the general decoder was measurably slower.
 
 ### Edges that cost one bit per corner
 
@@ -162,7 +202,7 @@ improved it, because Blender's own values carry about 0.03° of error, so it cos
 **Problem:** On flat-shaded meshes, like scans and hard surfaces, every corner's normal equals its face's.
 Other formats store them anyway.
 
-**Technique:** If normals were not authored and each is within 0.1° of its face's, the file stores none.
+**Technique:** If normals were not authored and each is within 0.1° of its face's, judged before snapping, the file stores none. Snapping can turn a tiny face far more than it moves it, so judging afterwards missed whole scans: `stanford-bunny` went from 903,860 to 545,716 bytes (1.66x) with this.
 A reader calculates a normal from the face's corners when asked, using no extra memory, at the cost
 of reading those corners.
 
@@ -176,17 +216,44 @@ of reading those corners.
 - **One value per vertex**, with a mask for corners that disagree. Wins on smooth surfaces: 3.1x
   smaller than per-corner on a smooth test mesh, where only 36 of 31,488 corners disagreed.
 
-Either way any corner still reads directly.
+- **One value per stored position**, for vertices split without differing, which tools often leave behind. Repeats of a
+  position already say which earlier one they match, so a normal costs nothing more there. Corners that disagree go in the
+  same mask. `minotaur` file 14,600 to 12,736 bytes, `samurai` 22,968 to 20,124. It adds one lookup on a random read and
+  is not combined with UV prediction yet.
+
+Any corner still reads directly in every form.
 
 ### UVs on a tiny grid
 
-**Technique:** UVs become whole numbers of 1 / 2^20 steps: about 1/256 of a texel on a 4K texture.
+**Technique:** UVs become whole numbers of 1 / 2^16 steps: at most 1/32 of a texel on a 4K texture, and 1/16 on 8K. Going from 2^20 saved about 5% on textured models.
 Reading is one divide. Layers keep their names, and tiles beyond 0-1 work.
 
 ### Flags and creases cost almost nothing when unused
 
 **Technique:** Sharp, seam and flat flags are ordinary columns, so an all-zero block stores no data at all,
 and a flag that is never set has no section. Creases are 16 bits.
+
+### UVs predicted from position
+
+**Problem:** UVs cost as much as positions on textured models, yet across a surface patch a UV is close to a flat
+function of where the vertex is.
+
+**Technique:** Each block of 64 vertices may store three whole numbers, and the stored value is only the difference from
+`(x * cx + y * cy + z * cz) >> shift`, in grid steps, where each stream picks a shift of 10 or 16, because `BoomBox`
+wants the shorter numbers and `Duck` needs the finer ones. The arithmetic is exact, so every reader agrees. The encoder fits each
+block, and uses it only when it saves more than it costs. It costs up to six more column reads per random UV.
+
+**Numbers:** `Duck` UVs 8,343 to about 3,700 bytes (2.3x), `WaterBottle` 1.45x, `CesiumMan` 1.35x. No effect on models
+whose UVs jump around, such as `DamagedHelmet`, where it stays off. We have not seen this elsewhere, though we have not
+surveyed every format. Tried on normals too, with the cheaper numbers as well: larger on six of seven models.
+
+### Corners one step apart share a normal
+
+**Problem:** Corners of one smooth vertex often land one step apart on the 12-bit grid from rounding alone, and each
+one was stored as an exception.
+
+**Technique:** Corners of a vertex within one step take the first corner's value, moving a normal at most about 0.05°.
+**Numbers:** `BoomBox` normals 14,579 to about 11,000 bytes, and `DamagedHelmet`'s whole file from 193,568 to 184,796.
 
 ### Colors that stay exact, and float colors on a grid
 
@@ -283,7 +350,53 @@ few bits. Any domain, 8 to 32-bit types, up to 255 components, and a declared me
 **Numbers:** a smooth Float32 attribute took 52,784 of 66,776 raw bytes on `04263` (1.27x), and 8,560 of 8,760
 on `minotaur` (1.02x). Ordered bits barely help noisy low digits, so this is a clear place to improve.
 
+### Strings on any domain
+
+A string attribute stores each distinct string once in its own name table, and its column holds indices. A label repeated
+across a mesh costs a few bits per element, and any element still reads directly.
+
+### One map for layers that split alike
+
+A UV layer in the shared form whose corners split exactly as layer 0's do stores no repeat map of its own, only a flag.
+Lightmap and detail layers often follow the same seams.
+
 ## Scenes
+
+### Text, surfaces and metaballs
+
+They are saved as the mesh they make, so they look right anywhere, with their source settings kept as properties.
+
+### Point clouds and hair as meshes with no faces
+
+**Problem:** Both are mostly positions and per-point attributes, which mesh columns already store well.
+
+**Technique:** A point cloud is a mesh of loose points. Hair is a mesh of wires, one run of edges per curve. Any reader can
+use them as they are, and every column technique applies. A property names what they were, so Blender rebuilds the real
+thing. Curve-level attributes sit in a value tree, since a mesh has no such domain.
+
+### Volumes, speakers and light probes
+
+These keep their settings on their object. A volume's grid file links by path, or is stored whole in an optional extension
+when embedding is on. Its grids are not parsed. If the saved path is gone on import, the stored file is written out and used.
+
+### Meshes that change shape over time
+
+An object with a modifier that can change its topology is walked through the scene's frames at export. Each new vertex,
+face or corner count stores a whole mesh, with a stepped track naming which one applies when. Blender cannot key a swap, so
+its import keeps the modifier instead, and other readers use the track. Export takes longer for such objects, and a same-count
+change is not noticed.
+
+### Worlds and sparse keys
+
+A scene's world is kept with its settings and node graph, and its animation is addressed under `world.`. A multi-component
+track may be sparse: change flags sit before its values, and a component that did not change costs one flag. Reading such a
+key counts flags, so read them in key order.
+
+### Baked approximations and other image encodings
+
+A material lists bakes, and an image lists other encodings of itself, each with the settings or quality rule that made it.
+These live in value trees and point at ordinary images, so they need no new layout. ZPM ships no texture encoder, so nothing
+in the Blender plugin writes image variants yet.
 
 ### Meshes kept whole inside the scene file
 
@@ -441,13 +554,65 @@ renders, so this may overstate ZPM's part. A less extreme glossy surface and dir
 | Restarting neighbour prediction every 64 or 256 faces | Positions up to 3x larger | Restarts throw away too much |
 | Tighter face walks: buckets, depth first, greedy | Best on bunny only, 1.1x | Today's walk wins on 5 of 6 meshes |
 | Outlier patches on corner distances | Under 3% | Distances are large everywhere, not just a few |
+| Corners reaching back to an earlier corner, not a vertex | 10% to 30% larger on most of 6 meshes, equal at best | Far references still set each block's width |
+| Depth-first walk | Positions up to 1.1x smaller, corners larger | Only 4% on `stanford-bunny`, worse on others |
+| Plane fit per block for positions | Under 1.1% | Blocks span too much of the model |
+| Deltas inside a block for positions | 1% to 3% larger | Same reason |
+| Entropy coding every stream in blocks | 1.21x, still 2.05x larger than Draco, simulated | Slows every read for little; only connectivity earned it |
+| Predicting normals from their face's normal | 7% smaller at best, larger on others | Smooth normals are too far from the face |
+| Choosing face order by whole file size | Only `samurai` changed, by 1.4%, at three times the encode time | The estimate already picks the best of the three orders |
+| More face order candidates: other patch sizes and start orders | Best was 0.6% on `suzanne`, larger on the rest | The strip order is already best |
+| A cache of recent vertices for strips | 0 to 6%, about the same as a better distance code, and adds state | Most old vertices are not recent |
+| Linking a face to one before the last | Under 0.3% | Faces with no link rarely share an edge with a recent face |
+| Coding a no-link face's vertices relative to its first | 7% larger on those faces | Distances from the newest are already short |
+| Strip blocks of 768 corners | About 0.35%, no mesh changes sides | Random corner and edge reads 2x slower |
+| Whole-mesh adaptive coding, to chase Draco | Still 1.2x to 1.3x larger than Draco | Gives up every read in place |
+| Branch-free strip vertices | Whole reads about 1.3x slower | The branch predicts better than expected |
+| Smaller blocks with their own widths and bases | About 1% at best, often larger | The width reflects real variation, not outliers |
 | Merging exact duplicate vertices | 1.31x on samurai | Vertices must stay as Blender has them |
+
+## How far compression could go
+
+Measured 2026-11-02 on seven meshes, in bytes. Parallelogram prediction with each 384-corner block on its own, then ideal
+order-0 entropy per 1,024 values, with table costs estimated. That is optimistic for any real entropy coder.
+
+| Mesh | ZPM now | Positions, normals and UVs: now | With entropy | Draco |
+| --- | ---: | ---: | ---: | ---: |
+| BoomBox | 51,676 | 45,712 | 38,995 | 32,446 |
+| Avocado | 6,428 | 5,564 | 4,707 | 4,680 |
+| Duck | 31,476 | 26,990 | 25,871 | 23,536 |
+| DamagedHelmet | 178,768 | 168,490 | 146,958 | 98,931 |
+
+Parallelogram prediction with bit packing alone is larger than today's columns on most streams. Entropy coding would beat
+meshopt on these four, but it means decoding up to 1,024 values to read one, and it does not reach Draco on these once corners
+are added. None of this is built.
+
+A second test went further: whole-mesh decoding, averaged parallelogram prediction on welded positions, seam twins as flags,
+normals predicted from geometry and an adaptive binary coder, with corners in strip order. Exact model costs, in bytes:
+
+| Mesh | ZPM now | Whole mesh, adaptive | Blocks of 2,048 values, adaptive | Draco | Meshopt |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Avocado | 6,428 | 5,666 | 5,666 | 4,680 | 6,255 |
+| suzanne | 5,488 | 5,864 | 5,864 | 5,230 | 4,988 |
+| BoomBox | 51,676 | 41,091 | 44,678 | 32,446 | 51,417 |
+| Duck | 31,476 | 27,983 | 29,823 | 23,536 | 35,146 |
+| samurai | 19,312 | 17,898 | 18,701 | 13,705 | 36,377 |
+
+That still does not reach Draco, even after dropping every read in place. Draco's connectivity coding and UV prediction would
+close part of the gap, not obviously all of it, and the result would decode about as slowly as Draco. Not built.
+
+## Why ZPM does not beat Draco on size
+
+Measured on 20 meshes, at the same precision, ZPM is 1.84x larger. Simulating everything left: positions coded in blocks
+save about 13% of the total, normals and UVs about 8% more. That ends around 1.55x larger, with every vertex read then
+needing a block decode. Draco reaches its size by decoding the whole mesh in order, with an adaptive coder and
+predictions from anything already decoded. A format that reads any value alone gives that up by design.
 
 ## What we can and can't claim
 
 - **Can say:** on these 17 meshes, smaller than every earlier ZPM experiment on all but tiny meshes,
   with zero allocations when reading.
-- **Can't say:** smaller than Draco or meshopt, or faster at reading a whole mesh. It has been measured
+- **Can't say:** smaller than Draco, or faster than meshopt at reading a whole mesh. It has been measured
   and ZPM currently loses: see [the comparison](../benchmarks/format-compare/README.md). It wins on reading
   part of a mesh and on memory.
 - **Not new inventions:** the building blocks above are known. What's unusual is combining them in a

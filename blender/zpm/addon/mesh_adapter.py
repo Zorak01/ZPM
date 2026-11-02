@@ -102,6 +102,7 @@ _ATTRIBUTE_TYPES = {
         AttributeType.FLOAT32, 16, AttributeMeaning.MATRIX, "value", "f"
     ),
 }
+_STRING_ATTRIBUTE = "STRING"
 _TANGENT_METHOD = "MikkTSpace, Blender {version}"
 
 
@@ -191,7 +192,49 @@ def _capture_materials(mesh: bpy.types.Mesh) -> dict:
     }
 
 
-def _capture_attribute(attribute) -> Attribute:
+def _capture_string_attribute(attribute) -> Attribute:
+    known = {}
+    values = array("I")
+    for element in attribute.data:
+        text = element.value.decode("utf-8", "replace")
+        values.append(known.setdefault(text, len(known)))
+    return Attribute(
+        _DOMAINS[attribute.domain],
+        AttributeType.STRING,
+        1,
+        values,
+        strings=list(known),
+    )
+
+
+def attribute_buffer(data_type: str) -> tuple:
+    """Return the field and array type Blender's bulk API uses for an attribute type."""
+    stored = _ATTRIBUTE_TYPES[data_type]
+    return stored.field, stored.buffer_code
+
+
+def apply_attribute(attributes, name: str, attribute: Attribute) -> None:
+    """Fill a Blender attribute of this name, adding it if the data lacks it."""
+    domain = {value: key for key, value in _DOMAINS.items()}[attribute.domain]
+    if attribute.value_type == AttributeType.STRING:
+        new = attributes.get(name) or attributes.new(name, _STRING_ATTRIBUTE, domain)
+        for element, index in zip(new.data, attribute.values, strict=True):
+            element.value = attribute.strings[index].encode("utf-8")
+        return
+    key = (attribute.value_type, attribute.components, attribute.meaning)
+    data_type, stored = next(
+        (blender_type, stored)
+        for blender_type, stored in _ATTRIBUTE_TYPES.items()
+        if (stored.value_type, stored.components, stored.meaning) == key
+    )
+    new = attributes.get(name) or attributes.new(name, data_type, domain)
+    new.data.foreach_set(stored.field, array(stored.buffer_code, attribute.values))
+
+
+def capture_attribute(attribute, *, keep_domain: bool = True) -> Attribute:
+    """Copy one attribute. keep_domain is False for a domain a mesh does not have."""
+    if attribute.data_type == _STRING_ATTRIBUTE:
+        return _capture_string_attribute(attribute)
     if attribute.data_type not in _ATTRIBUTE_TYPES:
         raise FormatError(
             f"Attribute {attribute.name} has a type ZPM cannot store yet: "
@@ -208,7 +251,7 @@ def _capture_attribute(attribute) -> Attribute:
         else array(typecode, buffer)
     )
     return Attribute(
-        _DOMAINS[attribute.domain],
+        _DOMAINS[attribute.domain] if keep_domain else AttributeDomain.MESH,
         stored.value_type,
         stored.components,
         values,
@@ -221,7 +264,7 @@ def _capture_attributes(mesh: bpy.types.Mesh) -> dict:
     taken = _STORED_ATTRIBUTES | {layer.name for layer in mesh.uv_layers}
     taken |= {layer.name for layer in mesh.color_attributes}
     return {
-        attribute.name: _capture_attribute(attribute)
+        attribute.name: capture_attribute(attribute)
         for attribute in mesh.attributes
         if attribute.name not in taken
         and not attribute.name.startswith((_ZPM_NAME_PREFIX, _HIDDEN_NAME_PREFIX))
@@ -382,17 +425,8 @@ def _apply_materials(mesh: Mesh, result: bpy.types.Mesh) -> None:
 
 
 def _apply_attributes(mesh: Mesh, result: bpy.types.Mesh) -> None:
-    by_format = {
-        (stored.value_type, stored.components, stored.meaning): (name, stored)
-        for name, stored in _ATTRIBUTE_TYPES.items()
-    }
-    domains = {domain: name for name, domain in _DOMAINS.items()}
     for name, attribute in mesh.attributes.items():
-        data_type, stored = by_format[
-            (attribute.value_type, attribute.components, attribute.meaning)
-        ]
-        new = result.attributes.new(name, data_type, domains[attribute.domain])
-        new.data.foreach_set(stored.field, array(stored.buffer_code, attribute.values))
+        apply_attribute(result.attributes, name, attribute)
 
 
 def _validate_attributes_fit(mesh: Mesh) -> None:
@@ -402,7 +436,10 @@ def _validate_attributes_fit(mesh: Mesh) -> None:
     }
     for name, attribute in mesh.attributes.items():
         key = (attribute.value_type, attribute.components, attribute.meaning)
-        if attribute.domain == AttributeDomain.MESH or key not in known:
+        is_string = attribute.value_type == AttributeType.STRING
+        if attribute.domain == AttributeDomain.MESH or (
+            key not in known and not (is_string and attribute.components == 1)
+        ):
             raise FormatError(f"Blender has no attribute like {name}")
 
 

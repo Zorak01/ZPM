@@ -12,6 +12,7 @@ from ..format import (
     Armature,
     Bone,
     Camera,
+    Clip,
     Collection,
     Curve,
     FormatError,
@@ -24,12 +25,14 @@ from ..format import (
     SceneSpace,
     SpaceAxis,
     Spline,
+    Track,
 )
 from ..format.container.layout import (
     NO_INDEX,
     AreaShape,
     HandleType,
     InheritScale,
+    KeyMode,
     LightType,
     LightUnit,
     ObjectFlags,
@@ -40,8 +43,15 @@ from ..format.container.layout import (
     SkinFlags,
     SplineFlags,
     SplineType,
+    TrackValue,
 )
-from . import animation_adapter, material_adapter, mesh_adapter, rna_values
+from . import (
+    animation_adapter,
+    material_adapter,
+    mesh_adapter,
+    point_data_adapter,
+    rna_values,
+)
 
 _AXIS_NAMES = {
     SpaceAxis.X: "X",
@@ -128,6 +138,24 @@ _LATTICE_POINT_AXES = 3
 _ROTATION_MODES = {mode.name: mode for mode in RotationMode}
 _LIGHT_TYPES = {kind.name: kind for kind in LightType}
 _AREA_SHAPES = {shape.name: shape for shape in AreaShape}
+_MESH_MAKING_TYPES = {"FONT", "SURFACE", "META"}
+_TOPOLOGY_MODIFIERS = {
+    "BOOLEAN",
+    "BUILD",
+    "DECIMATE",
+    "EXPLODE",
+    "FLUID",
+    "MESH_SEQUENCE_CACHE",
+    "NODES",
+    "OCEAN",
+    "REMESH",
+}
+_TOPOLOGY_CLIP = "Topology"
+_DATA_PATH = "data"
+_MADE_MESH_PREFIX = "\0"
+_SOURCE_TYPE_PROPERTY = "source_object_type"
+_SOURCE_SETTINGS_PROPERTY = "source_settings"
+_WORLD_SETTING = "world"
 _ARMATURE_MODIFIER = "ARMATURE"
 _BONE_PARENT = "BONE"
 _SKIN_MODIFIER_NAME = "Armature"
@@ -440,6 +468,8 @@ class _SceneCapture:
         self._objects = objects
         self._object_index = {obj.name: at for at, obj in enumerate(objects)}
         self._materials = material_adapter.MaterialCapture(embed_textures)
+        self._embed_files = embed_textures
+        self._volume_files = {}
         self._meshes = {}
         self._lights = {}
         self._armatures = {}
@@ -463,6 +493,24 @@ class _SceneCapture:
                 self._meshes,
                 (obj.data.name, groups),
                 lambda: self._capture_mesh(obj),
+            )
+        if obj.type in _MESH_MAKING_TYPES:
+            return self._shared(
+                self._meshes,
+                (_MADE_MESH_PREFIX + obj.data.name, ()),
+                lambda: self._capture_made_mesh(obj),
+            )
+        if obj.type in point_data_adapter.POINT_DATA_TYPES:
+            self._materials.add_mesh_slots(obj.data)
+            make = (
+                point_data_adapter.capture_point_cloud
+                if obj.type == point_data_adapter.POINT_CLOUD
+                else point_data_adapter.capture_hair
+            )
+            return self._shared(
+                self._meshes,
+                (_MADE_MESH_PREFIX + obj.data.name, ()),
+                lambda: make(obj.data, self._object_index),
             )
         if obj.type == "LIGHT":
             return self._shared(
@@ -497,6 +545,20 @@ class _SceneCapture:
             )
         return mesh
 
+    def _capture_made_mesh(self, obj: bpy.types.Object):
+        made = obj.to_mesh()
+        try:
+            self._materials.add_mesh_slots(made)
+            mesh = mesh_adapter.capture_mesh(made)
+        finally:
+            obj.to_mesh_clear()
+        mesh.properties = {
+            **rna_values.capture_properties(obj.data),
+            _SOURCE_TYPE_PROPERTY: obj.type,
+            _SOURCE_SETTINGS_PROPERTY: rna_values.capture_rna(obj.data, {}),
+        }
+        return mesh
+
     def _capture_skin(self, obj: bpy.types.Object, result: SceneObject) -> None:
         for modifier in obj.modifiers:
             if modifier.type != _ARMATURE_MODIFIER or modifier.object is None:
@@ -528,7 +590,9 @@ class _SceneCapture:
             flags |= ObjectFlags.NOT_SELECTABLE
         result = SceneObject(
             obj.name,
-            _OBJECT_TYPES.get(obj.type, ObjectType.EMPTY),
+            ObjectType.MESH
+            if obj.type in _MESH_MAKING_TYPES | point_data_adapter.POINT_DATA_TYPES
+            else _OBJECT_TYPES.get(obj.type, ObjectType.EMPTY),
             self._data_index(obj),
             self._object_index.get(obj.parent.name, NO_INDEX)
             if obj.parent
@@ -562,6 +626,14 @@ class _SceneCapture:
             result.bone_settings = _capture_bone_settings(
                 obj, bones, self._object_index
             )
+        if obj.type in point_data_adapter.SETTINGS_DATA_TYPES:
+            result.settings[point_data_adapter.SOURCE_DATA_SETTING] = (
+                point_data_adapter.capture_settings_data(obj.data, obj.type)
+            )
+            if obj.type == point_data_adapter.VOLUME and self._embed_files:
+                file = point_data_adapter.capture_volume_file(obj.data)
+                if file is not None:
+                    self._volume_files[file.name] = file
         self._capture_skin(obj, result)
         result.properties = rna_values.capture_properties(obj)
         result.modifiers = _capture_stack(obj.modifiers, self._object_index)
@@ -575,9 +647,9 @@ class _SceneCapture:
         for index, obj in enumerate(self._objects):
             capture.add(obj, ResourceKind.OBJECT, index)
         for (name, _), (_, index) in self._meshes.items():
-            keys = bpy.data.meshes[name].shape_keys
-            if keys is not None:
-                capture.add(keys, ResourceKind.MESH, index)
+            block = bpy.data.meshes.get(name)
+            if block is not None and block.shape_keys is not None:
+                capture.add(block.shape_keys, ResourceKind.MESH, index)
         tables = (
             (self._lights, bpy.data.lights, ResourceKind.LIGHT),
             (self._cameras, bpy.data.cameras, ResourceKind.CAMERA),
@@ -598,7 +670,93 @@ class _SceneCapture:
                     index,
                     animation_adapter.NODE_TREE_PREFIX,
                 )
-        return capture.clips
+        world = self._scene.world
+        if world is not None:
+            capture.add(world, ResourceKind.SCENE, 0, animation_adapter.WORLD_PREFIX)
+            if world.node_tree is not None:
+                capture.add(
+                    world.node_tree,
+                    ResourceKind.SCENE,
+                    0,
+                    animation_adapter.WORLD_PREFIX + animation_adapter.NODE_TREE_PREFIX,
+                )
+        return [*capture.clips, *self._capture_topology(fps)]
+
+    def _capture_topology(self, frames_per_second: float) -> list:
+        """Return a clip swapping meshes wherever a modifier changes vertex counts.
+
+        Walks the scene's frames, only for objects with a modifier that can do that.
+        """
+        scene = self._scene
+        changing = [
+            (index, obj)
+            for index, obj in enumerate(self._objects)
+            if obj.type == "MESH"
+            and any(item.type in _TOPOLOGY_MODIFIERS for item in obj.modifiers)
+        ]
+        if not changing:
+            return []
+        current = scene.frame_current
+        tracks = []
+        try:
+            for index, obj in changing:
+                track = self._capture_mesh_swaps(index, obj)
+                if len(track.times) > 1:
+                    tracks.append(track)
+        finally:
+            scene.frame_set(current)
+        if not tracks:
+            return []
+        return [
+            Clip(
+                _TOPOLOGY_CLIP,
+                frames_per_second,
+                scene.frame_start,
+                scene.frame_end,
+                tracks,
+            )
+        ]
+
+    def _capture_mesh_swaps(self, index: int, obj) -> Track:
+        times, values = [], []
+        previous = None
+        for frame in range(self._scene.frame_start, self._scene.frame_end + 1):
+            self._scene.frame_set(frame)
+            evaluated = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+            made = evaluated.to_mesh()
+            try:
+                counts = (len(made.vertices), len(made.polygons), len(made.loops))
+                if counts != previous:
+                    previous = counts
+                    key = (f"{_MADE_MESH_PREFIX}{frame}:{obj.name}", ())
+                    times.append(float(frame))
+                    values.append(len(self._meshes))
+                    self._meshes[key] = (mesh_adapter.capture_mesh(made), values[-1])
+            finally:
+                evaluated.to_mesh_clear()
+        return Track(
+            ResourceKind.OBJECT,
+            index,
+            _DATA_PATH,
+            times,
+            values,
+            value_type=TrackValue.REFERENCE,
+            target_kind=ResourceKind.MESH,
+            key_modes=[KeyMode.CONSTANT] * len(times),
+        )
+
+    def _capture_resource_drivers(self) -> None:
+        for material in self._materials.materials:
+            block = bpy.data.materials[material.name]
+            material.drivers = rna_values.capture_drivers(block, self._object_index)
+            if block.node_tree is not None:
+                material.node_drivers = rna_values.capture_drivers(
+                    block.node_tree, self._object_index
+                )
+        for name, (light, _) in self._lights.items():
+            light.drivers = rna_values.capture_drivers(
+                bpy.data.lights[name], self._object_index
+            )
 
     def _collection_index(self, collection, parent: int = NO_INDEX) -> int:
         if collection.name in self._collections:
@@ -626,6 +784,9 @@ class _SceneCapture:
         for child in self._scene.collection.children:
             self._collection_index(child)
         objects = [self._capture_object(obj) for obj in self._objects]
+        settings = self._capture_scene_settings()
+        self._capture_resource_drivers()
+        clips = self._capture_animation()
         return Scene(
             SceneSpace(meters_per_unit=_meters_per_unit(self._scene)),
             [mesh for mesh, _ in self._meshes.values()],
@@ -639,10 +800,10 @@ class _SceneCapture:
             [curve for curve, _ in self._curves.values()],
             [lattice for lattice, _ in self._lattices.values()],
             [camera for camera, _ in self._cameras.values()],
-            self._capture_animation(),
-            self._materials.extensions,
+            clips,
+            [*self._materials.extensions, *self._volume_files.values()],
             rna_values.capture_properties(self._scene),
-            self._capture_scene_settings(),
+            settings,
         )
 
     def _capture_scene_settings(self) -> dict:
@@ -654,13 +815,29 @@ class _SceneCapture:
         }
         if scene.camera is not None and scene.camera.name in self._object_index:
             settings["camera"] = Reference(self._object_index[scene.camera.name])
+        if scene.world is not None:
+            self._materials.add_world(scene.world)
+            settings[_WORLD_SETTING] = {
+                "name": scene.world.name,
+                "settings": rna_values.capture_rna(scene.world, {}),
+                "drivers": rna_values.capture_drivers(scene.world, self._object_index),
+            }
+            if scene.world.node_tree is not None:
+                settings[_WORLD_SETTING]["node_drivers"] = rna_values.capture_drivers(
+                    scene.world.node_tree, self._object_index
+                )
         return settings
 
 
 def capture_scene(
     scene: bpy.types.Scene, objects: list, *, embed_textures: bool = False
 ) -> Scene:
-    """Copy these objects and what they use. Other object types become empties."""
+    """Copy these objects and what they use.
+
+    Text, surfaces and metaballs become the meshes they make, keeping their settings as
+    properties. Point clouds and hair are stored as meshes of points and wires. Volumes,
+    speakers and light probes keep their settings. Grease pencil becomes an empty.
+    """
     return _SceneCapture(scene, objects, embed_textures).capture()
 
 
@@ -768,6 +945,7 @@ class _SceneBuilder:
     def _create_meshes(self) -> list:
         source = self._source
         images = [self._keep(i) for i in material_adapter.create_images(source.images)]
+        self._images = images
         graphs = material_adapter.read_graphs(source.extensions)
         materials = {
             m.name: self._keep(
@@ -784,12 +962,23 @@ class _SceneBuilder:
                 if o.data == index and o.object_type == ObjectType.MESH
             ]
             name = names[0] if names else f"Mesh {index}"
+            kind = mesh.properties.get(point_data_adapter.SOURCE_TYPE_PROPERTY)
+            if kind in point_data_adapter.POINT_DATA_TYPES:
+                created = self._keep(point_data_adapter.create_point_data(mesh, name))
+                rna_values.apply_properties(
+                    created, point_data_adapter.plain_properties(mesh)
+                )
+                for slot in mesh.material_slots:
+                    created.materials.append(materials.get(slot))
+                meshes.append(created)
+                continue
             created = self._keep(mesh_adapter.create_mesh(mesh, name=name))
             rna_values.apply_properties(created, mesh.properties)
             for at, slot in enumerate(mesh.material_slots):
                 if slot in materials:
                     created.materials[at] = materials[slot]
             meshes.append(created)
+        self._mesh_blocks = meshes
         return meshes
 
     def _link_parents(self, objects: list) -> None:
@@ -834,6 +1023,46 @@ class _SceneBuilder:
                     _apply_constraints(pose_bone, stored["constraints"], objects)
             rna_values.apply_drivers(obj, item.drivers, objects)
         self._apply_shape_key_drivers(objects)
+        for material, stored in zip(self._materials, source.materials, strict=True):
+            rna_values.apply_drivers(material, stored.drivers, objects)
+            if material.node_tree is not None:
+                rna_values.apply_drivers(
+                    material.node_tree, stored.node_drivers, objects
+                )
+        self._apply_world_drivers(objects)
+        for block, mesh in zip(self._mesh_blocks, source.meshes, strict=True):
+            stored = mesh.properties.get(point_data_adapter.SOURCE_SETTINGS_PROPERTY)
+            if stored is not None and not isinstance(block, bpy.types.Mesh):
+                rna_values.apply_rna(block, stored, objects)
+        for light, stored in zip(self._lights, source.lights, strict=True):
+            rna_values.apply_drivers(light, stored.drivers, objects)
+
+    def _apply_world_drivers(self, objects: list) -> None:
+        stored = self._source.settings.get(_WORLD_SETTING)
+        if stored is None or self._world is None:
+            return
+        rna_values.apply_drivers(self._world, stored.get("drivers", []), objects)
+        if self._world.node_tree is not None:
+            rna_values.apply_drivers(
+                self._world.node_tree, stored.get("node_drivers", []), objects
+            )
+
+    def _create_world(self):
+        """Make the file's world. The scene takes it only if it has none."""
+        stored = self._source.settings.get(_WORLD_SETTING)
+        if stored is None:
+            return None
+        world = self._keep(
+            material_adapter.create_world(
+                stored["name"],
+                stored["settings"],
+                self._images,
+                material_adapter.read_graphs(self._source.extensions),
+            )
+        )
+        if self._context.scene.world is None:
+            self._context.scene.world = world
+        return world
 
     def _apply_shape_key_drivers(self, objects: list) -> None:
         source = self._source
@@ -846,7 +1075,7 @@ class _SceneBuilder:
                 ),
                 None,
             )
-            if owner is not None and owner.data.shape_keys is not None:
+            if owner is not None and getattr(owner.data, "shape_keys", None):
                 rna_values.apply_drivers(owner.data.shape_keys, mesh.drivers, objects)
 
     def _link_skins_and_poses(self, objects: list) -> None:
@@ -902,6 +1131,9 @@ class _SceneBuilder:
         source = self._source
         meshes = self._create_meshes()
         lights = [self._keep(_create_light(light)) for light in source.lights]
+        self._lights = lights
+        world = self._create_world()
+        self._world = world
         armatures = [
             self._keep(bpy.data.armatures.new(a.name)) for a in source.armatures
         ]
@@ -926,7 +1158,14 @@ class _SceneBuilder:
         }
         objects = []
         for item in source.objects:
-            data = self._object_data(item, tables)
+            stored = item.settings.get(point_data_adapter.SOURCE_DATA_SETTING)
+            data = (
+                self._keep(
+                    point_data_adapter.create_settings_data(stored, source.extensions)
+                )
+                if stored is not None
+                else self._object_data(item, tables)
+            )
             obj = self._keep(bpy.data.objects.new(item.name, data))
             self._place(item, obj)
             objects.append(obj)
@@ -943,7 +1182,7 @@ class _SceneBuilder:
             if owner is not None:
                 _create_armature_bones(armatures[index], armature, owner)
         for item, obj in zip(source.objects, objects, strict=True):
-            if item.object_type == ObjectType.MESH and item.data != NO_INDEX:
+            if obj.type == "MESH" and item.data != NO_INDEX:
                 mesh = source.meshes[item.data]
                 mesh_adapter.apply_vertex_groups(mesh, obj)
                 if obj.data.shape_keys is None:
@@ -956,8 +1195,9 @@ class _SceneBuilder:
         self._apply_object_settings(objects)
         self._link_skins_and_poses(objects)
         owners = {
+            ResourceKind.SCENE: [world],
             ResourceKind.OBJECT: objects,
-            ResourceKind.MESH: [mesh.shape_keys for mesh in meshes],
+            ResourceKind.MESH: [getattr(mesh, "shape_keys", None) for mesh in meshes],
             ResourceKind.MATERIAL: self._materials,
             ResourceKind.LIGHT: lights,
             ResourceKind.CAMERA: cameras,
@@ -971,6 +1211,7 @@ class _SceneBuilder:
             self._created,
         )
         rna_values.apply_properties(self._context.scene, source.properties)
+        self._apply_frames()
         camera = source.settings.get("camera")
         if camera is not None and self._context.scene.camera is None:
             self._context.scene.camera = objects[camera.index]
@@ -981,6 +1222,12 @@ class _SceneBuilder:
         ]
         _apply_space(source, roots, self._context.scene)
         return objects
+
+    def _apply_frames(self) -> None:
+        scene = self._context.scene
+        for name in ("frame_start", "frame_end", "frame_current"):
+            if name in self._source.settings:
+                setattr(scene, name, self._source.settings[name])
 
     def remove_all(self) -> None:
         bpy.data.batch_remove(self._created)

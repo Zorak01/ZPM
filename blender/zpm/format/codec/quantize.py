@@ -51,7 +51,7 @@ def decode_normal(a: int, b: int) -> tuple:
 
 
 def encode_uv(value: float) -> int:
-    """Return a UV coordinate on a grid of 1 / 2^20. Non-finite values become 0."""
+    """Return a UV coordinate on a grid of 1 / 2^16. Non-finite values become 0."""
     if not math.isfinite(value):
         return 0
     return max(-_INT32_MAX, min(_INT32_MAX, round(value * _UV_SCALE)))

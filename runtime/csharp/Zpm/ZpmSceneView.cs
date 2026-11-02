@@ -111,7 +111,9 @@ public unsafe struct ZpmSceneView
             || Unsafe.ReadUnaligned<ulong>(data + 8) != (ulong)length)
             return false;
         uint sections = Unsafe.ReadUnaligned<ushort>(data + 6);
-        long directoryEnd = ZpmLayout.FileHeaderBytes + (long)sections * ZpmLayout.DirectoryEntryBytes;
+        bool isWide = length > uint.MaxValue;
+        int entryBytes = isWide ? ZpmLayout.WideDirectoryEntryBytes : ZpmLayout.DirectoryEntryBytes;
+        long directoryEnd = ZpmLayout.FileHeaderBytes + (long)sections * entryBytes;
         long limit = length - ZpmLayout.TailBytes;
         if (directoryEnd > limit)
             return false;
@@ -121,10 +123,10 @@ public unsafe struct ZpmSceneView
         int previousKind = 0;
         for (uint i = 0; i < sections; i++)
         {
-            byte* entry = data + ZpmLayout.FileHeaderBytes + i * ZpmLayout.DirectoryEntryBytes;
+            byte* entry = data + ZpmLayout.FileHeaderBytes + i * entryBytes;
             int kind = Unsafe.ReadUnaligned<ushort>(entry);
-            long offset = (long)Unsafe.ReadUnaligned<ulong>(entry + 4);
-            long end = i + 1 < sections ? (long)Unsafe.ReadUnaligned<ulong>(entry + ZpmLayout.DirectoryEntryBytes + 4) : limit;
+            long offset = ReadSectionOffset(entry, isWide);
+            long end = i + 1 < sections ? ReadSectionOffset(entry + entryBytes, isWide) : limit;
             if (kind <= previousKind || offset != previous || (offset & 3) != 0 || end < offset || end > limit)
                 return false;
             if (!view.TryBindSection((ZpmSectionKind)kind, (ZpmSectionFlags)entry[2], data + offset, end - offset))
@@ -134,6 +136,9 @@ public unsafe struct ZpmSceneView
         }
         return previous == limit && view._meshStarts.count != 0;
     }
+
+    static long ReadSectionOffset(byte* entry, bool isWide) =>
+        isWide ? (long)Unsafe.ReadUnaligned<ulong>(entry + 4) : Unsafe.ReadUnaligned<uint>(entry + 4);
 
     bool TryBindSection(ZpmSectionKind kind, ZpmSectionFlags flags, byte* section, long length)
     {

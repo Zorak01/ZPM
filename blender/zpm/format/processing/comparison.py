@@ -134,7 +134,7 @@ def _key(mesh: Mesh, compare_normals: bool) -> tuple:
             corner += 1
         faces.append(
             (
-                tuple(rows),
+                min(tuple(rows[at:] + rows[:at]) for at in range(len(rows))),
                 _group(mesh.flat_faces, index, 1),
                 _at(face_rows, index),
                 mesh.material_slots[mesh.face_materials[index]]
@@ -180,7 +180,8 @@ def _key(mesh: Mesh, compare_normals: bool) -> tuple:
 def same_geometry(first: Mesh, second: Mesh, *, compare_normals: bool = True) -> bool:
     """Return whether two meshes hold the same data in any order.
 
-    Compares points, faces with their winding and first corner, edges and all surface
+    Compares points, faces with their winding, from any starting corner, edges and all
+    surface
     data. Pass compare_normals=False when one side recalculated normals and tangents.
     Walks the whole mesh.
     """

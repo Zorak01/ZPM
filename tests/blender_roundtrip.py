@@ -511,6 +511,154 @@ def check_attributes_and_shape_keys(directory):
     print("PASS: custom attributes, shape keys and units")
 
 
+def check_nothing_is_lost(directory):
+    """String attributes, text, surfaces, the world and resource drivers survive."""
+    bpy.ops.object.select_all(action="DESELECT")
+    bpy.ops.surface.primitive_nurbs_surface_surface_add()
+    surface = bpy.context.active_object
+    surface.name = "Patch"
+    bpy.ops.mesh.primitive_cube_add()
+    cube = bpy.context.active_object
+    surface.select_set(True)
+    labels = cube.data.attributes.new("label", "STRING", "POINT")
+    labels.data[2].value = b"corner"
+    cube.select_set(True)
+
+    text_data = bpy.data.curves.new("Sign", "FONT")
+    text_data.body = "ZPM"
+    text = bpy.data.objects.new("Sign", text_data)
+    bpy.context.collection.objects.link(text)
+    text.select_set(True)
+
+    material = bpy.data.materials.new("Driven")
+    material.use_nodes = True
+    curve = material.driver_add("roughness")
+    curve.driver.expression = "0.25"
+    cube.data.materials.append(material)
+    light_data = bpy.data.lights.new("Lamp", "POINT")
+    curve = light_data.driver_add("energy")
+    curve.driver.expression = "42"
+    lamp = bpy.data.objects.new("Lamp", light_data)
+    bpy.context.collection.objects.link(lamp)
+    lamp.select_set(True)
+
+    world = bpy.data.worlds.new("Sky")
+    world.use_nodes = True
+    world.node_tree.nodes["Background"].inputs[1].default_value = 3.5
+    world.node_tree.nodes["Background"].inputs[1].keyframe_insert(
+        "default_value", frame=1
+    )
+    earlier_world = bpy.context.scene.world
+    bpy.context.scene.world = world
+
+    path = str(Path(directory) / "nothing_lost.zpm")
+    assert bpy.ops.export_mesh.zpm(filepath=path) == {"FINISHED"}
+    stored = load(path)
+    by_name = {item.name: item for item in stored.objects}
+    made = stored.meshes[by_name["Sign"].data]
+    assert made.face_count > 0, "Text must become its mesh"
+    assert made.properties["source_settings"]["body"] == "ZPM"
+    assert stored.meshes[by_name["Patch"].data].face_count > 0
+    assert stored.settings["world"]["name"] == "Sky"
+    assert any(
+        track.path.startswith("world.")
+        for clip in stored.clips
+        for track in clip.tracks
+    )
+
+    bpy.context.scene.world = None
+    before = set(bpy.data.objects.keys())
+    assert bpy.ops.import_mesh.zpm(filepath=path) == {"FINISHED"}
+    imported = {
+        bpy.data.objects[name] for name in set(bpy.data.objects.keys()) - before
+    }
+    assert bpy.context.scene.world.name.startswith("Sky")
+    assert bpy.context.scene.world is not world
+    node = bpy.context.scene.world.node_tree.nodes["Background"]
+    assert abs(node.inputs[1].default_value - 3.5) < 1e-5
+    assert bpy.context.scene.world.node_tree.animation_data.action is not None
+    cubes = [o for o in imported if o.type == "MESH" and "label" in o.data.attributes]
+    assert cubes, "The string attribute must come back"
+    assert {e.value for e in cubes[0].data.attributes["label"].data} >= {b"corner", b""}
+    drives = cubes[0].data.materials[0].animation_data.drivers
+    assert drives[0].driver.expression == "0.25"
+    lamps = [o for o in imported if o.type == "LIGHT"]
+    assert lamps[0].data.animation_data.drivers[0].driver.expression == "42"
+    bpy.context.scene.world = earlier_world
+    print("PASS: string attributes, text, surfaces, world and resource drivers")
+
+
+def check_points_hair_volumes_and_topology(directory):
+    """Point clouds, hair, volumes, node drivers and changing topology survive."""
+    bpy.ops.object.select_all(action="DESELECT")
+    cloud_data = bpy.data.pointclouds.new("Cloud")
+    cloud_data.resize(4)
+    cloud_data.points[1].co = (1, 2, 3)
+    cloud_data.points[1].radius = 0.5
+    cloud = bpy.data.objects.new("Cloud", cloud_data)
+    hair_data = bpy.data.hair_curves.new("Hair")
+    hair_data.add_curves([3, 2])
+    hair_data.points[1].position = (1, 1, 1)
+    hair_data.attributes.new("strand", "FLOAT", "CURVE").data[1].value = 0.75
+    hair = bpy.data.objects.new("Hair", hair_data)
+    fog_data = bpy.data.volumes.new("Fog")
+    fog_data.filepath = "//missing.vdb"
+    fog_data.display.density = 0.25
+    fog = bpy.data.objects.new("Fog", fog_data)
+    speaker = bpy.data.objects.new("Horn", bpy.data.speakers.new("Horn"))
+    bpy.ops.mesh.primitive_cube_add()
+    growing = bpy.context.active_object
+    growing.name = "Growing"
+    growing.modifiers.new("Build", "BUILD").frame_duration = 3
+    material = bpy.data.materials.new("NodeDriven")
+    material.use_nodes = True
+    node = material.node_tree.nodes["Principled BSDF"]
+    curve = node.inputs["Metallic"].driver_add("default_value")
+    curve.driver.expression = "0.5"
+    growing.data.materials.append(material)
+    scene = bpy.context.scene
+    frames = (scene.frame_start, scene.frame_end)
+    scene.frame_start, scene.frame_end = 1, 5
+    for obj in (cloud, hair, fog, speaker):
+        bpy.context.collection.objects.link(obj)
+    bpy.ops.object.select_all(action="DESELECT")
+    for obj in (cloud, hair, fog, speaker, growing):
+        obj.select_set(True)
+    path = str(Path(directory) / "points.zpm")
+    assert bpy.ops.export_mesh.zpm(filepath=path) == {"FINISHED"}
+    assert scene.frame_current == 1
+    stored = load(path)
+    by_name = {item.name: item for item in stored.objects}
+    points = stored.meshes[by_name["Cloud"].data]
+    assert points.vertex_count == 4 and points.face_count == 0
+    wires = stored.meshes[by_name["Hair"].data]
+    assert wires.edge_count == 3, "Hair is stored as wires any reader can use"
+    swaps = [t for c in stored.clips for t in c.tracks if t.path == "data"]
+    assert len(swaps) == 1 and len(swaps[0].times) > 1, "Topology must be captured"
+    assert stored.materials[0].node_drivers[0]["expression"] == "0.5"
+
+    before = set(bpy.data.objects.keys())
+    assert bpy.ops.import_mesh.zpm(filepath=path) == {"FINISHED"}
+    made = {
+        bpy.data.objects[n].type: bpy.data.objects[n]
+        for n in set(bpy.data.objects.keys()) - before
+    }
+    assert len(made["POINTCLOUD"].data.points) == 4
+    assert abs(made["POINTCLOUD"].data.points[1].radius - 0.5) < 1e-6
+    assert [c.points_length for c in made["CURVES"].data.curves] == [3, 2]
+    strand = made["CURVES"].data.attributes["strand"].data[1].value
+    assert abs(strand - 0.75) < 1e-6
+    assert abs(made["CURVES"].data.points[1].position[0] - 1) < 1e-4
+    assert abs(made["VOLUME"].data.display.density - 0.25) < 1e-6
+    assert made["VOLUME"].data.filepath == "//missing.vdb"
+    assert "SPEAKER" in made
+    assert made["MESH"].modifiers["Build"].frame_duration == 3
+    tree = made["MESH"].data.materials[0].node_tree
+    assert tree.animation_data.drivers[0].driver.expression == "0.5"
+    scene.frame_start, scene.frame_end = frames
+    print("PASS: point clouds, hair, volumes, speakers, node drivers and topology")
+
+
 def check_holes_are_refused():
     """Blender has no faces with holes, so importing one fails, changing nothing."""
     square = [(0, 0, 0), (4, 0, 0), (4, 4, 0), (0, 4, 0)]
@@ -592,6 +740,8 @@ def run():
         check_attributes_and_shape_keys(directory)
         check_holes_are_refused()
         check_whole_scene(directory)
+        check_nothing_is_lost(directory)
+        check_points_hair_volumes_and_topology(directory)
         check_failed_import_leaves_nothing(directory)
         geometry = mesh_adapter.capture_mesh(source)
         geometry.corners[0] = geometry.vertex_count + 1

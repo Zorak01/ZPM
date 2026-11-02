@@ -13,25 +13,32 @@ namespace Zpm;
 /// </summary>
 public unsafe struct ZpmColumn
 {
-    const int CountBytes = 4;
+    const int HeadBytes = 10;
+    const int WidthFloorOffset = 8;
+    const int BaseBitsOffset = 9;
+    const uint WidthNibbleMask = 15;
+    const int GroupWidthBytesShift = 3;
+    const ulong EveryOtherNibble = 0x0F0F0F0F0F0F0F0FUL;
+    const ulong SumNibbleBytes = 0x0101010101010101UL;
+    const int TopByteShift = 56;
     const int BlockSize = 64;
     const int BlockShift = 6;
     const uint BlockMask = 63;
-    const int GroupShift = 3;
-    const uint GroupMask = 7;
+    const int GroupShift = 4;
+    const uint GroupMask = 15;
     const int BitsPerByteShift = 3;
     const uint BitMask = 7;
     const int MaxWidth = 32;
-    const ulong SumBytes = 0x0101010101010101UL;
     const uint WideValues = 8;
     const uint MaxWideWidth = 27;
 
-    uint* _bases;
+    byte* _bases;
     sbyte* _slopes;
     byte* _widths;
-    uint* _groups;
+    byte* _groups;
     byte* _payload;
-    uint _count;
+    ulong _baseMask;
+    uint _count, _lowestBase, _baseBits, _widthFloor, _groupBytes, _groupMask;
 
     /// <summary>How many values the column holds.</summary>
     public readonly uint count => _count;
@@ -41,20 +48,31 @@ public unsafe struct ZpmColumn
     /// <summary>Points at a column section. Touches only its count until validated.</summary>
     public static ZpmColumn Bind(byte* section, ZpmSectionFlags flags)
     {
-        var column = new ZpmColumn { _count = Unsafe.ReadUnaligned<uint>(section) };
+        var column = new ZpmColumn
+        {
+            _count = Unsafe.ReadUnaligned<uint>(section),
+            _lowestBase = Unsafe.ReadUnaligned<uint>(section + 4),
+            _widthFloor = section[WidthFloorOffset],
+            _baseBits = section[BaseBitsOffset],
+        };
+        column._baseMask = (1UL << (int)column._baseBits) - 1;
+        bool hasShortGroups = (flags & ZpmSectionFlags.ShortGroups) != 0;
+        column._groupBytes = hasShortGroups ? 2u : 4u;
+        column._groupMask = hasShortGroups ? ushort.MaxValue : uint.MaxValue;
         uint blocks = column.blockCount;
-        ulong offset = CountBytes;
-        column._bases = (uint*)(section + offset);
-        offset += (ulong)blocks * 4;
+        ulong offset = HeadBytes;
+        column._bases = section + offset;
+        offset += ((ulong)blocks * column._baseBits + BitMask) >> BitsPerByteShift;
         if ((flags & ZpmSectionFlags.HasSlopes) != 0)
         {
             column._slopes = (sbyte*)(section + offset);
             offset += blocks;
         }
         column._widths = section + offset;
-        offset = (offset + blocks + 3) & ~3UL;
-        column._groups = (uint*)(section + offset);
-        offset += (((ulong)blocks + GroupMask) >> GroupShift) * 4;
+        offset = (offset + (((ulong)blocks + 1) >> 1) + 3) & ~3UL;
+        column._groups = section + offset;
+        // The first group always starts at zero, so it is not stored.
+        offset += (((Math.Max((ulong)blocks, 1) - 1) >> GroupShift) * column._groupBytes + 3) & ~3UL;
         column._payload = section + offset;
         return column;
     }
@@ -63,11 +81,32 @@ public unsafe struct ZpmColumn
     readonly uint GetBlockOffset(uint block)
     {
         uint group = block >> GroupShift;
-        ulong widths = Unsafe.ReadUnaligned<ulong>(_widths + (group << GroupShift));
-        ulong before = widths & ((1UL << (int)((block & GroupMask) << BitsPerByteShift)) - 1);
+        uint position = block & GroupMask;
+        ulong widths = Unsafe.ReadUnaligned<ulong>(_widths + (group << GroupWidthBytesShift));
+        ulong before = widths & ((1UL << (int)(position << 2)) - 1);
+        ulong pairs = (before & EveryOtherNibble) + ((before >> 4) & EveryOtherNibble);
+        uint rises = (uint)((pairs * SumNibbleBytes) >> TopByteShift);
         // A full block holds 64 values, so its payload is exactly width * 8 bytes.
-        uint skipped = (uint)((before * SumBytes) >> 56) << BitsPerByteShift;
-        return _groups[group] + skipped;
+        return GetGroupOffset(group) + ((rises + position * _widthFloor) << BitsPerByteShift);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    readonly uint GetWidth(uint block) => _widthFloor + (((uint)_widths[block >> 1] >> (int)((block & 1) << 2)) & WidthNibbleMask);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    readonly uint GetGroupOffset(uint group)
+    {
+        // Group 0 reads harmless bytes before the table and masks them away, rather than branching.
+        uint mask = group == 0 ? 0 : _groupMask;
+        return Unsafe.ReadUnaligned<uint>(_groups + (long)group * _groupBytes - _groupBytes) & mask;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    readonly uint GetBase(uint block)
+    {
+        ulong bit = (ulong)block * _baseBits;
+        ulong raw = Unsafe.ReadUnaligned<ulong>(_bases + (bit >> BitsPerByteShift));
+        return _lowestBase + (uint)((raw >> (int)(bit & BitMask)) & _baseMask);
     }
 
     /// <summary>Returns one value. The index must be below count; nothing checks it here.</summary>
@@ -76,11 +115,11 @@ public unsafe struct ZpmColumn
     {
         uint block = index >> BlockShift;
         uint position = index & BlockMask;
-        uint width = _widths[block];
+        uint width = GetWidth(block);
         uint bit = position * width;
         ulong raw = Unsafe.ReadUnaligned<ulong>(_payload + GetBlockOffset(block) + (bit >> BitsPerByteShift));
         uint residual = (uint)((raw >> (int)(bit & BitMask)) & ((1UL << (int)width) - 1));
-        uint value = _bases[block] + residual;
+        uint value = GetBase(block) + residual;
         return _slopes == null ? value : value + (uint)((int)_slopes[block] * (int)position);
     }
 
@@ -116,9 +155,9 @@ public unsafe struct ZpmColumn
     /// <summary>Unpacks eight values per step with AVX2 where it exists; the plain loop gives the same result.</summary>
     readonly void CopyBlockTight(uint block, uint position, uint take, uint* destination)
     {
-        uint width = _widths[block];
+        uint width = GetWidth(block);
         uint slope = _slopes == null ? 0 : (uint)(int)_slopes[block];
-        uint line = _bases[block] + slope * position;
+        uint line = GetBase(block) + slope * position;
         if (width == 0)
         {
             for (uint i = 0; i < take; i++, destination++, line += slope)
@@ -170,15 +209,15 @@ public unsafe struct ZpmColumn
     {
         uint blocks = blockCount;
         // Check the descriptors fit first: their pointers came from an untrusted count.
-        if (_payload > limit || (byte*)_bases > limit)
+        if (_payload > limit || _bases > limit || _baseBits > MaxWidth)
             return false;
         ulong running = 0;
         for (uint block = 0; block < blocks; block++)
         {
-            uint width = _widths[block];
+            uint width = GetWidth(block);
             if (width > MaxWidth)
                 return false;
-            if ((block & GroupMask) == 0 && _groups[block >> GroupShift] != running)
+            if ((block & GroupMask) == 0 && GetGroupOffset(block >> GroupShift) != running)
                 return false;
             bool last = block + 1 == blocks;
             uint values = last ? _count - (block << BlockShift) : BlockSize;
@@ -235,11 +274,11 @@ public unsafe struct ZpmColumn
 
     readonly void GetBlockRange(uint block, bool signedBase, out long low, out long high)
     {
-        long start = signedBase ? (int)_bases[block] : _bases[block];
+        long start = signedBase ? (int)GetBase(block) : GetBase(block);
         long slope = _slopes == null ? 0 : _slopes[block];
         uint values = Math.Min((uint)BlockSize, _count - (block << BlockShift));
         long travel = slope * (values - 1);
         low = start + Math.Min(0, travel);
-        high = start + Math.Max(0, travel) + ((1L << _widths[block]) - 1);
+        high = start + Math.Max(0, travel) + ((1L << (int)GetWidth(block)) - 1);
     }
 }

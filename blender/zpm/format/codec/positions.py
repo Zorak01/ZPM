@@ -101,6 +101,32 @@ def encode_positions(mesh: Mesh, exponent: int) -> tuple:
     return plain, vertex_count
 
 
+def first_use_ids(mesh: Mesh) -> list:
+    """Return each vertex's stored position, as encode_positions numbers them."""
+    raw = mesh.positions.tobytes()
+    known = {}
+    return [
+        known.setdefault(raw[vertex * 12 : (vertex + 1) * 12], len(known))
+        for vertex in range(mesh.vertex_count)
+    ]
+
+
+def read_position_ids(
+    sections: SectionReader, vertex_count: int, unique_count: int
+) -> list | None:
+    """Return each vertex's stored position, or None when no position repeats."""
+    if not sections.has(SectionKind.POSITION_REPEAT_MASK):
+        return None
+    marks = read_rank_mask(sections.raw(SectionKind.POSITION_REPEAT_MASK), vertex_count)
+    distances = sections.column(
+        SectionKind.POSITION_BACK_DISTANCES, vertex_count - unique_count
+    )
+    ids = resolve_back_references(marks, distances)
+    if ids and max(ids) >= unique_count:
+        raise FormatError("A repeated position ID is out of range")
+    return ids
+
+
 def _read_axis(sections: SectionReader, axis: int, count: int, exponent: int) -> list:
     constant = SectionKind(SectionKind.POSITION_CONSTANT_X + axis)
     bits = SectionKind(SectionKind.POSITION_BITS_X + axis)
@@ -145,15 +171,9 @@ def read_positions(
         _read_axis(sections, axis, unique_count, exponent) for axis in range(AXIS_COUNT)
     ]
     rows = list(zip(*axes, strict=True))
-    if not sections.has(SectionKind.POSITION_REPEAT_MASK):
+    ids = read_position_ids(sections, vertex_count, unique_count)
+    if ids is None:
         if unique_count != vertex_count:
             raise FormatError("The unique position count does not match the mesh")
         return [value for row in rows for value in row]
-    marks = read_rank_mask(sections.raw(SectionKind.POSITION_REPEAT_MASK), vertex_count)
-    distances = sections.column(
-        SectionKind.POSITION_BACK_DISTANCES, vertex_count - unique_count
-    )
-    ids = resolve_back_references(marks, distances)
-    if ids and max(ids) >= unique_count:
-        raise FormatError("A repeated position ID is out of range")
     return [value for unique in ids for value in rows[unique]]

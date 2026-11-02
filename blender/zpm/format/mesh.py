@@ -25,6 +25,7 @@ ATTRIBUTE_TYPECODES = {
     AttributeType.INT32: "i",
     AttributeType.UINT32: "I",
     AttributeType.FLOAT32: "f",
+    AttributeType.STRING: "I",
 }
 
 
@@ -62,7 +63,8 @@ class Attribute:
     """One named custom attribute, stored exactly.
 
     values holds components per element, interleaved, with one array type per
-    AttributeType, as ATTRIBUTE_TYPECODES lists.
+    AttributeType, as ATTRIBUTE_TYPECODES lists. A string attribute's values index
+    strings, which holds each distinct string once.
     """
 
     domain: AttributeDomain
@@ -70,6 +72,7 @@ class Attribute:
     components: int
     values: array
     meaning: AttributeMeaning = AttributeMeaning.NONE
+    strings: list = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -282,6 +285,10 @@ class Mesh:
                 raise FormatError(f"Attribute {name} does not match the mesh")
             if attribute.values.typecode != ATTRIBUTE_TYPECODES[attribute.value_type]:
                 raise FormatError(f"Attribute {name} has the wrong array type")
+            if attribute.value_type == AttributeType.STRING and (
+                attribute.values and max(attribute.values) >= len(attribute.strings)
+            ):
+                raise FormatError(f"Attribute {name} names a missing string")
 
     def _validate_shape_targets(self) -> None:
         count = len(self.shape_targets)

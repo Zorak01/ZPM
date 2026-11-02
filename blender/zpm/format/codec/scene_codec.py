@@ -15,6 +15,7 @@ from ..container.layout import (
     ObjectType,
     ResourceKind,
     SectionKind,
+    TrackValue,
 )
 from ..container.sections import Section, SectionReader, write_file
 from ..errors import FormatError
@@ -50,8 +51,8 @@ def _without_repeated_meshes(scene: Scene) -> Scene:
     """Return the scene with identical meshes stored once, and objects sharing them.
 
     Compares what would be stored. An animated mesh keeps its own copy, because tracks
-    address meshes by index. Costs one encode of every mesh when any two have equal
-    size.
+    address meshes by index. Keys naming a mesh follow it. Costs one encode of every
+    mesh when any two have equal size.
     """
     animated = {
         track.owner
@@ -82,7 +83,25 @@ def _without_repeated_meshes(scene: Scene) -> Scene:
         else item
         for item in scene.objects
     ]
-    return replace(scene, meshes=kept, objects=objects)
+    return replace(
+        scene,
+        meshes=kept,
+        objects=objects,
+        clips=[
+            replace(clip, tracks=[_with_meshes_moved(t, remap) for t in clip.tracks])
+            for clip in scene.clips
+        ],
+    )
+
+
+def _with_meshes_moved(track, remap: dict):
+    names_mesh = (
+        track.value_type == TrackValue.REFERENCE
+        and track.target_kind == ResourceKind.MESH
+    )
+    if not names_mesh:
+        return track
+    return replace(track, values=[remap[value] for value in track.values])
 
 
 def encode_scene(scene: Scene) -> bytes:

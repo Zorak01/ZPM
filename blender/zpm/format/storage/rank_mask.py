@@ -1,13 +1,21 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Rank masks: one mark per element, plus the unmarked count before each 64-bit word."""
+"""Rank masks: one mark per element, plus the unmarked count before each 64-bit word.
+
+Those counts take two bytes each when the mask covers few enough elements.
+"""
 
 import struct
 
+from ..container.layout import align
 from ..errors import FormatError
 
 _BITS_PER_WORD = 64
-_BYTES_PER_WORD = 12
+_LARGEST_SHORT_COUNT = 65535
+
+
+def _rank_code(count: int) -> str:
+    return "H" if count <= _LARGEST_SHORT_COUNT else "I"
 
 
 def encode_rank_mask(marks: list) -> bytes:
@@ -24,16 +32,18 @@ def encode_rank_mask(marks: list) -> bytes:
                 clear += 1
         words.append(word)
     count = len(words)
-    return struct.pack(f"<{count}Q{count}I", *words, *ranks)
+    code = _rank_code(len(marks))
+    return struct.pack(f"<{count}Q{count}{code}", *words, *ranks)
 
 
 def read_rank_mask(section: bytes, count: int) -> list:
     """Return one bool per element. Raises FormatError when the ranks do not add up."""
     words = (count + _BITS_PER_WORD - 1) // _BITS_PER_WORD
-    if len(section) != words * _BYTES_PER_WORD:
+    layout = struct.Struct(f"<{words}Q{words}{_rank_code(count)}")
+    if align(len(section)) != align(layout.size) or len(section) < layout.size:
         raise FormatError("Rank mask length does not match its element count")
-    masks = struct.unpack_from(f"<{words}Q", section)
-    ranks = struct.unpack_from(f"<{words}I", section, words * 8)
+    values = layout.unpack_from(section)
+    masks, ranks = values[:words], values[words:]
     marks = []
     clear = 0
     for word in range(words):

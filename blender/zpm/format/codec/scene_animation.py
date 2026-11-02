@@ -5,7 +5,8 @@
 Tracks with the same key times share one list. Values sit in one column, so a held
 value costs almost nothing, and any key is readable by index. Times and values stay
 exact. A track whose keys are all linear stores no modes, and handles only exist on
-tracks that have them.
+tracks that have them. A sparse track's values start with one change flag per component
+of every key, then only the changed values.
 """
 
 from ..container.layout import (
@@ -98,6 +99,7 @@ def encode_animation(scene: Scene, strings: StringTable) -> list:
             first_mode = len(modes) if track.key_modes else NO_INDEX
             first_handle = len(handles) if track.handles else NO_INDEX
             first_value = len(values)
+            values += [int(is_changed) for is_changed in track.changed]
             values += [_stored_value(track, v, strings) for v in track.values]
             if track.key_modes:
                 modes += [_pack_mode(track, key) for key in range(len(track.times))]
@@ -111,7 +113,7 @@ def encode_animation(scene: Scene, strings: StringTable) -> list:
                 track.value_type,
                 track.target_kind,
                 track.components,
-                track.flags,
+                track.flags | (TrackFlags.SPARSE if track.changed else 0),
                 time_set,
                 len(track.times),
                 first_value,
@@ -181,6 +183,16 @@ def _read_track(values: tuple, columns: _KeyColumns, strings: list) -> Track:
     stored_count = key_count * components
     if len(times) != key_count or first_value + stored_count > len(columns.values):
         raise FormatError("A track's keys do not match its columns")
+    changed = []
+    if TrackFlags(flags) & TrackFlags.SPARSE:
+        marks = columns.values[first_value : first_value + stored_count]
+        if any(mark > 1 for mark in marks) or not all(marks[:components]):
+            raise FormatError("A sparse track has wrong change flags")
+        changed = [bool(mark) for mark in marks]
+        first_value += stored_count
+        stored_count = sum(marks)
+        if first_value + stored_count > len(columns.values):
+            raise FormatError("A track's keys do not match its columns")
     track = Track(
         checked_enum(ResourceKind, owner_kind),
         owner,
@@ -191,7 +203,8 @@ def _read_track(values: tuple, columns: _KeyColumns, strings: list) -> Track:
         checked_enum(TrackValue, value_type),
         checked_enum(ResourceKind, target_kind),
         components,
-        TrackFlags(flags),
+        TrackFlags(flags) & ~TrackFlags.SPARSE,
+        changed=changed,
     )
     track.values = [
         _read_value(track, stored, strings)

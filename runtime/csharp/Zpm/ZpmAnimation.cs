@@ -47,9 +47,22 @@ public unsafe struct ZpmAnimation
     public readonly float GetKeyFloat(in ZpmTrack track, uint key, uint component = 0) =>
         System.BitConverter.UInt32BitsToSingle(ZpmAxis.OrderedToBits(GetKeyStored(track, key, component)));
 
-    /// <summary>Returns one key's stored value: an Int, a Bool, a Reference index or a string index.</summary>
-    public readonly uint GetKeyStored(in ZpmTrack track, uint key, uint component = 0) =>
-        _values.Get(track.firstValue + key * track.components + component);
+    /// <summary>
+    /// Returns one key's stored value: an Int, a Bool, a Reference index or a string index.
+    /// One call on a plain track. A sparse track counts its change flags, so walk those in key order.
+    /// </summary>
+    public readonly uint GetKeyStored(in ZpmTrack track, uint key, uint component = 0)
+    {
+        uint element = key * track.components + component;
+        if ((track.flags & ZpmTrackFlags.Sparse) == 0)
+            return _values.Get(track.firstValue + element);
+        while (_values.Get(track.firstValue + element) == 0)
+            element -= track.components;
+        uint changedBefore = 0;
+        for (uint at = 0; at < element; at++)
+            changedBefore += _values.Get(track.firstValue + at);
+        return _values.Get(track.firstValue + (uint)((ulong)track.keyCount * track.components) + changedBefore);
+    }
 
     /// <summary>Returns how a key reaches the next one.</summary>
     public readonly ZpmKeyMode GetKeyMode(in ZpmTrack track, uint key) =>
@@ -95,8 +108,25 @@ public unsafe struct ZpmAnimation
             || _timeStarts[track.timeSet + 1] - _timeStarts[track.timeSet] != track.keyCount)
             return false;
         uint values = _hasValues ? _values.count : 0;
-        if ((ulong)track.firstValue + (ulong)track.keyCount * track.components > values)
+        ulong elements = (ulong)track.keyCount * track.components;
+        if ((ulong)track.firstValue + elements > values)
             return false;
+        ulong storedFrom = track.firstValue;
+        ulong storedCount = elements;
+        if ((track.flags & ZpmTrackFlags.Sparse) != 0)
+        {
+            storedFrom += elements;
+            storedCount = 0;
+            for (ulong at = 0; at < elements; at++)
+            {
+                uint flag = _values.Get(track.firstValue + (uint)at);
+                if (flag > 1 || (at < track.components && flag == 0))
+                    return false;
+                storedCount += flag;
+            }
+            if (storedFrom + storedCount > values)
+                return false;
+        }
         if (track.firstMode != ZpmLayout.NoIndex && (!_hasModes || (ulong)track.firstMode + track.keyCount > _modes.count))
             return false;
         if (track.firstHandle != ZpmLayout.NoIndex && (!_hasHandles || (ulong)track.firstHandle + (ulong)track.keyCount * HandleFields > _handles.count))
@@ -104,10 +134,9 @@ public unsafe struct ZpmAnimation
         if (track.valueType != ZpmTrackValue.Reference && track.valueType != ZpmTrackValue.String)
             return true;
         uint limit = track.valueType == ZpmTrackValue.String ? stringCount : scene.GetResourceCount(track.targetKind);
-        ulong total = (ulong)track.keyCount * track.components;
-        for (ulong at = 0; at < total; at++)
+        for (ulong at = 0; at < storedCount; at++)
         {
-            if (_values.Get(track.firstValue + (uint)at) >= limit)
+            if (_values.Get((uint)(storedFrom + at)) >= limit)
                 return false;
         }
         return true;

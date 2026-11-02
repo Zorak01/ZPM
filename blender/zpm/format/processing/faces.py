@@ -7,6 +7,8 @@ from array import array
 
 from ..mesh import Mesh
 
+NO_AREA_NORMAL = (0.0, 0.0, 1.0)
+
 
 def face_lists(mesh: Mesh) -> list:
     """Return each face as a list of its vertex IDs, in file order."""
@@ -40,15 +42,31 @@ def _face_normal(positions: array, face: list) -> tuple | None:
     return (x / length, y / length, z / length) if length > 0 else None
 
 
-def corner_normals_from_faces(positions: array, faces: list) -> array | None:
-    """Return every corner's normal as its own face's; None if a face has no area."""
+def corner_normals_from_faces(positions: array, faces: list) -> array:
+    """Return every corner's normal as its own face's. A face with no area points up."""
     normals = array("f")
     for face in faces:
-        normal = _face_normal(positions, face)
-        if normal is None:
-            return None
+        normal = _face_normal(positions, face) or NO_AREA_NORMAL
         normals.extend(normal * len(face))
     return normals
+
+
+def has_face_normals(positions: array, faces: list, normals: array, cosine: float):
+    """Return whether corners have their face's normal, ignoring faces with no area."""
+    corner = 0
+    for face in faces:
+        normal = _face_normal(positions, face)
+        if normal is not None:
+            for at in range(corner * 3, (corner + len(face)) * 3, 3):
+                dot = (
+                    normal[0] * normals[at]
+                    + normal[1] * normals[at + 1]
+                    + normal[2] * normals[at + 2]
+                )
+                if dot < cosine:
+                    return False
+        corner += len(face)
+    return True
 
 
 def next_corners(sizes: list, corner_count: int) -> list:

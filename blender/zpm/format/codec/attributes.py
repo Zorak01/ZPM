@@ -73,6 +73,14 @@ def encode_attributes(mesh: Mesh) -> list:
                 SectionKind.ATTRIBUTE_VALUES, _stored_values(attribute), layer=layer
             )
         )
+        if attribute.value_type == AttributeType.STRING:
+            sections.append(
+                Section(
+                    SectionKind.ATTRIBUTE_STRINGS,
+                    encode_names(attribute.strings),
+                    layer=layer,
+                )
+            )
     return sections
 
 
@@ -110,7 +118,12 @@ def _read_attribute(sections, stored_format, layer, sizes) -> Attribute:
     for component in range(components):
         start = component * elements
         interleaved[component::components] = values[start : start + elements]
-    return Attribute(domain, value_type, components, interleaved, meaning)
+    strings = []
+    if value_type == AttributeType.STRING:
+        strings = read_names(sections.raw(SectionKind.ATTRIBUTE_STRINGS, layer))
+        if stored and max(stored) >= len(strings):
+            raise FormatError("A string attribute names a missing string")
+    return Attribute(domain, value_type, components, interleaved, meaning, strings)
 
 
 def read_attributes(sections: SectionReader, sizes: dict) -> dict:

@@ -12,4 +12,5 @@ public enum ZpmAttributeType : byte
     Int32 = 5,
     UInt32 = 6,
     Float32 = 7,
+    String = 8,
 }

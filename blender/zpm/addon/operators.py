@@ -66,7 +66,7 @@ class EXPORT_MESH_OT_zpm(bpy.types.Operator, ExportHelper):
         box.label(text="Selected objects, or all if none selected.", icon="SCENE_DATA")
         box.label(text="Base meshes with all surface data, materials, images.")
         box.label(text="Lights, armatures, poses, collections, parenting, units.")
-        box.label(text="Curves and lattices export as placement only for now.")
+        box.label(text="Curves, lattices, point clouds, hair and volumes too.")
 
     def execute(self, context):
         try:

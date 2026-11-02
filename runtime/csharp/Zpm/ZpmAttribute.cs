@@ -16,6 +16,8 @@ public unsafe struct ZpmAttribute
     const uint FieldMask = 255;
 
     ZpmColumn _values;
+    ZpmNames _strings;
+    bool _hasStrings;
     uint _elementCount;
     uint _components;
     ZpmAttributeDomain _domain;
@@ -64,10 +66,21 @@ public unsafe struct ZpmAttribute
     public readonly float GetFloat(uint element, uint component) =>
         BitConverter.UInt32BitsToSingle(ZpmAxis.OrderedToBits(GetUInt(element, component)));
 
+    /// <summary>Points at a string attribute's list of distinct strings.</summary>
+    public void BindStrings(byte* section)
+    {
+        _strings = ZpmNames.Bind(section);
+        _hasStrings = true;
+    }
+
+    /// <summary>Finds one string as UTF-8. The type must be String. Returns false when it names none.</summary>
+    public readonly bool TryGetString(uint element, uint component, out byte* utf8, out uint length) =>
+        _strings.TryGet(GetUInt(element, component), out utf8, out length);
+
     /// <summary>Checks the format is known, the column fits the file and values fit their type.</summary>
     public readonly bool Validate(byte* limit)
     {
-        if (_components == 0 || _meaning > ZpmAttributeMeaning.Matrix || _type > ZpmAttributeType.Float32
+        if (_components == 0 || _meaning > ZpmAttributeMeaning.Matrix || _type > ZpmAttributeType.String
             || _domain > ZpmAttributeDomain.Mesh || _values.count != (ulong)_elementCount * _components
             || !_values.ValidateLayout(limit))
             return false;
@@ -76,6 +89,7 @@ public unsafe struct ZpmAttribute
             ZpmAttributeType.Bool => _values.ValidateBelow(2),
             ZpmAttributeType.UInt8 => _values.ValidateBelow(1UL << 8),
             ZpmAttributeType.UInt16 => _values.ValidateBelow(1UL << 16),
+            ZpmAttributeType.String => _hasStrings && _strings.Validate(limit) && _values.ValidateBelow(_strings.count),
             _ => true,
         };
     }

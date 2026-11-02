@@ -2,7 +2,7 @@
 
 ## Latest run: 2026-11-02
 
-24 meshes, run `20261102T213753Z`. [Raw JSON](results/20261102T213753Z.json). 20-bit positions, 12-bit normals, 16-bit UVs. Edges are left
+24 meshes, run `20261102T222257Z`. [Raw JSON](results/20261102T222257Z.json). 20-bit positions, 12-bit normals, 16-bit UVs. Edges are left
 out of ZPM's bytes and read times, because the others produce none. No zstd on any of them. `*` means normals are
 calculated from faces, so Draco is shown with geometry only as well.
 
@@ -46,8 +46,8 @@ no container counted.
 ### Reading a whole mesh (microseconds)
 
 "Integers" gets stored values into buffers, which is what meshopt's decode produces. The four columns after meshopt split
-that time by stream, each timed alone. **Native meshopt is the true test: ZPM is faster on 11 of 24**, and slower on
-Avocado 1.3x, BoomBox 1.5x, CesiumMan 1.7x, DamagedHelmet 1.2x, Duck 1.4x, Lantern 1.7x, RiggedFigure 1.1x, WaterBottle 1.3x, 04263 2.0x, 04362 3.2x, minotaur 1.7x, samurai 2.6x, werewolf 2.4x. It beats meshopt's WebAssembly on 20 of 24. "Floats" also turns normals and UVs into floats, per
+that time by stream, each timed alone. **Native meshopt is the true test: ZPM is faster on 9 of 24**, and slower on
+Avocado 1.3x, BoomBox 1.7x, CesiumMan 1.7x, DamagedHelmet 1.3x, Duck 1.4x, Lantern 2.2x, RiggedFigure 1.2x, suzanne 1.4x, WaterBottle 1.3x, 04263 2.4x, 04362 1.7x, 11375 1.7x, minotaur 1.8x, samurai 2.9x, werewolf 2.3x. It beats meshopt's WebAssembly on 19 of 24. "Floats" also turns normals and UVs into floats, per
 corner, and beats Draco's decode on 24 of 24.
 
 **Not fully like for like:** ZPM is C# on .NET 10. Meshopt native is C++ built with `zig c++ -O3 -mavx2`, from current
@@ -57,30 +57,30 @@ is not what this table shows.
 
 | Mesh | ZPM, integers | Meshopt native | Meshopt WASM | Positions | Corners | Normals | UVs | ZPM, floats | Draco |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| armadillo | **634** | 1,388 | 2,367 | 71 | 546 | 0 | 0 | 2,047 | 60,916 |
-| Avocado | **4** | 3 | 10 | 1 | 1 | 0 | 1 | 104 | 231 |
-| BoomBox | **41** | 26 | 45 | 13 | 13 | 3 | 10 | 978 | 2,611 |
-| CesiumMan | **39** | 24 | 40 | 13 | 10 | 3 | 10 | 750 | 1,719 |
-| cow | **19** | 77 | 122 | 6 | 12 | 0 | 0 | 102 | 3,136 |
-| DamagedHelmet | **125** | 101 | 166 | 55 | 30 | 12 | 24 | 2,573 | 8,176 |
-| Duck | **25** | 18 | 36 | 6 | 9 | 2 | 7 | 680 | 1,553 |
-| fandisk | **37** | 98 | 195 | 10 | 28 | 0 | 0 | 221 | 4,910 |
-| happy | **624** | 1,476 | 2,444 | 75 | 558 | 0 | 0 | 2,042 | 61,156 |
-| Lantern | **31** | 18 | 31 | 9 | 7 | 9 | 5 | 594 | 1,408 |
-| lucy | **645** | 1,814 | 2,744 | 74 | 556 | 0 | 0 | 2,066 | 58,417 |
-| RiggedFigure | **5** | 4 | 7 | 1 | 1 | 0 | 0 | 14 | 156 |
-| spot | **41** | 124 | 189 | 7 | 12 | 0 | 24 | 281 | 4,031 |
-| stanford-bunny | **357** | 1,001 | 1,604 | 50 | 301 | 0 | 0 | 1,348 | 37,614 |
-| suzanne | **5** | 7 | 11 | 1 | 3 | 0 | 0 | 29 | 238 |
-| teapot | **28** | 66 | 105 | 15 | 12 | 0 | 0 | 118 | 2,733 |
-| WaterBottle | **25** | 20 | 38 | 6 | 9 | 2 | 8 | 763 | 1,535 |
-| xyzrgb_dragon | **1,583** | 4,241 | 6,342 | 193 | 1,411 | 0 | 0 | 5,291 | 203,068 |
-| 04263 | **146** | 75 | 125 | 53 | 19 | 67 | 0 | 656 | 3,942 |
-| 04362 | **28** | 9 | 21 | 5 | 2 | 6 | 5 | 78 | 315 |
-| 11375 | **1** | 1 | 4 | 0 | 0 | 0 | 0 | 4 | 30 |
-| minotaur | **25** | 14 | 25 | 7 | 4 | 14 | 0 | 94 | 504 |
-| samurai | **45** | 18 | 32 | 13 | 6 | 22 | 0 | 152 | 860 |
-| werewolf | **22** | 10 | 18 | 5 | 3 | 10 | 4 | 129 | 526 |
+| armadillo | **639** | 1,624 | 2,402 | 77 | 564 | 0 | 0 | 2,069 | 61,605 |
+| Avocado | **4** | 3 | 11 | 1 | 1 | 0 | 1 | 117 | 233 |
+| BoomBox | **47** | 28 | 49 | 12 | 14 | 3 | 11 | 1,045 | 2,433 |
+| CesiumMan | **40** | 24 | 57 | 14 | 10 | 5 | 10 | 872 | 1,904 |
+| cow | **20** | 85 | 140 | 6 | 13 | 0 | 0 | 102 | 3,566 |
+| DamagedHelmet | **127** | 100 | 169 | 54 | 34 | 14 | 25 | 2,682 | 8,486 |
+| Duck | **25** | 18 | 33 | 6 | 9 | 2 | 7 | 687 | 1,552 |
+| fandisk | **34** | 124 | 209 | 9 | 25 | 0 | 0 | 217 | 4,866 |
+| happy | **712** | 6,344 | 7,836 | 115 | 790 | 0 | 0 | 2,468 | 178,126 |
+| Lantern | **80** | 35 | 78 | 20 | 28 | 20 | 9 | 1,083 | 3,423 |
+| lucy | **1,249** | 2,753 | 4,427 | 167 | 952 | 0 | 0 | 3,859 | 123,491 |
+| RiggedFigure | **4** | 4 | 12 | 1 | 1 | 0 | 0 | 14 | 118 |
+| spot | **49** | 153 | 206 | 8 | 13 | 0 | 31 | 471 | 5,516 |
+| stanford-bunny | **479** | 1,912 | 2,248 | 94 | 438 | 0 | 0 | 2,113 | 63,212 |
+| suzanne | **6** | 4 | 15 | 1 | 4 | 0 | 0 | 37 | 484 |
+| teapot | **41** | 83 | 156 | 17 | 26 | 0 | 0 | 143 | 4,394 |
+| WaterBottle | **42** | 32 | 43 | 10 | 18 | 2 | 9 | 1,277 | 4,291 |
+| xyzrgb_dragon | **2,803** | 17,478 | 20,955 | 328 | 2,291 | 0 | 0 | 8,010 | 303,222 |
+| 04263 | **319** | 133 | 241 | 122 | 40 | 229 | 0 | 1,426 | 9,496 |
+| 04362 | **29** | 17 | 30 | 34 | 10 | 10 | 9 | 127 | 845 |
+| 11375 | **1** | 1 | 11 | 1 | 0 | 1 | 0 | 7 | 50 |
+| minotaur | **42** | 23 | 33 | 17 | 5 | 28 | 0 | 269 | 1,253 |
+| samurai | **72** | 25 | 53 | 15 | 10 | 33 | 0 | 212 | 1,168 |
+| werewolf | **52** | 23 | 40 | 11 | 6 | 19 | 10 | 364 | 671 |
 
 The sections below are from the older run of 2026-10-31.
 

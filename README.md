@@ -107,7 +107,7 @@ reference codec**, not Python API speed or end-to-end Blender loading.
 
 These results compare mesh-core encodings on identical input. For other formats, see
 [ZPM against Draco and meshoptimizer](benchmarks/format-compare/README.md): today ZPM beats
-meshopt on size on 21 of 24 meshes and on whole-mesh speed on 11 of 24 against native code, loses to Draco on size, and wins
+meshopt on size on 21 of 24 meshes and on whole-mesh speed on 9 of 24 against native code, loses to Draco on size, and wins
 on partial reads and memory.
 
 These are earlier experiments, kept as the comparison.

@@ -13,7 +13,7 @@ import bpy
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "blender"))
 
 from zpm.addon import scene_adapter  # noqa: E402
-from zpm.format import save  # noqa: E402
+from zpm.format import encode_scene  # noqa: E402
 
 
 def _flat(matrix) -> list:
@@ -151,7 +151,8 @@ def main():
     folder = Path(sys.argv[sys.argv.index("--") + 1])
     objects = _build_rig()
     _add_inheriting_bones(objects[0])
-    save(folder / "rig.zpm", scene_adapter.capture_scene(bpy.context.scene, objects))
+    scene = scene_adapter.capture_scene(bpy.context.scene, objects)
+    (folder / "rig.zpm").write_bytes(encode_scene(scene))
     expected = {}
     for obj in objects:
         expected["world:" + obj.name] = _flat(obj.matrix_world)

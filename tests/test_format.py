@@ -3,6 +3,7 @@
 """Format tests run in ordinary Python, without bpy or Blender installed."""
 
 import math
+import random
 import struct
 import sys
 import tempfile
@@ -54,6 +55,7 @@ from zpm.format import (
     save,
     snap_mesh,
 )
+from zpm.format.codec.mesh_codec import pack
 from zpm.format.codec.quantize import decode_normal, encode_normal
 from zpm.format.codec.scene_tables import read_indices
 from zpm.format.container.layout import (
@@ -119,10 +121,14 @@ def grid_mesh(side: int = 40) -> Mesh:
             v = y * side + x
             corners.extend((v, v + 1, v + side + 1, v + side))
     edges = array("I")
+    seen = set()
     for face in range(0, len(corners), 4):
         for j in range(4):
             a, b = corners[face + j], corners[face + (j + 1) % 4]
-            edges.extend((min(a, b), max(a, b)))
+            key = (min(a, b), max(a, b))
+            if key not in seen:
+                seen.add(key)
+                edges.extend(key)
     return Mesh(positions, array("I", [4] * (len(corners) // 4)), corners, edges)
 
 
@@ -1329,6 +1335,95 @@ def sample_scene() -> Scene:
         ],
         {"author": "test", "tags": ["a", "b"], "inner": {"depth": 1}},
     )
+
+
+class PackedTests(unittest.TestCase):
+    def assert_same_after_packing(self, mesh):
+        data = pack(mesh)
+        names = {region.name for region in map_file(data)}
+        self.assertIn("PACKED_CONNECTIVITY", names)
+        again = decode(data)
+        self.assertTrue(same_geometry(snap_mesh(mesh), again))
+        return again
+
+    def test_every_kind_of_face_comes_back(self):
+        for mesh in (
+            triangle(),
+            grid_mesh(12),
+            quad_and_triangle_mesh(),
+            real_fixture(),
+            strip_mesh(),
+        ):
+            self.assert_same_after_packing(mesh)
+
+    def test_surface_data_comes_back(self):
+        again = self.assert_same_after_packing(surface_mesh())
+        self.assertEqual(sorted(again.uv_layers), ["Detail", "UVMap"])
+        self.assertTrue(again.has_custom_normals)
+
+    def test_split_vertices_stay_split(self):
+        mesh = split_vertex_mesh()
+        again = self.assert_same_after_packing(mesh)
+        self.assertEqual(again.vertex_count, mesh.vertex_count)
+
+    def test_everything_else_a_mesh_holds_follows(self):
+        mesh = shared_map_mesh()
+        again = self.assert_same_after_packing(mesh)
+        self.assertEqual(
+            again.attributes["label"].strings, mesh.attributes["label"].strings
+        )
+        self.assert_same_after_packing(summed_weight_mesh())
+        self.assert_same_after_packing(authored_mesh())
+
+    def test_loose_vertices_and_edges_stay(self):
+        mesh = grid_mesh(4)
+        count = mesh.vertex_count
+        mesh.positions.extend((9.0, 9.0, 9.0, 8.0, 8.0, 8.0, 7.0, 7.0, 7.0))
+        mesh.edges.extend((count, count + 1))
+        again = self.assert_same_after_packing(mesh)
+        self.assertEqual(again.vertex_count, count + 3)
+        self.assertEqual(again.edge_count, mesh.edge_count)
+
+    def test_inconsistent_winding_and_shared_edges_still_work(self):
+        positions = array("f", [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1])
+        corners = array("I", [0, 1, 2, 0, 1, 3, 0, 1, 4])
+        edges = array("I", [0, 1, 1, 2, 0, 2, 1, 3, 0, 3, 1, 4, 0, 4])
+        mesh = Mesh(positions, array("I", [3, 3, 3]), corners, edges)
+        self.assert_same_after_packing(mesh)
+
+    def test_what_cannot_pack_stays_readable(self):
+        points = Mesh(
+            array("f", [0, 0, 0, 1, 1, 1]), array("I"), array("I"), array("I")
+        )
+        self.assertTrue(same_geometry(snap_mesh(points), decode(pack(points))))
+        holed = holed_mesh()
+        self.assertTrue(same_geometry(snap_mesh(holed), decode(pack(holed))))
+
+    def test_packing_is_smaller_than_the_direct_form(self):
+        mesh = real_fixture()
+        self.assertLess(len(pack(mesh)), len(encode(mesh)))
+
+    def test_a_scene_saves_packed_and_comes_back(self):
+        scene = sample_scene()
+        scene.meshes[1] = grid_mesh(12)
+        direct = encode_scene(scene)
+        packed = encode_scene(scene, packed=True)
+        self.assertLess(len(packed), len(direct))
+        stored = decode_scene(packed)
+        for first, second in zip(scene.meshes, stored.meshes, strict=True):
+            self.assertTrue(same_geometry(snap_mesh(first), second))
+
+    def test_damaged_packed_files_are_refused_or_read_safely(self):
+        source = bytearray(pack(surface_mesh()))
+        generator = random.Random(7)
+        for _ in range(400):
+            data = bytearray(source)
+            for _ in range(generator.randint(1, 4)):
+                data[generator.randrange(len(data))] = generator.randrange(256)
+            try:
+                decode(bytes(data), max_bytes=1 << 22)
+            except FormatError:
+                pass
 
 
 class SceneTests(unittest.TestCase):

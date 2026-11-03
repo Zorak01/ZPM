@@ -13,12 +13,13 @@ from ..container.layout import (
     MeshFlags,
     SectionKind,
 )
-from ..container.sections import Section, SectionReader, write_file
+from ..container.sections import Section, SectionReader, column_section, write_file
 from ..errors import FormatError
 from ..mesh import Mesh
-from ..processing.faces import corner_normals_from_faces, face_lists
+from ..processing.faces import corner_normals_from_faces, face_edges, face_lists
 from ..processing.reordering import reorder_mesh
 from ..processing.snapping import grid_exponent, normals_match_faces, snap_mesh
+from ..storage.names import encode_names, read_names
 from .attributes import encode_attributes, read_attributes
 from .colors import encode_colors, read_colors
 from .corners import (
@@ -31,6 +32,7 @@ from .corners import (
 )
 from .edges import encode_edge_endpoints, encode_edges, read_edges
 from .materials import encode_materials, read_materials
+from .packed import pack_geometry, read_geometry
 from .positions import (
     encode_positions,
     first_use_ids,
@@ -72,6 +74,60 @@ def encode(mesh: Mesh, *, keep_vertex_order: bool = False) -> bytes:
         return as_stored
     reordered = _encode_mesh(reorder_mesh(snapped))
     return reordered if len(reordered) < len(as_stored) else as_stored
+
+
+def pack(mesh: Mesh) -> bytes:
+    """Return the smallest form of a mesh, to be read once from start to end.
+
+    Falls back to encode for what it cannot hold: no faces, holes, or no grid. Takes
+    longer than encode, and a reader must unpack the result before using it.
+    """
+    mesh.validate()
+    snapped = snap_mesh(mesh)
+    packed = pack_geometry(snapped)
+    if packed is None:
+        return encode(mesh)
+    ordered, sections = packed
+    sizes = list(ordered.face_sizes)
+    flags = MeshFlags.NONE
+    if ordered.has_custom_normals:
+        flags |= MeshFlags.CUSTOM_NORMALS
+    if normals_match_faces(snapped):
+        flags |= MeshFlags.NORMALS_FROM_FACES
+    reached = {key for face in face_lists(ordered) for key in face_edges(face)}
+    loose = [
+        vertex
+        for at in range(0, len(ordered.edges), 2)
+        if (ordered.edges[at], ordered.edges[at + 1]) not in reached
+        for vertex in (ordered.edges[at], ordered.edges[at + 1])
+    ]
+    if loose:
+        sections.append(column_section(SectionKind.PACKED_LOOSE_EDGES, loose))
+    if ordered.uv_layers:
+        names = encode_names(sorted(ordered.uv_layers))
+        sections.append(Section(SectionKind.UV_NAMES, names))
+    sections += encode_tangents(ordered, None)
+    sections += encode_tangent_method(ordered)
+    sections += encode_attributes(ordered)
+    exponent = grid_exponent(ordered)
+    sections += encode_shapes(ordered, exponent)
+    sections += encode_uv_seams(ordered)
+    sections += encode_materials(ordered)
+    sections += encode_colors(ordered)
+    sections += encode_marks(ordered)
+    sections += encode_weights(ordered)
+    info = MESH_INFO.pack(
+        ordered.vertex_count,
+        ordered.face_count,
+        len(ordered.corners),
+        ordered.edge_count,
+        0,
+        _uniform_arity(sizes),
+        exponent,
+        flags,
+    )
+    sections.append(Section(SectionKind.MESH_INFO, info))
+    return write_file(sections)
 
 
 def _uniform_arity(sizes: list) -> int:
@@ -171,16 +227,37 @@ def decode(data: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
     if arity and arity * faces != corner_count:
         raise FormatError("Invalid uniform face layout")
 
-    positions = array("f", read_positions(sections, vertices, unique, exponent))
-    position_ids = read_position_ids(sections, vertices, unique)
-    mixed = corner_count and not arity
-    stored_sizes = read_face_sizes(sections, corner_count, faces) if mixed else []
-    sizes = [arity] * faces if arity else stored_sizes
-    corners = read_corners(sections, corner_count, sizes, arity)
-    holes = read_holes(sections)
-    if holes and edge_count and not sections.has(SectionKind.EDGE_FIRST):
-        raise FormatError("Edges in a mesh with holes must store their endpoints")
-    edges = read_edges(sections, edge_count, corners, sizes)
+    if sections.has(SectionKind.PACKED_CONNECTIVITY):
+        try:
+            names = (
+                read_names(sections.raw(SectionKind.UV_NAMES))
+                if sections.has(SectionKind.UV_NAMES)
+                else []
+            )
+            geometry = read_geometry(sections, MESH_INFO.unpack(info), names)
+        except (IndexError, KeyError, ValueError, OverflowError) as error:
+            raise FormatError("A packed mesh is malformed") from error
+        positions = geometry["positions"]
+        corners = geometry["corners"]
+        edges = geometry["edges"]
+        stored_sizes = [] if arity else geometry["sizes"]
+        holes = array("I")
+        position_ids = None
+        normals = geometry["corner_normals"]
+        uv_layers = geometry["uv_layers"]
+    else:
+        positions = array("f", read_positions(sections, vertices, unique, exponent))
+        position_ids = read_position_ids(sections, vertices, unique)
+        mixed = corner_count and not arity
+        stored_sizes = read_face_sizes(sections, corner_count, faces) if mixed else []
+        sizes = [arity] * faces if arity else stored_sizes
+        corners = read_corners(sections, corner_count, sizes, arity)
+        holes = read_holes(sections)
+        if holes and edge_count and not sections.has(SectionKind.EDGE_FIRST):
+            raise FormatError("Edges in a mesh with holes must store their endpoints")
+        edges = read_edges(sections, edge_count, corners, sizes)
+        normals = read_normals(sections, corners, position_ids)
+        uv_layers = read_uv_layers(sections, corners, positions, exponent, position_ids)
     code = "H" if width == 2 else "I"
     sizes = {
         AttributeDomain.POINT: vertices,
@@ -196,11 +273,9 @@ def decode(data: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
             array(code, corners),
             array(code, edges),
             arity=arity,
-            corner_normals=read_normals(sections, corners, position_ids),
+            corner_normals=normals,
             has_custom_normals=bool(MeshFlags(flags) & MeshFlags.CUSTOM_NORMALS),
-            uv_layers=read_uv_layers(
-                sections, corners, positions, exponent, position_ids
-            ),
+            uv_layers=uv_layers,
             uv_seams=read_uv_seams(sections, edge_count),
             tangent_layers=read_tangents(sections, corners, position_ids),
             hole_starts=holes,

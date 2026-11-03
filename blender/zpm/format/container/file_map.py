@@ -30,6 +30,11 @@ _FIXED_LENGTHS = {
     SectionKind.POSITION_CONSTANT_Z: _CONSTANT_BYTES,
 }
 _RAW_KINDS = {
+    SectionKind.PACKED_CONNECTIVITY,
+    SectionKind.PACKED_SPLITS,
+    SectionKind.PACKED_POSITIONS,
+    SectionKind.PACKED_NORMALS,
+    SectionKind.PACKED_UVS,
     SectionKind.POSITION_REPEAT_MASK,
     SectionKind.EDGE_LOOSE_MASK,
     SectionKind.FACE_STARTS,

@@ -21,7 +21,7 @@ from ..container.layout import (
 from ..container.sections import Section, SectionReader, write_file
 from ..errors import FormatError
 from ..scene import Camera, Scene
-from .mesh_codec import decode, encode
+from .mesh_codec import decode, encode, pack
 from .scene_animation import encode_animation, read_animation
 from .scene_curves import encode_curves_and_lattices, read_curves, read_lattices
 from .scene_extensions import encode_extensions, read_extensions
@@ -116,13 +116,21 @@ def _meshes_with_named_vertices(scene: Scene) -> set:
     }
 
 
-def encode_scene(scene: Scene) -> bytes:
-    """Return file bytes for a validated scene. Meshes encode as encode describes."""
+def encode_scene(scene: Scene, *, packed: bool = False) -> bytes:
+    """Return file bytes for a validated scene.
+
+    Meshes encode as encode describes, or as pack describes when packed. A mesh with
+    vertices named by number stays as encode leaves it, since packing renumbers them.
+    """
     scene.validate()
     deduplicated = _without_repeated_meshes(scene)
     named_vertices = _meshes_with_named_vertices(deduplicated)
     meshes = [
-        encode(mesh, keep_vertex_order=index in named_vertices)
+        encode(mesh, keep_vertex_order=True)
+        if index in named_vertices
+        else pack(mesh)
+        if packed
+        else encode(mesh)
         for index, mesh in enumerate(deduplicated.meshes)
     ]
     strings = StringTable()

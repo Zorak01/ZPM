@@ -1,6 +1,61 @@
 # ZPM against Draco and meshoptimizer
 
-## Latest run: 2026-11-02
+## Packed form, latest run: 2026-11-03
+
+24 meshes, run `20261103T023951Z`. [Raw JSON](results/20261103T023951Z.json). The packed form is what saving writes since 2026-11-03. 20-bit
+Draco positions, 12-bit normals, 16-bit UVs. No zstd on any of them. `*` means normals are calculated from faces, so
+Draco holds positions, faces and UVs only, as ZPM does.
+
+ZPM's position grid is a power of two, finer than Draco's at 20 bits on every mesh and coarser than at 21, so the two
+Draco columns bracket a comparison at equal precision. Packed bytes are the whole mesh file, header and all, with edges
+worked out from the faces. Meshopt gets the same vertices.
+
+**Total: packed 2,075,556 bytes, Draco 1,968,482 at 20 bits and 2,121,378 at 21, meshopt 15,227,867.** Packed is 1.054x Draco
+at 20 bits, smaller on 7 of 24, and 0.978x at 21 bits, smaller on 20 of 24: about a tie, not a win. It is
+7.34x smaller than meshopt and smaller on 23 of 24. **Larger than Draco at 21 bits: DamagedHelmet 1.027x, RiggedFigure 1.048x, spot 1.003x, 11375 1.268x.
+Larger than meshopt: suzanne 1.073x.**
+
+Decoding, in microseconds, is `packed_decode.cpp`: native C++ built with `zig c++ -O3 -mavx2`, decoding connectivity,
+vertices, positions, normals and UVs into integer arrays, the median of many runs. It leaves out edges and the other
+sections, and it trusts its input; the Python reader checks everything. Draco is its native decoder called through
+Python; meshopt is native. **Packed decodes 3.7x to 12.8x faster than Draco on 24 of 24, and
+3.5x to 22.4x slower than native meshopt on 24 of 24.** Every packed file decodes to the
+same integers in C++ and Python, by checksum.
+
+| Mesh | Packed | Draco, 20 bits | Draco, 21 bits | Meshopt, same vertices | Packed decode | Draco decode | Meshopt native decode |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| armadillo | **278,784** | 270,636 * | 290,769 | 2,291,258 | **6,387** | 60,980 | 1,516 |
+| Avocado | **4,724** | 4,680 | 4,926 | 6,255 | **57** | 235 | 3 |
+| BoomBox | **33,936** | 32,446 | 34,379 | 51,417 | **611** | 2,705 | 27 |
+| CesiumMan | **21,884** | 21,759 | 22,851 | 41,501 | **437** | 1,675 | 23 |
+| cow | **17,956** | 17,616 * | 18,670 | 140,222 | **283** | 3,638 | 78 |
+| DamagedHelmet | **107,004** | 98,931 | 104,195 | 192,323 | **2,149** | 7,847 | 97 |
+| Duck | **23,972** | 23,536 | 24,587 | 35,146 | **391** | 1,516 | 18 |
+| fandisk | **28,708** | 29,055 * | 31,656 | 160,302 | **697** | 4,801 | 102 |
+| happy | **280,800** | 260,185 * | 289,365 | 2,259,566 | **6,789** | 65,883 | 1,614 |
+| Lantern | **18,976** | 18,734 | 19,579 | 32,262 | **358** | 1,338 | 20 |
+| lucy | **278,356** | 260,701 * | 280,697 | 2,289,250 | **6,606** | 58,592 | 1,626 |
+| RiggedFigure | **1,764** | 1,637 | 1,683 | 3,624 | **18** | 79 | 3 |
+| spot | **26,432** | 25,150 * | 26,366 | 194,541 | **442** | 3,336 | 126 |
+| stanford-bunny | **168,096** | 158,339 * | 171,710 | 1,525,807 | **4,155** | 34,684 | 933 |
+| suzanne | **5,352** | 5,230 | 5,446 | 4,988 | **46** | 230 | 5 |
+| teapot | **15,800** | 16,833 * | 18,218 | 107,678 | **294** | 2,246 | 69 |
+| WaterBottle | **20,080** | 22,510 | 23,660 | 34,393 | **398** | 1,547 | 20 |
+| xyzrgb_dragon | **670,344** | 624,576 * | 673,960 | 5,612,096 | **16,356** | 148,182 | 3,993 |
+| 04263 | **36,512** | 38,449 | 40,126 | 148,852 | **662** | 3,105 | 68 |
+| 04362 | **6,864** | 6,906 | 6,998 | 19,226 | **58** | 292 | 9 |
+| 11375 | **648** | 501 | 511 | 1,069 | **6** | 29 | 1 |
+| minotaur | **8,296** | 8,823 | 9,108 | 22,741 | **100** | 500 | 10 |
+| samurai | **12,640** | 13,705 | 14,129 | 36,377 | **160** | 764 | 18 |
+| werewolf | **7,628** | 7,544 | 7,789 | 16,973 | **129** | 492 | 9 |
+
+Saving takes longer: up to 14.3 s for one mesh in Python.
+
+## Direct form, run of 2026-11-02
+
+The form read in place, with no decode step. Saving wrote it until 2026-11-03, and now falls back to it only for
+meshes the packed form cannot hold. Its `*` rows gave Draco no UVs; fixed since, which raised Draco on `spot` from
+16,529 to 25,150 bytes.
 
 24 meshes, run `20261102T222257Z`. [Raw JSON](results/20261102T222257Z.json). 20-bit positions, 12-bit normals, 16-bit UVs. Edges are left
 out of ZPM's bytes and read times, because the others produce none. No zstd on any of them. `*` means normals are
@@ -154,8 +209,12 @@ on a shared handheld PC, so small timings are noisy.
 ## Reproduce
 
 Needs Python packages `DracoPy`, `zstandard` and `numpy`, the npm package `meshoptimizer`, and a built reader. For native
-timing, build `meshopt_native.cpp` as its first lines say.
+timing, build `meshopt_native.cpp` as its first lines say, and the packed decoder:
 
 ```sh
-python benchmarks/format-compare/compare.py --fixtures FOLDER --meshopt node_modules/meshoptimizer --meshopt-native meshopt_native.exe
+python -m ziglang c++ -O3 -std=c++17 -mavx2 benchmarks/format-compare/packed_decode.cpp -o packed_decode.exe
+```
+
+```sh
+python benchmarks/format-compare/compare.py --fixtures FOLDER --meshopt node_modules/meshoptimizer --meshopt-native meshopt_native.exe --packed-native packed_decode.exe
 ```

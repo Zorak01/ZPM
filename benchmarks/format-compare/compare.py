@@ -40,6 +40,7 @@ EDGE_REGIONS = ("EDGE_",)
 sys.path.insert(0, str(REPOSITORY / "blender"))
 
 from zpm.format import decode, encode, map_file  # noqa: E402
+from zpm.format.codec.mesh_codec import pack  # noqa: E402
 from zpm.format.codec.quantize import decode_normal, encode_normal  # noqa: E402
 from zpm.format.container.layout import MESH_INFO  # noqa: E402
 from zpm.format.processing.snapping import grid_exponent  # noqa: E402
@@ -57,11 +58,12 @@ def fan_triangles(mesh) -> list:
     return triangles
 
 
-def to_vertices(mesh, keep_vertices: bool) -> dict:
+def to_vertices(mesh, keep_vertices: bool, with_normals: bool = True) -> dict:
     """Build the vertices Draco and meshoptimizer expect.
 
     Corners merge when they hold the same values. With keep_vertices they must also be
-    the same Blender vertex, so these formats hold every vertex ZPM holds.
+    the same Blender vertex, so these formats hold every vertex ZPM holds. Without
+    normals, for normals calculated from faces, they split only where UVs do.
     """
     exponent = grid_exponent(mesh)
     step = math.ldexp(1.0, exponent)
@@ -75,7 +77,9 @@ def to_vertices(mesh, keep_vertices: bool) -> dict:
         point = tuple(
             round(mesh.positions[vertex * 3 + axis] / step) for axis in range(3)
         )
-        normal = encode_normal(*normals[corner * 3 : corner * 3 + 3])
+        normal = (
+            encode_normal(*normals[corner * 3 : corner * 3 + 3]) if with_normals else ()
+        )
         uv = (
             (round(uvs[corner * 2] * UV_SCALE), round(uvs[corner * 2 + 1] * UV_SCALE))
             if uvs
@@ -90,7 +94,9 @@ def to_vertices(mesh, keep_vertices: bool) -> dict:
     indices = [corner_indices[corner] for corner in fan_triangles(mesh)]
     return {
         "positions": np.array([row[0] for row in rows], dtype=np.int32),
-        "normals": np.array([row[1] for row in rows], dtype=np.uint16),
+        "normals": np.array([row[1] for row in rows], dtype=np.uint16)
+        if with_normals
+        else None,
         "uvs": np.array([row[2] for row in rows], dtype=np.int32) if uvs else None,
         "indices": np.array(indices, dtype=np.uint32),
         "step": step,
@@ -124,23 +130,25 @@ def median_time_us(work) -> float:
     return sorted(times)[ROUNDS // 2]
 
 
-def measure_draco(vertices: dict) -> dict:
+def measure_draco(vertices: dict, position_bits: int = POSITION_BITS) -> dict:
+    """Draco's size and decode time. ZPM's grid is finer than Draco at 20 bits and
+    coarser than at 21, so the two bracket a comparison at equal precision."""
     positions = (vertices["positions"] * vertices["step"]).astype(np.float32)
-    normals = np.array(
-        [decode_normal(int(a), int(b)) for a, b in vertices["normals"]],
-        dtype=np.float64,
-    )
     extra = {}
+    if vertices["normals"] is not None:
+        extra["normals"] = np.array(
+            [decode_normal(int(a), int(b)) for a, b in vertices["normals"]],
+            dtype=np.float64,
+        )
+        extra["normal_quantization_bits"] = NORMAL_BITS
     if vertices["uvs"] is not None:
         extra["tex_coord"] = vertices["uvs"] / UV_SCALE
         extra["tex_coord_quantization_bits"] = UV_BITS
     data = DracoPy.encode(
         positions,
         vertices["indices"].reshape(-1, 3),
-        quantization_bits=POSITION_BITS,
+        quantization_bits=position_bits,
         compression_level=10,
-        normals=normals,
-        normal_quantization_bits=NORMAL_BITS,
         **extra,
     )
     return {
@@ -154,19 +162,17 @@ def sections_mesh_info(data: bytes) -> bytes:
     return data[region.offset : region.offset + region.length]
 
 
-def measure_draco_geometry(mesh) -> int:
-    """Draco holding only positions and triangles, to match computed normals."""
-    positions = np.array(mesh.positions, dtype=np.float32).reshape(-1, 3)
-    corners = np.array(mesh.corners, dtype=np.uint32)
-    triangles = corners[fan_triangles(mesh)].reshape(-1, 3)
-    return len(
-        DracoPy.encode(
-            positions,
-            triangles,
-            quantization_bits=POSITION_BITS,
-            compression_level=10,
-        )
-    )
+def measure_draco_geometry(mesh, position_bits: int = POSITION_BITS) -> int:
+    """Draco holding positions, triangles and UVs, to match computed normals."""
+    vertices = to_vertices(mesh, False, with_normals=False)
+    return measure_draco(vertices, position_bits)["bytes"]
+
+
+def measure_draco_finer(mesh, vertices: dict, flat: bool) -> int:
+    """Draco's size at one more position bit, finer than ZPM's grid on every mesh."""
+    if flat:
+        return measure_draco_geometry(mesh, POSITION_BITS + 1)
+    return measure_draco(vertices, POSITION_BITS + 1)["bytes"]
 
 
 def measure_meshopt(
@@ -204,11 +210,17 @@ def measure_meshopt(
     return measured
 
 
+def packed_is_native(data: bytes) -> bool:
+    """Return whether a file holds the packed form, not a fallback to the direct one."""
+    return any(region.name == "PACKED_CONNECTIVITY" for region in map_file(data))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fixtures", type=Path, required=True, nargs="+")
     parser.add_argument("--meshopt", type=Path, required=True)
     parser.add_argument("--meshopt-native", type=Path, default=None)
+    parser.add_argument("--packed-native", type=Path, default=None)
     args = parser.parse_args()
     node = shutil.which("node")
     dotnet = shutil.which("dotnet")
@@ -246,9 +258,28 @@ def main():
                 text=True,
             ).stdout
         )
+        clock = time.perf_counter()
+        packed = pack(source)
+        pack_seconds = time.perf_counter() - clock
+        packed_path = work / f"{fixture.stem}.packed.zpm"
+        packed_path.write_bytes(packed)
+        packed_read = {}
+        if args.packed_native is not None and packed_is_native(packed):
+            packed_read = json.loads(
+                subprocess.run(
+                    [str(args.packed_native), str(packed_path)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout
+            )
         rows.append(
             {
                 "mesh": fixture.stem,
+                "packed_bytes": len(packed),
+                "pack_seconds": pack_seconds,
+                "packed_decode_us": packed_read.get("decode_us"),
+                "packed_checksum": packed_read.get("checksum"),
                 "encode_seconds": encode_seconds,
                 "faces": mesh.face_count,
                 "kept_vertices": mesh.vertex_count,
@@ -264,6 +295,11 @@ def main():
                 ),
                 "draco": measure_draco(vertices),
                 "draco_geometry_only": measure_draco_geometry(mesh),
+                "draco_finer_bytes": measure_draco_finer(
+                    mesh,
+                    vertices,
+                    bool(MESH_INFO.unpack(sections_mesh_info(data))[7] & 2),
+                ),
                 "meshopt": measure_meshopt(
                     vertices, args.meshopt, args.meshopt_native, work, node
                 ),

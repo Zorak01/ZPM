@@ -324,6 +324,16 @@ def reorder_mesh(mesh: Mesh) -> Mesh:
         key=lambda candidate: _order_cost(mesh, source_faces, candidate),
     )
     turns = _strip_turns(source_faces, order) if _fits_strips(source_faces) else {}
+    return reorder_by(mesh, order, turns)
+
+
+def reorder_by(mesh: Mesh, order: list, turns: dict) -> Mesh:
+    """Return the mesh with faces in this order, each turned to start at another corner.
+
+    Vertices are numbered by first use, and edges in the order faces first reach them.
+    Winding is kept, and edges are stored lower ID first. All surface data follows.
+    """
+    source_faces = face_lists(mesh)
     new_ids = {}
     for index in order:
         for vertex in _turned(source_faces[index], turns.get(index, 0)):

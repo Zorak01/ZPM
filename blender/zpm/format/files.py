@@ -22,7 +22,7 @@ def load(path: str | Path, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Scene:
 
 def save(path: str | Path, scene: Scene) -> None:
     """Replace a file atomically after successful encoding, in the same directory."""
-    data = encode_scene(scene)
+    data = encode_scene(scene, packed=True)
     destination = Path(path)
     temporary = None
     try:

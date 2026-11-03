@@ -376,7 +376,7 @@ Lightmap and detail layers often follow the same seams.
 
 ### Text, surfaces and metaballs
 
-They are saved as the mesh they make, so they look right anywhere, with their source settings kept as properties.
+They are saved as the mesh they make, so they look right anywhere.
 
 ### Point clouds and hair as meshes with no faces
 
@@ -386,27 +386,27 @@ They are saved as the mesh they make, so they look right anywhere, with their so
 use them as they are, and every column technique applies. A property names what they were, so Blender rebuilds the real
 thing. Curve-level attributes sit in a value tree, since a mesh has no such domain.
 
-### Volumes, speakers and light probes
+### Volumes
 
-These keep their settings on their object. A volume's grid file links by path, or is stored whole in an optional extension
+A volume keeps its settings on its object. Its grid file links by path, or is stored whole in an optional extension
 when embedding is on. Its grids are not parsed. If the saved path is gone on import, the stored file is written out and used.
 
 ### Meshes that change shape over time
 
 An object with a modifier that can change its topology is walked through the scene's frames at export. Each new vertex,
 face or corner count stores a whole mesh, with a stepped track naming which one applies when. Blender cannot key a swap, so
-its import keeps the modifier instead, and other readers use the track. Export takes longer for such objects, and a same-count
+its import ignores the track, and other readers use it. Export takes longer for such objects, and a same-count
 change is not noticed.
 
-### Worlds and sparse keys
+### Sparse keys
 
-A scene's world is kept with its settings and node graph, and its animation is addressed under `world.`. A multi-component
+A multi-component
 track may be sparse: change flags sit before its values, and a component that did not change costs one flag. Reading such a
 key counts flags, so read them in key order.
 
-### Baked approximations and other image encodings
+### Other image encodings
 
-A material lists bakes, and an image lists other encodings of itself, each with the settings or quality rule that made it.
+An image lists other encodings of itself, each with the quality rule that made it.
 These live in value trees and point at ordinary images, so they need no new layout. ZPM ships no texture encoder, so nothing
 in the Blender plugin writes image variants yet.
 
@@ -448,8 +448,7 @@ and skinning matrices, and every object's world matrix, without allocating.
 axis-angle rotations, roll, a bone pointing straight down, connected bones, nonuniform scale, and bone parents.
 Largest difference: 0.0000018.
 
-**Limits:** constraints, drivers and modifiers aren't run, nor object delta transforms. Vertex parents need mesh data,
-so `GetWorldMatrices` says when it could not place one exactly. Partial bone inheritance is treated as full.
+**Limits:** a vertex parent uses the mesh as stored, and a bone keeping its parent's shear is only exact without shear.
 
 ### Objects share data
 
@@ -473,7 +472,7 @@ can't describe also goes into an optional extension, so Blender can rebuild it e
 
 ### One value tree for everything open-ended
 
-**Problem:** Custom properties, modifiers, constraints, drivers and application settings have no fixed shape, and a
+**Problem:** Custom properties and application settings have no fixed shape, and a
 table for each would mean endless layouts.
 
 **Technique:** One table of fixed 16-byte nodes, with shared strings and one array column. Children always sit later
@@ -613,6 +612,14 @@ normals predicted from geometry and an adaptive binary coder, with corners in st
 
 That still does not reach Draco, even after dropping every read in place. Draco's connectivity coding and UV prediction would
 close part of the gap, not obviously all of it, and the result would decode about as slowly as Draco. Not built.
+
+## What a 3D file should not hold
+
+Removed on 2026-11-02, as Blender's own state and not 3D data: viewport display, locks, render visibility and other object
+settings; bone collections and display; scene frame range and active camera; worlds; speakers and light probes; node graphs;
+modifiers, constraints, drivers and control shapes; bake records. The armature link stays, so skinning works. Object settings
+keep only delta transforms and an empty's shape, and cameras and lights only what changes the image. A rig comes back with
+its bones, weights and animation, but no controllers.
 
 ## Why ZPM does not beat Draco on size
 

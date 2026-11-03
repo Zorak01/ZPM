@@ -26,12 +26,11 @@ smallest earlier experiment, which had to decode all of it first.
 | UVs | Multiple named UV sets and coordinates spanning UDIM tiles | Working |
 | Vertex colors | Multiple named RGBA layers, stored per vertex or face corner; 8-bit or float values; linear or sRGB | Working |
 | Custom attributes | Named exact data on vertices, face corners, edges, faces, or the whole mesh; named values on any resource | Working |
-| Materials and textures | Application-neutral materials: shared fields, any shading model, named parameters, texture slots with named roles, samplers, UV transforms, UDIM tiles, image links or embedded images. Blender node graphs are kept too | Working |
+| Materials and textures | Application-neutral materials: shared fields, any shading model, named parameters, texture slots with named roles, samplers, UV transforms, UDIM tiles, image links or embedded images. | Working |
 | Objects and hierarchy | Mesh, empty, armature, light, curve, lattice and camera objects, names, transforms, every parent type including bones and vertices, collections, shared meshes, collection instances, per-object materials, and world matrices worked out by the reader | Working |
-| Bones and rigs | Bone head, tail, roll, parenting, envelopes, flags, scale inheritance, bone collections, display settings, pose data and control shapes; rest, bind, pose and skinning matrices worked out by the reader | Working |
+| Bones and rigs | Bone head, tail, roll, parenting, envelopes, flags, scale inheritance and pose data; rest, bind, pose and skinning matrices worked out by the reader | Working |
 | Skinning | Named vertex groups and painted weights, the armature each mesh object follows, and each group's bone | Working |
 | Blendshapes | Named shape targets, changed vertices, values, ranges, relative and absolute targets, in-betweens, and normal and tangent changes | Working |
-| Rig behavior | Modifiers, constraints and drivers, with their links, kept for the application that made them; not a portable evaluator | Working |
 | Other objects | Point, spot, sun and area lights, poly, Bezier and NURBS curves, lattices, and cameras | Working |
 | Animation | Clips of tracks addressing any field by owner and path, with float, integer, boolean, string and reference keys | Working |
 
@@ -65,7 +64,7 @@ In Preferences > Get Extensions > Install from Disk, select `dist/zpm-0.1.0.zip`
 Enable **ZPM Mesh**. In Object Mode, use File > Import / Export > **ZPM Mesh Core**.
 
 Exports hold the selected objects, or the whole scene when none is selected, with base meshes in
-local coordinates; modifiers are not evaluated, apart from the armature link. Imports recreate
+local coordinates; modifiers, constraints and drivers are not stored, apart from the armature link. Imports recreate
 them. Keep the source `.blend` for data outside what ZPM stores yet.
 
 The one setting is **Embed Textures**, which stores image files inside the `.zpm`. Everything else

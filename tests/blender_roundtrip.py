@@ -201,7 +201,7 @@ def check_whole_scene(directory):
     assert stored.images[0].name == "Paint"
     assert stored.lights[0].power == 50
     assert stored.materials[0].parameters["IOR"] == 1.25
-    assert stored.extensions[0].name == "blender.node_graphs"
+    assert not stored.extensions, "Node graphs are not stored"
     assert stored.clips[0].name == "Slide"
 
     before = set(bpy.data.objects.keys())
@@ -257,18 +257,13 @@ def check_whole_scene(directory):
     assert made["Eye"].data.lens == 35
     assert made["Body"]["note"] == "keep me"
     assert list(made["Body"]["levels"]) == [1, 2, 3]
-    assert [m.name for m in made["Body"].modifiers] == ["Armature", "Soften"]
-    assert made["Body"].modifiers["Soften"].width == 0.25
-    copied = made["Body"].constraints["Follow"]
-    assert copied.target == made["Marker"] and copied.influence == 0.5
+    assert [m.name for m in made["Body"].modifiers] == ["Armature"]
+    assert not made["Body"].constraints
     posed = made["Rig"].pose.bones["Spine"]
-    assert posed.custom_shape == made["Shape"]
-    assert tuple(posed.custom_shape_scale_xyz) == (2, 2, 2)
-    assert posed.constraints[0].target == made["Marker"]
-    driven = made["Body"].animation_data.drivers[0]
-    assert driven.driver.expression == "var * 2"
-    assert driven.driver.variables[0].targets[0].id == made["Marker"]
-    assert driven.driver.variables[0].targets[0].data_path == "location.x"
+    assert posed.custom_shape is None and not posed.constraints
+    assert (
+        made["Body"].animation_data is None or not made["Body"].animation_data.drivers
+    )
     action = made["Marker"].animation_data.action
     assert action.name.startswith("Slide")
     curve = anim_utils.action_get_channelbag_for_slot(
@@ -277,10 +272,9 @@ def check_whole_scene(directory):
     assert curve.data_path == "location"
     assert [tuple(p.co) for p in curve.keyframe_points] == [(1, 0), (10, 4)]
     graph_nodes = {node.bl_idname for node in skin.node_tree.nodes}
-    assert "ShaderNodeTexNoise" in graph_nodes
-    assert posed.custom_shape_transform.name == "Hip"
+    assert "ShaderNodeTexNoise" not in graph_nodes
     assert made["Rig"].data.bones["Spine"].inherit_scale == "AVERAGE"
-    assert made["Rig"].data.collections_all["Arms"].bones[0].name == "Spine"
+    assert not made["Rig"].data.collections_all, "Bone collections are UI state"
     assert made["Marker"].empty_display_size == 2.5
     assert tuple(made["Marker"].delta_location) == (0, 0, 1)
     assert made["VertexChild"].parent == made["Copy"]
@@ -295,9 +289,6 @@ def check_whole_scene(directory):
     assert imported_image is not None
     assert any(c.get("team") == 7 and c is not group for c in bpy.data.collections)
     assert made["Body"].data["cost"] == 3
-    key_block_driver = made["Body"].data.shape_keys.animation_data.drivers[0]
-    assert key_block_driver.driver.expression == "lens / 100"
-    assert key_block_driver.driver.variables[0].targets[0].id.name.startswith("Lens")
     light_curve = anim_utils.action_get_channelbag_for_slot(
         made["Lamp"].data.animation_data.action,
         made["Lamp"].data.animation_data.action_slot,
@@ -513,7 +504,7 @@ def check_attributes_and_shape_keys(directory):
 
 
 def check_nothing_is_lost(directory):
-    """String attributes, text, surfaces, the world and resource drivers survive."""
+    """String attributes, text and surfaces survive. World and drivers do not."""
     bpy.ops.object.select_all(action="DESELECT")
     bpy.ops.surface.primitive_nurbs_surface_surface_add()
     surface = bpy.context.active_object
@@ -558,10 +549,8 @@ def check_nothing_is_lost(directory):
     by_name = {item.name: item for item in stored.objects}
     made = stored.meshes[by_name["Sign"].data]
     assert made.face_count > 0, "Text must become its mesh"
-    assert made.properties["source_settings"]["body"] == "ZPM"
     assert stored.meshes[by_name["Patch"].data].face_count > 0
-    assert stored.settings["world"]["name"] == "Sky"
-    assert any(
+    assert not any(
         track.path.startswith("world.")
         for clip in stored.clips
         for track in clip.tracks
@@ -573,24 +562,19 @@ def check_nothing_is_lost(directory):
     imported = {
         bpy.data.objects[name] for name in set(bpy.data.objects.keys()) - before
     }
-    assert bpy.context.scene.world.name.startswith("Sky")
-    assert bpy.context.scene.world is not world
-    node = bpy.context.scene.world.node_tree.nodes["Background"]
-    assert abs(node.inputs[1].default_value - 3.5) < 1e-5
-    assert bpy.context.scene.world.node_tree.animation_data.action is not None
+    assert bpy.context.scene.world is None, "A world is not stored"
     cubes = [o for o in imported if o.type == "MESH" and "label" in o.data.attributes]
     assert cubes, "The string attribute must come back"
     assert {e.value for e in cubes[0].data.attributes["label"].data} >= {b"corner", b""}
-    drives = cubes[0].data.materials[0].animation_data.drivers
-    assert drives[0].driver.expression == "0.25"
+    assert cubes[0].data.materials[0].animation_data is None
     lamps = [o for o in imported if o.type == "LIGHT"]
-    assert lamps[0].data.animation_data.drivers[0].driver.expression == "42"
+    assert lamps[0].data.animation_data is None
     bpy.context.scene.world = earlier_world
-    print("PASS: string attributes, text, surfaces, world and resource drivers")
+    print("PASS: string attributes, text and surfaces")
 
 
 def check_points_hair_volumes_and_topology(directory):
-    """Point clouds, hair, volumes, node drivers and changing topology survive."""
+    """Point clouds, hair, volumes and changing topology are stored."""
     bpy.ops.object.select_all(action="DESELECT")
     cloud_data = bpy.data.pointclouds.new("Cloud")
     cloud_data.resize(4)
@@ -636,7 +620,6 @@ def check_points_hair_volumes_and_topology(directory):
     assert wires.edge_count == 3, "Hair is stored as wires any reader can use"
     swaps = [t for c in stored.clips for t in c.tracks if t.path == "data"]
     assert len(swaps) == 1 and len(swaps[0].times) > 1, "Topology must be captured"
-    assert stored.materials[0].node_drivers[0]["expression"] == "0.5"
 
     before = set(bpy.data.objects.keys())
     assert bpy.ops.import_mesh.zpm(filepath=path) == {"FINISHED"}
@@ -652,12 +635,10 @@ def check_points_hair_volumes_and_topology(directory):
     assert abs(made["CURVES"].data.points[1].position[0] - 1) < 1e-4
     assert abs(made["VOLUME"].data.display.density - 0.25) < 1e-6
     assert made["VOLUME"].data.filepath == "//missing.vdb"
-    assert "SPEAKER" in made
-    assert made["MESH"].modifiers["Build"].frame_duration == 3
-    tree = made["MESH"].data.materials[0].node_tree
-    assert tree.animation_data.drivers[0].driver.expression == "0.5"
+    assert "SPEAKER" not in made and "EMPTY" in made
+    assert not made["MESH"].modifiers
     scene.frame_start, scene.frame_end = frames
-    print("PASS: point clouds, hair, volumes, speakers, node drivers and topology")
+    print("PASS: point clouds, hair, volumes and topology")
 
 
 def check_shape_extremes(source, imported):

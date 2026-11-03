@@ -35,29 +35,22 @@ ROLE_NORMAL = "normal"
 ROLE_EMISSION = "emission"
 ROLE_ALPHA = "alpha"
 TREE_FIELDS = {
-    "Scene": ("properties", "settings"),
+    "Scene": ("properties",),
     "SceneObject": (
         "properties",
         "settings",
         "material_overrides",
-        "modifiers",
-        "constraints",
-        "bone_settings",
-        "drivers",
     ),
-    "Mesh": ("properties", "drivers"),
+    "Mesh": ("properties",),
     "Material": (
         "model",
         "parameters",
         "properties",
-        "drivers",
-        "node_drivers",
-        "bakes",
     ),
     "Image": ("properties", "variants"),
-    "Light": ("settings", "properties", "drivers"),
-    "Armature": ("settings", "bone_collections", "properties"),
-    "Bone": ("settings", "properties"),
+    "Light": ("settings", "properties"),
+    "Armature": ("properties",),
+    "Bone": ("properties",),
     "Collection": ("properties",),
     "Curve": ("settings", "properties"),
     "Lattice": (
@@ -105,9 +98,7 @@ class SceneObject:
 
     data indexes the list its type names: meshes, armatures or lights. skin_bones gives
     the bone for each of the mesh's vertex groups, or NO_INDEX. material_overrides holds
-    {"slot", "material"} for slots this object fills itself. modifiers, constraints,
-    bone_settings and drivers hold whatever their source application calls them: they
-    are kept for that application, and are not a portable way to evaluate a rig.
+    {"slot", "material"} for slots this object fills itself.
     """
 
     name: str
@@ -131,10 +122,6 @@ class SceneObject:
     properties: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
     material_overrides: list = field(default_factory=list)
-    modifiers: list = field(default_factory=list)
-    constraints: list = field(default_factory=list)
-    bone_settings: list = field(default_factory=list)
-    drivers: list = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -170,9 +157,7 @@ class Material:
 
     The fields are what real-time and offline renderers share. model is empty for
     plain metallic-roughness, or names another shading model. parameters holds the
-    named values a model has beyond these fields. bakes lists approximations baked
-    from the source shading, as {"role", "image", "settings"}: which slot it stands in
-    for, its place in the image list, and what made it.
+    named values a model has beyond these fields.
     """
 
     name: str
@@ -189,9 +174,6 @@ class Material:
     model: str = ""
     parameters: dict = field(default_factory=dict)
     properties: dict = field(default_factory=dict)
-    drivers: list = field(default_factory=list)
-    node_drivers: list = field(default_factory=list)
-    bakes: list = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,7 +236,6 @@ class Light:
     area_height: float = 0.0
     settings: dict = field(default_factory=dict)
     properties: dict = field(default_factory=dict)
-    drivers: list = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -279,12 +260,11 @@ class Bone:
 
 @dataclass(slots=True)
 class Armature:
-    """Bones, in any order. bone_collections holds named groups of bone names."""
+    """Bones, in any order."""
 
     name: str
     bones: list = field(default_factory=list)
     settings: dict = field(default_factory=dict)
-    bone_collections: list = field(default_factory=list)
     properties: dict = field(default_factory=dict)
 
 
@@ -435,7 +415,6 @@ class Scene:
     clips: list = field(default_factory=list)
     extensions: list = field(default_factory=list)
     properties: dict = field(default_factory=dict)
-    settings: dict = field(default_factory=dict)
 
     def resources(self, kind: ResourceKind) -> list:
         """Return every resource of one kind. Bones run across all armatures."""
@@ -586,10 +565,9 @@ class Scene:
 
     def _validate_image_links(self) -> None:
         count = len(self.images)
-        links = [bake["image"] for m in self.materials for bake in m.bakes]
-        links += [variant["image"] for i in self.images for variant in i.variants]
+        links = [variant["image"] for i in self.images for variant in i.variants]
         if any(not 0 <= link < count for link in links):
-            raise FormatError("A bake or image variant names a missing image")
+            raise FormatError("An image variant names a missing image")
 
     def _validate_materials(self) -> None:
         for material in self.materials:

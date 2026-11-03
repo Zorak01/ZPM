@@ -71,7 +71,7 @@ def _without_repeated_meshes(scene: Scene) -> Scene:
     remap = {}
     kept = []
     for index, mesh in enumerate(scene.meshes):
-        key = (encode(mesh), repr((mesh.properties, mesh.drivers)))
+        key = (encode(mesh), repr(mesh.properties))
         if index in animated or key not in first_of:
             first_of.setdefault(key, len(kept))
             remap[index] = len(kept)

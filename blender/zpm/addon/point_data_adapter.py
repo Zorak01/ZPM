@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Point clouds, hair curves, and data with settings only, to and from the format.
+"""Point clouds, hair curves and volumes, to and from the format.
 
 Point clouds and hair hold what a mesh's columns hold, so they are stored as meshes with
 no faces, and any reader can use them as points and wires. A property names what they
-were. Volumes, speakers and light probes are kept as settings on their object.
+were. Volumes are kept as settings on their object.
 """
 
 from array import array
@@ -22,7 +22,7 @@ POINT_CLOUD = "POINTCLOUD"
 HAIR = "CURVES"
 VOLUME = "VOLUME"
 POINT_DATA_TYPES = {POINT_CLOUD, HAIR}
-SETTINGS_DATA_TYPES = {VOLUME, "SPEAKER", "LIGHT_PROBE"}
+SETTINGS_DATA_TYPES = {VOLUME}
 VOLUME_EXTENSION_PREFIX = "blender.volume:"
 _CURVE_SIZES_PROPERTY = "curve_sizes"
 _CURVE_ATTRIBUTES_PROPERTY = "curve_attributes"
@@ -165,8 +165,6 @@ def capture_settings_data(data, object_type: str) -> dict:
         "settings": rna_values.capture_rna(data, {}),
         "properties": rna_values.capture_properties(data),
     }
-    if object_type == "LIGHT_PROBE":
-        stored["probe_type"] = data.type
     if object_type == VOLUME:
         stored["parts"] = {
             part: rna_values.capture_rna(getattr(data, part), {})
@@ -202,14 +200,9 @@ def _restore_volume_file(data, extensions: list) -> None:
 
 
 def create_settings_data(stored: dict, extensions: list):
-    """Create a volume, speaker or light probe from its settings."""
+    """Create a volume from its settings."""
     kind = stored["type"]
-    if kind == VOLUME:
-        data = bpy.data.volumes.new(stored["name"])
-    elif kind == "SPEAKER":
-        data = bpy.data.speakers.new(stored["name"])
-    else:
-        data = bpy.data.lightprobes.new(stored["name"], stored["probe_type"])
+    data = bpy.data.volumes.new(stored["name"])
     rna_values.apply_rna(data, stored["settings"], [])
     rna_values.apply_properties(data, stored["properties"])
     if kind == VOLUME:

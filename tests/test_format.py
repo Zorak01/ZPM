@@ -600,15 +600,12 @@ class CodecTests(unittest.TestCase):
         with self.assertRaises(FormatError):
             encode_scene(scene)
 
-    def test_bakes_and_image_variants_round_trip_and_are_checked(self):
-        bake = {"role": "base_color", "image": 1, "settings": {"samples": 64}}
+    def test_image_variants_round_trip_and_are_checked(self):
         variant = {"image": 1, "format": "ktx2", "policy": {"quality": 128}}
         scene = Scene(
-            materials=[Material("Skin", bakes=[bake])],
             images=[Image("Source", variants=[variant]), Image("Baked")],
         )
         stored = decode_scene(encode_scene(scene))
-        self.assertEqual(stored.materials[0].bakes, [bake])
         self.assertEqual(stored.images[0].variants, [variant])
         scene.images[0].variants = [{"image": 9, "format": "ktx2", "policy": {}}]
         with self.assertRaises(FormatError):
@@ -1161,16 +1158,11 @@ def sample_scene() -> Scene:
                 ObjectType.LIGHT,
                 0,
                 properties={"note": "key", "level": 3, "on": True},
-                settings={"pass_index": 3},
+                settings={"empty_display_size": 3.0, "target": Reference(0)},
                 material_overrides=[{"slot": 0, "material": 1}],
                 parent=1,
                 parent_type=ParentType.VERTEX_3,
                 parent_vertices=(4, 5, 6),
-                modifiers=[
-                    {"name": "Mod", "type": "X", "settings": {"object": Reference(0)}}
-                ],
-                constraints=[{"name": "C", "type": "COPY_LOCATION", "settings": {}}],
-                drivers=[{"path": "location", "index": 0, "expression": "var*2"}],
             ),
             SceneObject("Line", ObjectType.CURVE, 0),
             SceneObject("Cage", ObjectType.LATTICE, 0),
@@ -1217,7 +1209,6 @@ def sample_scene() -> Scene:
                         tail_radius=0.125,
                         is_connected=True,
                         inherit_scale=InheritScale.AVERAGE,
-                        settings={"bbone_x": 0.5},
                     ),
                 ],
             )
@@ -1337,7 +1328,6 @@ def sample_scene() -> Scene:
             Extension("studio.notes", 2, False, b"keep me"),
         ],
         {"author": "test", "tags": ["a", "b"], "inner": {"depth": 1}},
-        {"frame_start": 1, "camera": Reference(7)},
     )
 
 

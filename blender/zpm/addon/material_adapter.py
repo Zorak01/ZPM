@@ -2,13 +2,11 @@
 
 """Blender materials and images to and from the format's tables."""
 
-import json
 from pathlib import Path
 
 import bpy
 
-from ..format import Extension, Image, ImageTile, Material, Sampler, TextureSlot
-from ..format.codec.scene_extensions import BLENDER_NODE_GRAPHS
+from ..format import Image, ImageTile, Material, Sampler, TextureSlot
 from ..format.container.layout import AlphaMode, SamplerFilter, SamplerWrap
 from ..format.scene import (
     ROLE_ALPHA,
@@ -27,7 +25,6 @@ _MAPPING_NODE = "MAPPING"
 _UV_MAP_NODE = "UVMAP"
 _UDIM_TOKEN = "<UDIM>"
 _MAX_WALK = 8
-WORLD_GRAPH = "\0world"
 _ROLE_INPUTS = {
     ROLE_BASE_COLOR: "Base Color",
     ROLE_METALLIC: "Metallic",
@@ -38,15 +35,6 @@ _ROLE_INPUTS = {
 }
 _FIELD_INPUTS = {*_ROLE_INPUTS.values(), "Emission Strength"}
 _DATA_ROLES = (ROLE_METALLIC, ROLE_ROUGHNESS, ROLE_NORMAL, ROLE_ALPHA)
-_STANDARD_NODES = {
-    _PRINCIPLED,
-    "OUTPUT_MATERIAL",
-    _IMAGE_NODE,
-    _NORMAL_MAP_NODE,
-    _MAPPING_NODE,
-    _UV_MAP_NODE,
-    "SEPCOLOR",
-}
 _FILTERS = {
     "Linear": SamplerFilter.LINEAR,
     "Closest": SamplerFilter.NEAREST,
@@ -85,16 +73,7 @@ class MaterialCapture:
         self._images = {}
         self._samplers = {}
         self._materials = {}
-        self._graphs = {}
         self._defaults = _principled_defaults()
-
-    @property
-    def extensions(self) -> list:
-        """Return node graphs plain fields cannot describe, for Blender to rebuild."""
-        if not self._graphs:
-            return []
-        payload = json.dumps(self._graphs, separators=(",", ":")).encode("utf-8")
-        return [Extension(BLENDER_NODE_GRAPHS, payload=payload)]
 
     @property
     def materials(self) -> list:
@@ -118,17 +97,6 @@ class MaterialCapture:
         for material in mesh.materials:
             if material is not None and material.name not in self._materials:
                 self._materials[material.name] = self._capture(material)
-
-    def add_world(self, world: bpy.types.World) -> None:
-        """Keep the world's node graph, and any images it uses."""
-        graph = _capture_graph(world)
-        if not graph:
-            return
-        self._graphs[WORLD_GRAPH] = graph
-        for node in world.node_tree.nodes:
-            image = getattr(node, "image", None)
-            if image is not None:
-                self._image_index(image)
 
     def _capture(self, material: bpy.types.Material) -> Material:
         result = Material(
@@ -158,9 +126,6 @@ class MaterialCapture:
         for socket in inputs:
             if socket.name not in _FIELD_INPUTS:
                 self._capture_extra_input(result, socket)
-        graph = _capture_graph(material)
-        if graph:
-            self._graphs[material.name] = graph
         return result
 
     def _capture_extra_input(self, result: Material, socket) -> None:
@@ -228,76 +193,6 @@ def _principled_defaults() -> dict:
     defaults = {socket.name: _socket_value(socket) for socket in shader.inputs}
     bpy.data.materials.remove(material)
     return defaults
-
-
-def _capture_graph(material: bpy.types.Material) -> dict:
-    """Return the node graph when it holds more than the plain fields describe."""
-    tree = material.node_tree
-    if tree is None or all(node.type in _STANDARD_NODES for node in tree.nodes):
-        return {}
-    nodes = []
-    for node in tree.nodes:
-        settings = rna_values.capture_rna(
-            node, {}, skip={"location", "width", "height"}
-        )
-        nodes.append(
-            {
-                "type": node.bl_idname,
-                "name": node.name,
-                "location": list(node.location),
-                "settings": settings,
-                "image": node.image.name if getattr(node, "image", None) else "",
-                "inputs": [_socket_value(socket) for socket in node.inputs],
-            }
-        )
-    links = [
-        [
-            link.from_node.name,
-            list(link.from_node.outputs).index(link.from_socket),
-            link.to_node.name,
-            list(link.to_node.inputs).index(link.to_socket),
-        ]
-        for link in tree.links
-    ]
-    return {"nodes": nodes, "links": links}
-
-
-def _apply_graph(material, graph: dict, images: dict) -> None:
-    tree = material.node_tree
-    tree.nodes.clear()
-    made = {}
-    for stored in graph["nodes"]:
-        node = tree.nodes.new(stored["type"])
-        node.name = stored["name"]
-        node.location = stored["location"]
-        rna_values.apply_rna(node, stored["settings"], [])
-        if stored["image"] in images:
-            node.image = images[stored["image"]]
-        for socket, value in zip(node.inputs, stored["inputs"], strict=False):
-            if value is not None and hasattr(socket, "default_value"):
-                socket.default_value = value
-        made[stored["name"]] = node
-    for source, output, target, target_input in graph["links"]:
-        tree.links.new(made[source].outputs[output], made[target].inputs[target_input])
-
-
-def read_graphs(extensions: list) -> dict:
-    """Return material name to node graph, from the file's extensions."""
-    for extension in extensions:
-        if extension.name == BLENDER_NODE_GRAPHS:
-            return json.loads(extension.payload)
-    return {}
-
-
-def create_world(name: str, settings: dict, images: list, graphs: dict):
-    """Create a world with these settings and, if the file holds one, its node graph."""
-    world = bpy.data.worlds.new(name)
-    rna_values.apply_rna(world, settings, [])
-    if WORLD_GRAPH in graphs:
-        world.use_nodes = True
-        by_name = {image.name: image for image in images}
-        _apply_graph(world, graphs[WORLD_GRAPH], by_name)
-    return world
 
 
 def _find_image_node(socket):
@@ -432,11 +327,8 @@ def _link_slot(material, shader, slot, images, samplers) -> None:
         links.new(uv_map.outputs["UV"], vector)
 
 
-def create_material(source: Material, images: list, samplers: list, graphs: dict):
-    """Create a material whose Principled node holds these values.
-
-    A stored node graph replaces that node, since it says more.
-    """
+def create_material(source: Material, images: list, samplers: list):
+    """Create a material whose Principled node holds these values."""
     material = bpy.data.materials.new(source.name)
     rna_values.apply_properties(material, source.properties)
     material.use_nodes = True
@@ -454,10 +346,6 @@ def create_material(source: Material, images: list, samplers: list, graphs: dict
     for name, value in source.parameters.items():
         if name in inputs:
             inputs[name].default_value = value
-    if source.name in graphs:
-        by_name = {image.name: image for image in images}
-        _apply_graph(material, graphs[source.name], by_name)
-        return material
     for slot in source.slots:
         _link_slot(material, shader, slot, images, samplers)
     for node in material.node_tree.nodes:

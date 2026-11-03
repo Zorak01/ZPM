@@ -8,8 +8,7 @@ from ..errors import FormatError
 from ..scene import Extension
 from .scene_tables import names_section, read_name_list, read_records
 
-BLENDER_NODE_GRAPHS = "blender.node_graphs"
-_KNOWN_EXTENSIONS = {BLENDER_NODE_GRAPHS}
+_KNOWN_EXTENSIONS = frozenset()
 
 
 def encode_extensions(extensions: list) -> list:

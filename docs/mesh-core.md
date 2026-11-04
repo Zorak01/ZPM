@@ -139,9 +139,9 @@ it holds, from tangents to blendshapes, uses the sections above. `codec/packed.p
 | ---: | --- | --- |
 | 278 | `PACKED_CONNECTIVITY` | One byte, the context model, then faces as a walk over welded positions |
 | 279 | `PACKED_SPLITS` | One byte, the model, then which vertex at its position each corner uses |
-| 280 | `PACKED_POSITIONS` | Grid step (Float32; 0 for 2^ the grid exponent), a form byte (bit 0 fine numbers, bit 1 contexts across axes), then grid integers of each welded position, then of vertices on no face |
-| 281 | `PACKED_NORMALS` | A byte (bit 0 predicts around vertices, not positions; bit 1 fine numbers; bits 2–3 the lookup), then the stream |
-| 282 | `PACKED_UVS` | Layered by UV layer, named by `UV_NAMES`: a byte (bit 0 fine numbers; bits 1–2 the lookup), then the stream |
+| 280 | `PACKED_POSITIONS` | Grid step (Float32; 0 for 2^ the grid exponent), a form byte (bits 0–1 the fine level, bits 2–3 the keying, bit 4 a shrunk parallelogram), then grid integers of each welded position, then of vertices on no face |
+| 281 | `PACKED_NORMALS` | A byte (bit 0 predicts around vertices, not positions; bit 1 fine numbers; bits 2–3 the lookup; bit 4 pairs), then the stream |
+| 282 | `PACKED_UVS` | Layered by UV layer, named by `UV_NAMES`: a byte (bit 0 fine numbers; bits 1–2 the lookup; bit 3 pairs), then the stream |
 | 283 | `PACKED_LOOSE_EDGES` | Column: both vertex IDs of each edge on no face |
 
 Each stream is static-table rANS: a state (UInt32), then word count and raw byte count as varints (7 bits a byte, low
@@ -153,7 +153,8 @@ An order-k code of v is as many clear bits as v + 2^k has bits past k + 1, a set
 low first. A symbol takes the state's low 10 bits as its slot; the state becomes
 frequency × (state >> 10) + slot − the symbol's first slot, and takes the next word whenever it falls below 65,536. A
 number is its zigzag value's bit length as a symbol, then the bits below the top one, raw, low bits first. In a fine
-stream a number of two bits or more is instead 2 × its length − 2 + its second bit, then the bits below that. A choice
+stream a number of two bits or more is instead 2 × its length − 2 + its second bit, then the bits below that; at
+fine level 2 a number of three bits or more is 4 × its length − 8 + its second and third bits, then the bits below. A choice
 is one symbol, or 200 then a number to add to 200; counts that cannot be negative are choices.
 
 **Connectivity.** Faces arrive as a walk. The reader keeps open edges: directed edges with a face on one side so far,
@@ -168,7 +169,8 @@ corners are its ring in this order, which sets winding and first corner. Context
 
 Model 0 keys a corner on the symbol before and whether it ends its face; model 1 adds the symbol before that and
 whether open edges lead into the last corner and out of the first. Model 2 follows each new position with a choice,
-its count of corners in all faces, keyed on the count before it up to 9 (starting from 6), and keys a corner on how
+its count of corners in all faces, keyed on 11 × the count before it up to 9 (starting from 6) + (0 with no ring yet,
+else 1 + the count of the ring's first position, up to 9), and keys a corner on how
 many faces its face's first and last positions still need (none, 0, 1, 2, or 3 and up) with whether it is last and
 the open edges as in model 1, and a gate on what each end still needs, up to 2. Model 0 and 1 gates share one context.
 
@@ -179,20 +181,25 @@ else the vertex last used at this position; then the others, newest first. Conte
 plus 4 when the guess came from a gate. Model 2 guesses instead the vertex of the corner across, wherever a face
 closed an open edge there and that corner is already read: the earlier face's corner at the same position. Its
 context adds 8 × (2 × the face's last choice, as 0 none yet, 1 a new vertex, 2 another, 3 the guess, + 1 if the vertex
-across began as a new vertex at a known position).
+across began as a new vertex at a known position), and 64 for a face's first two corners when a gate reached it.
 
 **Positions.** Welded positions in the order they first appear, each axis a number added to a prediction from where
 the position first appears in its face. At the first corner: the last position read. At the second: the first
 corner's. At the third, reached through a gate: the two gate corners added, minus the third corner of the face the
 gate came from; with no gate, the corner before. At later corners: the corner before plus the first minus the second.
 With 4,000 positions or more, each axis's number takes a context from the size of the last, a quarter of its bit
-length up to 3. Across axes, the context is instead half the largest bit length so far among this position's earlier
-axes, or for the first axis its own last, up to 7, times 6, plus a third of its own last bit length up to 5.
+length up to 3. Across axes (keying 1), the context is instead half the largest bit length so far among this position's earlier
+axes, or for the first axis its own last, up to 7, times 6, plus a third of its own last bit length up to 5. Keying 2
+takes the normal of the parallelogram's triangle, the cross product of a − c and b − c in integers, and for each axis
+min(4 × its absolute part // the sum of absolute parts, 3), plus one, or 0 with no parallelogram; times 6, plus the
+same third of its own last. A shrunk parallelogram predicts (7 (a + b) − 6 c + 4) // 8, rounding down.
 
 **Normals and UVs.** Corners in order. A corner looks for values already seen by its lookup: 0 its welded
 position's, 1 its vertex's, 2 its vertex's if it has any, else its position's, with the vertex's choices keyed from
 13 for normals and 8 for UVs. If there are any it reads a choice: 0 for new values, or which of them. Every value is
-added to each list it is not yet in. New values are numbers added to a prediction: for normals, the 12-bit direction
+added to each list it is not yet in. With pairs, a value's second part takes the contexts after all others, from
+half the first part's bit length up to 7; for UVs, the first part then also takes its own 12 contexts after those,
+4 × (its corner's place in its face, up to 2) + a quarter of its own last bit length. New values are numbers added to a prediction: for normals, the 12-bit direction
 of the summed face normals around the key, with integer cross products, or the key's last value; for UVs, from the
 triangle's shape in space, with a symbol picking the side when the walk does not settle it. All prediction uses IEEE
 doubles and rounds halves to even, so every reader gets the same integers.

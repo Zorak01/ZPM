@@ -5,9 +5,10 @@
 Each context holds its own table of symbol frequencies, summing to 1024. A number is
 stored as its zigzag bit length, as a symbol, then the bits below its top bit, raw. In a
 fine stream a number of two bits or more also puts its second bit in the symbol: 2 × its
-length − 2 + that bit, then the bits below it, raw. Only
-the lengths cost a table lookup, so decoding stays fast. The encoder works from the end
-of the stream, so a reader takes symbols in the order they were written.
+length − 2 + that bit, then the bits below it, raw. At fine level 2 a number of three
+bits or more puts its second and third bits there instead: 4 × its length − 8 + those
+two. Only the lengths cost a table lookup, so decoding stays fast. The encoder works
+from the end of the stream, so a reader takes symbols in the order they were written.
 
     State (UInt32), then word count and raw byte count as varints
     Tables, bit-packed low bits first, padded to a byte
@@ -187,7 +188,7 @@ def _frequencies(counts: dict) -> dict:
 class SymbolWriter:
     """Collects symbols and numbers, each under a context from 0 to context_count."""
 
-    def __init__(self, context_count: int, *, fine: bool = False):
+    def __init__(self, context_count: int, *, fine: int = 0):
         self._fine = fine
         self._counts = [{} for _ in range(context_count)]
         self._symbols = []
@@ -205,6 +206,10 @@ class SymbolWriter:
     def write_number(self, context: int, value: int) -> None:
         stored = _to_zigzag(value)
         length = stored.bit_length()
+        if self._fine == 2 and length > 2:
+            self.write(context, 4 * length - 8 + ((stored >> (length - 3)) & 3))
+            self._write_raw(stored, length - 3)
+            return
         if self._fine and length > 1:
             second = (stored >> (length - 2)) & 1
             self.write(context, 2 * length - 2 + second)
@@ -264,7 +269,7 @@ class SymbolWriter:
 class SymbolReader:
     """Takes symbols and numbers back. Raises FormatError if they run out."""
 
-    def __init__(self, data: bytes, context_count: int, *, fine: bool = False):
+    def __init__(self, data: bytes, context_count: int, *, fine: int = 0):
         self._fine = fine
         if len(data) < _STATE.size:
             raise FormatError("A packed stream is truncated")
@@ -303,7 +308,11 @@ class SymbolReader:
         symbol = self.read(context)
         if symbol <= 1:
             return _from_zigzag(symbol)
-        if self._fine:
+        if self._fine == 2 and symbol > 3:
+            length = symbol // 4 + 2
+            extra = length - 3
+            top = (4 | symbol & 3) << extra
+        elif self._fine:
             length = (symbol + 2) // 2
             extra = length - 2
             top = (2 | symbol & 1) << extra

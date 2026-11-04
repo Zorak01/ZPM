@@ -31,8 +31,8 @@ struct Stream
     const uint8_t* rawAt = nullptr;
     uint64_t pending = 0;
     int pendingBits = 0;
-    // A fine stream puts a number's second bit in its symbol too.
-    bool fine = false;
+    // Fine level 1 puts a number's second bit in its symbol too; level 2 its second and third.
+    int fine = 0;
     // Per slot of each context: symbol, then frequency, then the slot's offset in its symbol.
     std::vector<uint32_t> entries;
 
@@ -146,7 +146,12 @@ struct Stream
         if (symbol > 1)
         {
             int extra;
-            if (fine)
+            if (fine == 2 && symbol > 3)
+            {
+                extra = (int)(symbol / 4 + 2) - 3;
+                stored = (uint64_t)(4 | (symbol & 3)) << extra;
+            }
+            else if (fine)
             {
                 extra = (int)((symbol + 2) / 2) - 2;
                 stored = (uint64_t)(2 | (symbol & 1)) << extra;
@@ -317,7 +322,7 @@ void setConnectivityModel(Mesh& m, int model)
     m.contextArity = m.contextFar + 1;
     m.contextSteps = m.contextFar + 2;
     m.contextCount = m.contextFar + 3;
-    m.connectivityContexts = m.contextCount + (model == 2 ? 10 : 0);
+    m.connectivityContexts = m.contextCount + (model == 2 ? 10 * 11 : 0);
 }
 
 inline int facesLeft(const Mesh& m, uint32_t position)
@@ -394,7 +399,8 @@ inline void readFace(Stream& s, Mesh& m, int known, uint32_t k0, uint32_t k1, co
             vertex = ++newest;
             if (m.connectivityModel == 2)
             {
-                uint32_t total = s.readChoice(m.contextCount + (int)std::min<uint32_t>(previousCount, 9));
+                int firstCount = hasRing ? 1 + (int)std::min<uint32_t>(m.faceTotal[m.welded[first]], 9) : 0;
+                uint32_t total = s.readChoice(m.contextCount + (int)std::min<uint32_t>(previousCount, 9) * 11 + firstCount);
                 m.faceTotal[vertex] = total;
                 m.facePlaced[vertex] = 0;
                 previousCount = total;
@@ -569,7 +575,8 @@ void readSplits(Stream& s, Mesh& m)
                         fromGate = other != None && other < corner;
                         guess = fromGate ? m.corners[other] : m.recent[position];
                         int seam = fromGate && m.seamVertex[guess] ? 1 : 0;
-                        extra = 8 * ((int)faceChoice * 2 + seam);
+                        int through = gate.cornerThird != None && corner - first < 2 ? 1 : 0;
+                        extra = 8 * ((int)faceChoice * 2 + seam) + 64 * through;
                     }
                     else
                     {
@@ -623,7 +630,10 @@ void readSplits(Stream& s, Mesh& m)
 }
 
 // Across keys each axis on the earlier axes of the same position and its own last size.
-void readPositions(Stream& s, Mesh& m, bool across)
+// Keying 1 adds the earlier axes of the same position; keying 2 how much the
+// parallelogram's triangle faces along the axis. Shrunk, the far corner moves a quarter
+// of the way back toward the shared edge's midpoint.
+void readPositions(Stream& s, Mesh& m, int keying, bool shrink)
 {
     m.rows.resize((size_t)m.positionCount * 3);
     int32_t previous[3] = {0, 0, 0};
@@ -641,6 +651,7 @@ void readPositions(Stream& s, Mesh& m, bool across)
                 continue;
             uint32_t at = corner - first;
             int32_t guess[3] = {previous[0], previous[1], previous[2]};
+            int shares[3] = {-1, -1, -1};
             if (at == 1)
             {
                 for (int axis = 0; axis < 3; axis++)
@@ -660,7 +671,24 @@ void readPositions(Stream& s, Mesh& m, bool across)
                 {
                     const int32_t* c = rows + welded[third] * 3ULL;
                     for (int axis = 0; axis < 3; axis++)
-                        guess[axis] = a[axis] + b[axis] - c[axis];
+                    {
+                        if (shrink)
+                            guess[axis] = (int32_t)floorDivide(7 * ((int64_t)a[axis] + b[axis]) - 6 * (int64_t)c[axis] + 4, 8);
+                        else
+                            guess[axis] = a[axis] + b[axis] - c[axis];
+                    }
+                    if (keying == 2)
+                    {
+                        int64_t ux = a[0] - c[0], uy = a[1] - c[1], uz = a[2] - c[2];
+                        int64_t vx = b[0] - c[0], vy = b[1] - c[1], vz = b[2] - c[2];
+                        int64_t normal[3] = {std::llabs(uy * vz - uz * vy), std::llabs(uz * vx - ux * vz), std::llabs(ux * vy - uy * vx)};
+                        int64_t total = normal[0] + normal[1] + normal[2];
+                        if (total)
+                        {
+                            for (int axis = 0; axis < 3; axis++)
+                                shares[axis] = (int)std::min<int64_t>(4 * normal[axis] / total, 3);
+                        }
+                    }
                 }
             }
             int32_t* row = rows + made * 3ULL;
@@ -668,7 +696,9 @@ void readPositions(Stream& s, Mesh& m, bool across)
             for (int axis = 0; axis < 3; axis++)
             {
                 int context;
-                if (across)
+                if (keying == 2)
+                    context = (shares[axis] + 1) * 6 + std::min(history[axis] / 3, 5);
+                else if (keying == 1)
                 {
                     int widest = axis ? reach : history[axis];
                     context = std::min(widest / 2, 7) * 6 + std::min(history[axis] / 3, 5);
@@ -697,7 +727,7 @@ void readPositions(Stream& s, Mesh& m, bool across)
 }
 
 // Predicts each corner's normal around its key: its welded position, or its vertex.
-void readNormals(Stream& s, Mesh& m, bool byVertex, Lookup& seen, int lookup)
+void readNormals(Stream& s, Mesh& m, bool byVertex, Lookup& seen, int lookup, bool paired)
 {
     const uint32_t* keys = byVertex ? m.corners.data() : m.welded.data();
     size_t keyCount = byVertex ? m.positionOf.size() : m.positionCount;
@@ -761,7 +791,10 @@ void readNormals(Stream& s, Mesh& m, bool byVertex, Lookup& seen, int lookup)
         int offset = count ? 1 : 0;
         for (int part = 0; part < 2; part++)
         {
-            int64_t difference = s.readNumber(3 + offset * 5 + history[part] / 3);
+            int context = 3 + offset * 5 + history[part] / 3;
+            if (paired && part)
+                context = 13 + (lookup == 2 ? 3 : 0) + std::min(history[0] / 2, 7);
+            int64_t difference = s.readNumber(context);
             values[corner * 2ULL + part] = (int32_t)(base[part] + difference);
             history[part] = magnitude(difference);
         }
@@ -769,8 +802,9 @@ void readNormals(Stream& s, Mesh& m, bool byVertex, Lookup& seen, int lookup)
     }
 }
 
-void readUvs(Stream& s, Mesh& m, std::vector<int32_t>& store, Lookup& seen, int lookup)
+void readUvs(Stream& s, Mesh& m, std::vector<int32_t>& store, Lookup& seen, int lookup, bool paired)
 {
+    int contexts = 8 + (lookup == 2 ? 3 : 0);
     store.resize(m.welded.size() * 2);
     int32_t* values = store.data();
     seen.reset(m, lookup, 8);
@@ -862,7 +896,10 @@ void readUvs(Stream& s, Mesh& m, std::vector<int32_t>& store, Lookup& seen, int 
             }
             for (int part = 0; part < 2; part++)
             {
-                int64_t difference = s.readNumber(4 + history[part] / 4);
+                int context = 4 + history[part] / 4;
+                if (paired)
+                    context = part ? contexts + std::min(history[0] / 2, 7) : contexts + 8 + (int)std::min<uint32_t>(at, 2) * 4 + history[0] / 4;
+                int64_t difference = s.readNumber(context);
                 values[corner * 2ULL + part] = (int32_t)((int64_t)std::nearbyint(base[part]) + difference);
                 history[part] = magnitude(difference);
             }
@@ -912,30 +949,34 @@ int main(int, char** arguments)
     setConnectivityModel(m, *connectivity++);
     m.splitModel = *splits++;
     uint8_t positionForm = *positions++;
-    bool across = (positionForm & 2) != 0;
+    int keying = positionForm >> 2 & 3;
+    bool shrink = (positionForm & 16) != 0;
     Stream connectivityStream, splitStream, positionStream, normalStream;
     std::vector<Stream> uvStreams(uvData.size());
     connectivityStream.open(connectivity, m.connectivityContexts);
-    splitStream.open(splits, m.splitModel == 2 ? 64 : 8);
-    positionStream.open(positions, across ? 48 : 4);
-    positionStream.fine = (positionForm & 1) != 0;
+    splitStream.open(splits, m.splitModel == 2 ? 128 : 8);
+    positionStream.open(positions, keying == 2 ? 30 : keying == 1 ? 48 : 4);
+    positionStream.fine = positionForm & 3;
     bool normalsByVertex = normals && (normals[0] & 1);
     bool normalsFine = normals && (normals[0] & 2);
-    int normalLookup = normals ? normals[0] >> 2 : 0;
+    int normalLookup = normals ? normals[0] >> 2 & 3 : 0;
+    bool normalsPaired = normals && (normals[0] & 16);
     if (normals)
         normals++;
     if (normals)
     {
-        normalStream.open(normals, 13 + (normalLookup == 2 ? 3 : 0));
+        normalStream.open(normals, 13 + (normalLookup == 2 ? 3 : 0) + (normalsPaired ? 8 : 0));
         normalStream.fine = normalsFine;
     }
     std::vector<int> uvLookups;
+    std::vector<bool> uvPaired;
     for (size_t layer = 0; layer < uvData.size(); layer++)
     {
         bool uvFine = (uvData[layer][0] & 1) != 0;
-        uvLookups.push_back(uvData[layer][0] >> 1);
+        uvLookups.push_back(uvData[layer][0] >> 1 & 3);
+        uvPaired.push_back((uvData[layer][0] & 8) != 0);
         uvData[layer]++;
-        uvStreams[layer].open(uvData[layer], 8 + (uvLookups.back() == 2 ? 3 : 0));
+        uvStreams[layer].open(uvData[layer], 8 + (uvLookups.back() == 2 ? 3 : 0) + (uvPaired.back() ? 8 + 12 : 0));
         uvStreams[layer].fine = uvFine;
     }
     Lookup seen;
@@ -982,20 +1023,20 @@ int main(int, char** arguments)
             positionStream.rawAt = rawStarts[2];
             readConnectivity(connectivityStream, m);
             readSplits(splitStream, m);
-            readPositions(positionStream, m, across);
+            readPositions(positionStream, m, keying, shrink);
             if (normals)
             {
                 normalStream.restart(normals);
                 normalStream.wordAt = wordStarts[3];
                 normalStream.rawAt = rawStarts[3];
-                readNormals(normalStream, m, normalsByVertex, seen, normalLookup);
+                readNormals(normalStream, m, normalsByVertex, seen, normalLookup, normalsPaired);
             }
             for (size_t layer = 0; layer < uvData.size(); layer++)
             {
                 uvStreams[layer].restart(uvData[layer]);
                 uvStreams[layer].wordAt = uvWords[layer];
                 uvStreams[layer].rawAt = uvRaw[layer];
-                readUvs(uvStreams[layer], m, m.uvs[layer], seen, uvLookups[layer]);
+                readUvs(uvStreams[layer], m, m.uvs[layer], seen, uvLookups[layer], uvPaired[layer]);
             }
         }
         std::chrono::duration<double, std::micro> took = std::chrono::steady_clock::now() - start;

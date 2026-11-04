@@ -55,6 +55,8 @@ _POSITION_CONTEXT_MIN_ROWS = 4000
 _ACROSS_KINDS = 8
 _ACROSS_HISTORY_KINDS = 6
 _ACROSS_HISTORY_STEP = 3
+_FACING_KINDS = 5
+_POSITION_KEYINGS = (0, 1, 2)
 _MAX_SEEN_CONTEXT = 2
 _HISTORY_MAX = 14
 _NORMAL_HISTORY_STEP = 3
@@ -68,10 +70,12 @@ _UV_VALUE_FIRST = _UV_SIDE_CONTEXT + 1
 _UV_CONTEXTS = _UV_VALUE_FIRST + _UV_HISTORY_BUCKETS
 _AXES = 3
 _SEEN_LOOKUPS = (0, 1, 2)
+_PAIR_KINDS = 8
+_UV_PREDICTION_KINDS = 3
 _CHOICE_ESCAPE = 200
 _STEP = struct.Struct("<f")
 _SPAN_BITS = 20
-_STEP_MANTISSA_BITS = 6
+_STEP_MANTISSA_BITS = 12
 # Grid integers stay this far inside Float32's precision, so a position read back
 # always rounds to the same integer again.
 _SPAN_HEADROOM_BITS = 21
@@ -183,7 +187,8 @@ class _ConnectivityModel:
         self.arity = self.far + 1
         self.steps = self.far + 2
         self.count_first = self.far + 3
-        self.count = self.count_first + (_COUNT_CONTEXTS if model == 2 else 0)
+        counts = _COUNT_CONTEXTS * (_COUNT_CONTEXTS + 1)
+        self.count = self.count_first + (counts if model == 2 else 0)
 
     def vertex(self, previous, before, is_last, kinds, first_left, last_left) -> int:
         if self.model == 2:
@@ -207,8 +212,11 @@ class _ConnectivityModel:
             + min(v_left, _GATE_REMAINING - 1)
         )
 
-    def face_count(self, previous_count: int) -> int:
-        return self.count_first + min(previous_count, _COUNT_CONTEXTS - 1)
+    def face_count(self, previous_count: int, first_count) -> int:
+        """Key a face count on the one before and on the ring's first position's."""
+        first = 0 if first_count is None else 1 + min(first_count, _COUNT_CONTEXTS - 1)
+        context = min(previous_count, _COUNT_CONTEXTS - 1) * (_COUNT_CONTEXTS + 1)
+        return self.count_first + context + first
 
 
 _CONNECTIVITY_MODELS = tuple(_ConnectivityModel(model) for model in range(3))
@@ -394,7 +402,8 @@ class _Walk:
                 self.newest = walk_id
                 total = self.source_counts[source]
                 self.counts.total[walk_id] = total
-                self.events.append(("count", total, self.previous_count))
+                first_count = self.counts.total.get(ring[0]) if ring else None
+                self.events.append(("count", total, self.previous_count, first_count))
                 self.previous_count = total
             self.before, self.previous = self.previous, symbol
             if source not in self.ids:
@@ -457,7 +466,7 @@ class _Walk:
                 writer.write(model.gate(*event[2:]), event[1])
             elif event[0] == "count":
                 if model.writes_counts:
-                    _write_choice(writer, model.face_count(event[2]), event[1])
+                    _write_choice(writer, model.face_count(*event[2:]), event[1])
             else:
                 _write_choice(writer, model.arity, event[1])
         return bytes((model.model,)) + writer.to_bytes()
@@ -495,7 +504,9 @@ def read_connectivity(data: bytes, faces: int, arity: int, corner_count: int) ->
                 reader, model, open_edges, ring, newest, context
             )
             if symbol == _VERTEX_NEW and model.writes_counts:
-                total = _read_choice(reader, model.face_count(previous_count))
+                first_count = counts.total.get(ring[0]) if ring else None
+                context = model.face_count(previous_count, first_count)
+                total = _read_choice(reader, context)
                 if not 1 <= total <= corner_count:
                     raise FormatError("A packed position has an impossible face count")
                 counts.total[vertex] = total
@@ -543,23 +554,56 @@ class _Layout:
                 yield corner, first, corner - first, face
 
 
-def _parallelogram(layout: _Layout, first: int, at: int, face: int, rows: list):
-    """Return a corner's predicted position from those before it in the walk."""
+def _parallelogram(layout, first: int, at: int, face: int, rows: list, shrink: int = 0):
+    """Return a corner's predicted position from those before it in the walk.
+
+    Shrunk, the parallelogram's far corner moves a quarter of the way back toward the
+    shared edge's midpoint: on irregular scans a full one overshoots. In integers,
+    (7 (a + b) - 6 c + 4) // 8, so every reader agrees.
+    """
     welded = layout.welded
     if at == 0:
         return None
     if at == 1:
         return rows[welded[first]]
     a = rows[welded[first + at - 1]]
+    third = _third_corner(layout, first, at, face)
+    if third is None:
+        return a
     b = rows[welded[first]]
-    gate = layout.gates[face]
-    if at == 2:
-        if gate is None:
-            return a
-        c = rows[welded[gate[2]]]
-    else:
-        c = rows[welded[first + 1]]
+    c = rows[welded[third]]
+    if shrink:
+        return tuple((7 * (a[i] + b[i]) - 6 * c[i] + 4) // 8 for i in range(_AXES))
     return (a[0] + b[0] - c[0], a[1] + b[1] - c[1], a[2] + b[2] - c[2])
+
+
+def _third_corner(layout: _Layout, first: int, at: int, face: int):
+    """Return the corner a parallelogram subtracts, or None if it has none."""
+    if at < 2:
+        return None
+    if at > 2:
+        return first + 1
+    gate = layout.gates[face]
+    return None if gate is None else gate[2]
+
+
+def _normal_shares(layout: _Layout, first: int, at: int, face: int, rows: list):
+    """Return, per axis, a quarter step of how much the parallelogram's triangle faces
+    along it, up to 3, or None without one. Integers only, so readers agree."""
+    third = _third_corner(layout, first, at, face)
+    if third is None:
+        return None
+    welded = layout.welded
+    a = rows[welded[first + at - 1]]
+    b = rows[welded[first]]
+    c = rows[welded[third]]
+    ux, uy, uz = a[0] - c[0], a[1] - c[1], a[2] - c[2]
+    vx, vy, vz = b[0] - c[0], b[1] - c[1], b[2] - c[2]
+    normal = (abs(uy * vz - uz * vy), abs(uz * vx - ux * vz), abs(ux * vy - uy * vx))
+    total = sum(normal)
+    if not total:
+        return None
+    return [min(4 * part // total, 3) for part in normal]
 
 
 def packing_step(positions, exponent: int) -> float:
@@ -635,37 +679,53 @@ def snap_to_step(
 def _encode_positions(layout: _Layout, rows: list, extra: list, step: float) -> bytes:
     """Return the step, then positions in whichever form is smallest.
 
-    The form byte's bit 0 uses fine numbers; bit 1 keys each axis on the earlier axes
-    of the same position as well as its own last size.
+    The form byte's low two bits are the fine level; bit 4 shrinks the parallelogram;
+    bits 2 and 3 say what keys each axis:
+    0 its own last size, 1 also the earlier axes of the same position, 2 also how much
+    the parallelogram's triangle faces along it, since a prediction misses most
+    across the surface.
     """
-    return _STEP.pack(step) + min(
+    best = min(
         (
-            bytes((fine | across << 1,))
-            + _encode_positions_with(layout, rows, extra, fine, across)
-            for fine in (0, 1)
-            for across in (0, 1)
+            bytes((fine | keying << 2,))
+            + _encode_positions_with(layout, rows, extra, fine, keying)
+            for fine in (0, 1, 2)
+            for keying in _POSITION_KEYINGS
         ),
         key=len,
     )
+    # Shrinking is tried with the form that won, which keeps saving time down.
+    form = best[0]
+    shrunk = bytes((form | 16,)) + _encode_positions_with(
+        layout, rows, extra, form & 3, form >> 2, 1
+    )
+    return _STEP.pack(step) + min(best, shrunk, key=len)
 
 
-def _position_context(across: int, uses_history: bool, history, earlier, axis) -> int:
-    if across:
+def _position_context(
+    keying: int, uses_history: bool, history, earlier, axis, shares
+) -> int:
+    own = min(history[axis] // _ACROSS_HISTORY_STEP, _ACROSS_HISTORY_KINDS - 1)
+    if keying == 2:
+        facing = 0 if shares is None else shares[axis] + 1
+        return facing * _ACROSS_HISTORY_KINDS + own
+    if keying:
         reach = max(earlier) if earlier else history[axis]
-        own = min(history[axis] // _ACROSS_HISTORY_STEP, _ACROSS_HISTORY_KINDS - 1)
         return min(reach // 2, _ACROSS_KINDS - 1) * _ACROSS_HISTORY_KINDS + own
     context = history[axis] // _POSITION_HISTORY_STEP if uses_history else 0
     return min(context, _POSITION_CONTEXTS - 1)
 
 
-def _position_contexts(across: int) -> int:
-    return _ACROSS_KINDS * _ACROSS_HISTORY_KINDS if across else _POSITION_CONTEXTS
+def _position_contexts(keying: int) -> int:
+    if keying == 2:
+        return _FACING_KINDS * _ACROSS_HISTORY_KINDS
+    return _ACROSS_KINDS * _ACROSS_HISTORY_KINDS if keying else _POSITION_CONTEXTS
 
 
 def _encode_positions_with(
-    layout: _Layout, rows: list, extra: list, fine: int, across: int
+    layout: _Layout, rows: list, extra: list, fine: int, keying: int, shrink: int = 0
 ) -> bytes:
-    writer = SymbolWriter(_position_contexts(across), fine=bool(fine))
+    writer = SymbolWriter(_position_contexts(keying), fine=fine)
     previous = (0, 0, 0)
     history = [0, 0, 0]
     uses_history = layout.position_count >= _POSITION_CONTEXT_MIN_ROWS
@@ -675,12 +735,15 @@ def _encode_positions_with(
         if position != made:
             continue
         made += 1
-        guess = _parallelogram(layout, first, at, face, rows) or previous
+        guess = _parallelogram(layout, first, at, face, rows, shrink) or previous
+        shares = _normal_shares(layout, first, at, face, rows) if keying == 2 else None
         row = rows[position]
         earlier = []
         for axis in range(_AXES):
             difference = row[axis] - guess[axis]
-            context = _position_context(across, uses_history, history, earlier, axis)
+            context = _position_context(
+                keying, uses_history, history, earlier, axis, shares
+            )
             writer.write_number(context, difference)
             history[axis] = _magnitude(difference)
             earlier.append(history[axis])
@@ -693,12 +756,13 @@ def _encode_positions_with(
 
 
 def _read_positions(layout: _Layout, data: bytes, extra: int) -> tuple:
-    if len(data) <= _STEP.size or data[_STEP.size] > 3:
+    form = data[_STEP.size] if len(data) > _STEP.size else 255
+    if form & 3 == 3 or form >> 2 & 3 not in _POSITION_KEYINGS or form >> 5:
         raise FormatError("Packed positions name no known number form")
-    form = data[_STEP.size]
-    across = form >> 1
+    keying = form >> 2 & 3
+    shrink = form >> 4
     reader = SymbolReader(
-        data[_STEP.size + 1 :], _position_contexts(across), fine=bool(form & 1)
+        data[_STEP.size + 1 :], _position_contexts(keying), fine=form & 3
     )
     rows = []
     previous = (0, 0, 0)
@@ -707,11 +771,14 @@ def _read_positions(layout: _Layout, data: bytes, extra: int) -> tuple:
     for corner, first, at, face in layout.corners():
         if layout.welded[corner] != len(rows):
             continue
-        guess = _parallelogram(layout, first, at, face, rows) or previous
+        guess = _parallelogram(layout, first, at, face, rows, shrink) or previous
+        shares = _normal_shares(layout, first, at, face, rows) if keying == 2 else None
         values = []
         earlier = []
         for axis in range(_AXES):
-            context = _position_context(across, uses_history, history, earlier, axis)
+            context = _position_context(
+                keying, uses_history, history, earlier, axis, shares
+            )
             difference = reader.read_number(context)
             values.append(guess[axis] + difference)
             history[axis] = _magnitude(difference)
@@ -767,8 +834,10 @@ class _Splits:
                 guess = self.recent[position]
             rest = [vertex for vertex in reversed(known) if vertex != guess]
             seam = 1 if from_gate and guess in self.seams else 0
+            through = 1 if self.layout.gates[face] is not None and at < 2 else 0
             context = min(len(known), 3) + (4 if from_gate else 0)
-            return context + 8 * (self.face_choice * 2 + seam), [guess, *rest]
+            context += 8 * (self.face_choice * 2 + seam)
+            return context + 64 * through, [guess, *rest]
         gate = self.layout.gates[face]
         from_gate = gate is not None and at < 2
         guess = self.vertex_of[gate[at]] if from_gate else self.recent[position]
@@ -790,7 +859,7 @@ class _Splits:
 
 
 def _split_contexts(model: int) -> int:
-    return _SPLIT_CONTEXTS * (8 if model == 2 else 1)
+    return _SPLIT_CONTEXTS * (16 if model == 2 else 1)
 
 
 def _encode_splits(layout: _Layout, corners: list) -> bytes:
@@ -920,10 +989,12 @@ def _normal_keys(layout: _Layout, corners: list, rows: list, by_vertex: int) -> 
 def _encode_normals(layout: _Layout, corners: list, pairs: list, rows: list) -> bytes:
     """Return the normals each way, whichever is smaller.
 
-    The first byte's bit 0 predicts around vertices, bit 1 uses fine numbers, and
-    bits 2 and 3 say where a corner looks for a normal already seen, as for UVs.
+    The first byte's bit 0 predicts around vertices, bit 1 uses fine numbers, bits 2
+    and 3 say where a corner looks for a normal already seen, as for UVs, and bit 4
+    keys a normal's second part on its first. That last is tried with the form that
+    won, which keeps saving time down.
     """
-    return min(
+    best = min(
         (
             bytes((by_vertex | fine << 1 | lookup << 2,))
             + _encode_normals_by(layout, corners, by_vertex, rows, pairs, fine, lookup)
@@ -933,15 +1004,30 @@ def _encode_normals(layout: _Layout, corners: list, pairs: list, rows: list) -> 
         ),
         key=len,
     )
+    form = best[0]
+    paired = bytes((form | 16,)) + _encode_normals_by(
+        layout, corners, form & 1, rows, pairs, form >> 1 & 1, form >> 2, 1
+    )
+    return min(best, paired, key=len)
 
 
-def _normal_contexts(lookup: int) -> int:
-    return _NORMAL_CONTEXTS + (_MAX_SEEN_CONTEXT + 1 if lookup == 2 else 0)
+def _normal_contexts(lookup: int, paired: int = 0) -> int:
+    base = _NORMAL_CONTEXTS + (_MAX_SEEN_CONTEXT + 1 if lookup == 2 else 0)
+    return base + (_PAIR_KINDS if paired else 0)
 
 
-def _encode_normals_by(layout, corners, by_vertex, rows, pairs, fine, lookup) -> bytes:
+def _pair_context(first_contexts: int, paired: int, part: int, history, plain: int):
+    """Return the context of one part of a pair: the second keys on the first's size."""
+    if paired and part:
+        return first_contexts + min(history[0] // 2, _PAIR_KINDS - 1)
+    return plain
+
+
+def _encode_normals_by(
+    layout, corners, by_vertex, rows, pairs, fine, lookup, paired=0
+) -> bytes:
     keys, key_rows = _normal_keys(layout, corners, rows, by_vertex)
-    writer = SymbolWriter(_normal_contexts(lookup), fine=bool(fine))
+    writer = SymbolWriter(_normal_contexts(lookup, paired), fine=bool(fine))
     guesses = _vertex_normals(layout.starts, keys, key_rows)
     history = [0, 0]
     seen_normals = _SeenLookup(layout, corners, lookup, _NORMAL_CONTEXTS)
@@ -957,19 +1043,27 @@ def _encode_normals_by(layout, corners, by_vertex, rows, pairs, fine, lookup) ->
         base = seen[-1] if seen else guesses[key]
         for part in range(2):
             difference = pair[part] - base[part]
-            writer.write_number(_normal_context(seen, history[part]), difference)
+            context = _pair_context(
+                _normal_contexts(lookup),
+                paired,
+                part,
+                history,
+                _normal_context(seen, history[part]),
+            )
+            writer.write_number(context, difference)
             history[part] = _magnitude(difference)
         seen_normals.record(corner, pair)
     return writer.to_bytes()
 
 
 def _read_normals(layout: _Layout, data: bytes, corners: list, rows: list) -> list:
-    if not data or data[0] >> 2 not in _SEEN_LOOKUPS:
+    if not data or data[0] >> 2 & 3 not in _SEEN_LOOKUPS or data[0] >> 5:
         raise FormatError("Packed normals name no known prediction")
-    lookup = data[0] >> 2
+    lookup = data[0] >> 2 & 3
+    paired = data[0] >> 4
     keys, key_rows = _normal_keys(layout, corners, rows, data[0] & 1)
     reader = SymbolReader(
-        data[1:], _normal_contexts(lookup), fine=bool(data[0] >> 1 & 1)
+        data[1:], _normal_contexts(lookup, paired), fine=bool(data[0] >> 1 & 1)
     )
     guesses = _vertex_normals(layout.starts, keys, key_rows)
     history = [0, 0]
@@ -988,7 +1082,14 @@ def _read_normals(layout: _Layout, data: bytes, corners: list, rows: list) -> li
         base = seen[-1] if seen else guesses[key]
         values = []
         for part in range(2):
-            difference = reader.read_number(_normal_context(seen, history[part]))
+            context = _pair_context(
+                _normal_contexts(lookup),
+                paired,
+                part,
+                history,
+                _normal_context(seen, history[part]),
+            )
+            difference = reader.read_number(context)
             values.append(base[part] + difference)
             history[part] = _magnitude(difference)
         pair = tuple(values)
@@ -1055,9 +1156,10 @@ def _encode_uvs(layout: _Layout, corners: list, pairs: list, rows: list) -> byte
     The form byte's bit 0 uses fine numbers; bits 1 and 2 say where a corner looks for
     a UV already seen: 0 its welded position's, 1 its vertex's, 2 its vertex's if it
     has any, else its position's. On meshes split at UV seams a vertex has one UV, so
-    the last makes repeats nearly free without repeating the seams splits hold.
+    the last makes repeats nearly free without repeating the seams splits hold. Bit 3
+    keys a UV's second part on its first, tried with the form that won.
     """
-    return min(
+    best = min(
         (
             bytes((fine | lookup << 1,))
             + _encode_uvs_with(layout, corners, pairs, rows, fine, lookup)
@@ -1066,16 +1168,43 @@ def _encode_uvs(layout: _Layout, corners: list, pairs: list, rows: list) -> byte
         ),
         key=len,
     )
+    form = best[0]
+    paired = bytes((form | 8,)) + _encode_uvs_with(
+        layout, corners, pairs, rows, form & 1, form >> 1, 1
+    )
+    return min(best, paired, key=len)
 
 
-def _uv_contexts(lookup: int) -> int:
-    return _UV_CONTEXTS + (_MAX_SEEN_CONTEXT + 1 if lookup == 2 else 0)
+def _uv_contexts(lookup: int, paired: int = 0) -> int:
+    base = _UV_CONTEXTS + (_MAX_SEEN_CONTEXT + 1 if lookup == 2 else 0)
+    return base + (
+        _PAIR_KINDS + _UV_PREDICTION_KINDS * _UV_HISTORY_BUCKETS if paired else 0
+    )
+
+
+def _uv_value_context(lookup, paired, part, history, at) -> int:
+    """Return a UV part's context. Keyed by pairs, the first part also keys on how it
+    was predicted: from the last UV, from the face's first corner, or from shape."""
+    bucket = history[part] // _UV_HISTORY_STEP
+    if paired and not part:
+        kind = min(at, _UV_PREDICTION_KINDS - 1)
+        first = _uv_contexts(lookup) + _PAIR_KINDS
+        return first + kind * _UV_HISTORY_BUCKETS + bucket
+    return _pair_context(
+        _uv_contexts(lookup), paired, part, history, _UV_VALUE_FIRST + bucket
+    )
 
 
 def _encode_uvs_with(
-    layout: _Layout, corners: list, pairs: list, rows: list, fine: int, lookup: int
+    layout: _Layout,
+    corners: list,
+    pairs: list,
+    rows: list,
+    fine: int,
+    lookup: int,
+    paired: int = 0,
 ) -> bytes:
-    writer = SymbolWriter(_uv_contexts(lookup), fine=bool(fine))
+    writer = SymbolWriter(_uv_contexts(lookup, paired), fine=bool(fine))
     values = [None] * len(layout.welded)
     history = [0, 0]
     last = (0, 0)
@@ -1109,8 +1238,8 @@ def _encode_uvs_with(
         )
         for part in range(2):
             difference = pair[part] - round(base[part])
-            bucket = history[part] // _UV_HISTORY_STEP
-            writer.write_number(_UV_VALUE_FIRST + bucket, difference)
+            context = _uv_value_context(lookup, paired, part, history, at)
+            writer.write_number(context, difference)
             history[part] = _magnitude(difference)
         seen_uvs.record(corner, pair)
         last = pair
@@ -1118,10 +1247,13 @@ def _encode_uvs_with(
 
 
 def _read_uvs(layout: _Layout, data: bytes, corners: list, rows: list) -> list:
-    if not data or data[0] >> 1 not in _SEEN_LOOKUPS:
+    if not data or data[0] >> 1 & 3 not in _SEEN_LOOKUPS or data[0] >> 4:
         raise FormatError("Packed UVs name no known form")
-    lookup = data[0] >> 1
-    reader = SymbolReader(data[1:], _uv_contexts(lookup), fine=bool(data[0] & 1))
+    lookup = data[0] >> 1 & 3
+    paired = data[0] >> 3
+    reader = SymbolReader(
+        data[1:], _uv_contexts(lookup, paired), fine=bool(data[0] & 1)
+    )
     values = [None] * len(layout.welded)
     history = [0, 0]
     last = (0, 0)
@@ -1150,8 +1282,8 @@ def _read_uvs(layout: _Layout, data: bytes, corners: list, rows: list) -> list:
         )
         pair = []
         for part in range(2):
-            bucket = history[part] // _UV_HISTORY_STEP
-            difference = reader.read_number(_UV_VALUE_FIRST + bucket)
+            context = _uv_value_context(lookup, paired, part, history, at)
+            difference = reader.read_number(context)
             pair.append(round(base[part]) + difference)
             history[part] = _magnitude(difference)
         pair = tuple(pair)

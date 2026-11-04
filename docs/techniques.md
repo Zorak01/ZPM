@@ -521,8 +521,8 @@ a file in other units or axes looks right without changing its vertices.
 ## The packed form
 
 Saved files hold each mesh's geometry packed: decoded once, start to end, then read like the direct form. On 24 meshes,
-at Draco's own 20-bit precision, it is 0.988x Draco's size and smaller on 22 of 24, 7.83x smaller than meshopt,
-and decodes 2.3x to 9.8x faster than Draco. [The comparison](../benchmarks/format-compare/README.md) has every mesh.
+at Draco's own 20-bit precision, it is 0.977x Draco's size and smaller on 24 of 24, 7.92x smaller than meshopt,
+and decodes 2.3x to 8.1x faster than Draco. [The comparison](../benchmarks/format-compare/README.md) has every mesh.
 
 ### Static-table rANS, with raw low bits
 
@@ -567,6 +567,21 @@ exactly as Blender has them. A second model guesses the vertex across the face's
 through a gate nearly always uses; a third guesses the vertex across any edge a face closed. Seams run in chains, so
 the third also keys on the face's last choice and on whether the vertex across began at a seam: `DamagedHelmet`
 splits went from 3.6 to 2.9 KB. The encoder keeps whichever model is smaller.
+
+### Shrunk parallelograms and facing
+
+On irregular scans a full parallelogram overshoots: predicting the far corner a quarter of the way back toward the
+shared edge's midpoint, in integers, made `happy` and `lucy` about 0.8% smaller. On regular or hard-edged meshes it is
+far worse, so the encoder tries it only on the position form that already won. A prediction misses most across the
+surface, so positions can also key each axis on how much the parallelogram's triangle faces along it.
+
+### Pairs keyed together
+
+A normal or UV whose first part missed by a lot usually misses on the second too, so the second part can key on the
+first's size. For UVs the first part also keys on how it was predicted: from the last UV, from the face's first
+corner, or from the triangle's shape. On `DamagedHelmet` that saved 0.9 KB of normals and 0.6 KB of UVs, and took it
+past Draco. Face counts now key on the ring's first position's count as well, and splits on whether a corner came in
+through the gate.
 
 ### Seams told once
 
@@ -720,16 +735,16 @@ its bones, weights and animation, but no controllers.
 ## Where ZPM stands against Draco on size
 
 The direct form is about 1.7x larger than Draco: a format that reads any value alone gives up predicting from what
-came before. The packed form decodes in order like Draco does. At the same precision it is 0.988x Draco in total
-and smaller on 22 of 24. Draco is still smaller on DamagedHelmet 1.024x, happy 1.008x.
+came before. The packed form decodes in order like Draco does. At the same precision it is 0.977x Draco in total
+and smaller on 24 of 24. Draco is larger on every one.
 
 ## What we can and can't claim
 
 - **Can say:** on these 17 meshes, smaller than every earlier ZPM experiment on all but tiny meshes,
   with zero allocations when reading.
-- **Can say:** saved files are 7.8x smaller than meshopt on these 24 meshes, smaller than Draco on 22 of them at
-  the same precision and 0.988x Draco in total, and decode 2x to 10x faster than Draco in native code.
-- **Can't say:** smaller than Draco on every mesh, or faster than meshopt at decoding a whole mesh. It has been measured: see
+- **Can say:** saved files are 7.9x smaller than meshopt on these 24 meshes, smaller than Draco on 24 of them at
+  the same precision and 0.977x Draco in total, and decode 2x to 8x faster than Draco in native code.
+- **Can't say:** smaller than Draco on any other meshes, or faster than meshopt at decoding a whole mesh. It has been measured: see
   [the comparison](../benchmarks/format-compare/README.md). The direct form wins on reading part of a mesh and on memory.
 - **Not new inventions:** the building blocks above are known. What's unusual is combining them in a
   mesh file so nothing needs decoding. We have not surveyed every format, so say "unusual", not "first".

@@ -67,6 +67,7 @@ _UV_SIDE_CONTEXT = _MAX_SEEN_CONTEXT + 1
 _UV_VALUE_FIRST = _UV_SIDE_CONTEXT + 1
 _UV_CONTEXTS = _UV_VALUE_FIRST + _UV_HISTORY_BUCKETS
 _AXES = 3
+_SEEN_LOOKUPS = (0, 1, 2)
 _CHOICE_ESCAPE = 200
 _STEP = struct.Struct("<f")
 _SPAN_BITS = 20
@@ -100,31 +101,41 @@ class _OpenEdges:
     """Directed edges with a face on one side so far. A walk's only working state.
 
     A gate is (u, v, the corners holding u, v, and the face's next corner after v).
+    When a face closes an open edge, each of its two corners there gets the corner
+    across: the earlier face's corner at the same position.
     """
 
     def __init__(self):
         self.into = {}
         self.out_of = {}
         self.gates = []
+        self.edge_corners = {}
+        self.across = {}
 
     def is_open(self, u: int, v: int) -> bool:
         return u in self.into.get(v, ())
 
-    def remove(self, u: int, v: int) -> None:
+    def remove(self, u: int, v: int) -> tuple:
+        """Close the newest open edge from u to v; return the corners holding u, v."""
         into = self.into[v]
         del into[len(into) - 1 - into[::-1].index(u)]
         out_of = self.out_of[u]
         del out_of[len(out_of) - 1 - out_of[::-1].index(v)]
+        return self.edge_corners[(u, v)].pop()
 
     def add_face(self, ring: list, first_corner: int) -> None:
         count = len(ring)
         for at in range(count):
             u, v = ring[at], ring[(at + 1) % count]
+            corner_u, corner_v = first_corner + at, first_corner + (at + 1) % count
             if self.is_open(v, u):
-                self.remove(v, u)
+                earlier_v, earlier_u = self.remove(v, u)
+                self.across.setdefault(corner_u, earlier_u)
+                self.across.setdefault(corner_v, earlier_v)
             else:
                 self.into.setdefault(v, []).append(u)
                 self.out_of.setdefault(u, []).append(v)
+                self.edge_corners.setdefault((u, v), []).append((corner_u, corner_v))
                 self.gates.append(
                     (
                         u,
@@ -510,13 +521,15 @@ def read_connectivity(data: bytes, faces: int, arity: int, corner_count: int) ->
             else:
                 open_edges.remove(u, v)
     starts.append(len(welded))
-    return welded, starts, gates_of_faces, newest + 1
+    across = [open_edges.across.get(corner) for corner in range(len(welded))]
+    return welded, starts, gates_of_faces, newest + 1, across
 
 
 class _Layout:
     """What each stream reads from connectivity, shared by writing and reading."""
 
-    def __init__(self, welded, starts, gates, position_count):
+    def __init__(self, welded, starts, gates, position_count, across):
+        self.across = across
         self.welded = welded
         self.starts = starts
         self.gates = gates
@@ -719,15 +732,22 @@ class _Splits:
 
     Model 0 names a vertex by when it was made, from 1. Model 1 names first a guess:
     for a face's first two corners, the vertex across its gate, else the vertex last
-    used here; then the rest, newest first. Either way 0 is a new vertex.
+    used here; then the rest, newest first. Model 2 guesses the vertex of the corner
+    across wherever a face closed an open edge there, and since seams run in chains,
+    also keys on the face's last choice and on whether the vertex across began at a
+    seam. Either way 0 is a new vertex.
     """
 
-    def __init__(self, layout: _Layout, corners: list, by_gate: int):
+    def __init__(self, layout: _Layout, by_gate: int):
         self.layout = layout
-        self.corners = corners
         self.by_gate = by_gate
+        # Only corners recorded so far, so writer and reader see exactly the same.
+        self.vertex_of = {}
         self.seen = {}
         self.recent = {}
+        self.face = None
+        self.face_choice = 0
+        self.seams = set()
 
     def options(self, corner: int, at: int, face: int) -> tuple | None:
         """Return (context, the vertices this corner may name), or None if none yet."""
@@ -737,46 +757,69 @@ class _Splits:
             return None
         if not self.by_gate:
             return min(len(known), 3), known
+        if self.by_gate == 2:
+            if face != self.face:
+                self.face, self.face_choice = face, 0
+            # A face may close its own edge, across to a corner not read yet.
+            guess = self.vertex_of.get(self.layout.across[corner])
+            from_gate = guess is not None
+            if not from_gate:
+                guess = self.recent[position]
+            rest = [vertex for vertex in reversed(known) if vertex != guess]
+            seam = 1 if from_gate and guess in self.seams else 0
+            context = min(len(known), 3) + (4 if from_gate else 0)
+            return context + 8 * (self.face_choice * 2 + seam), [guess, *rest]
         gate = self.layout.gates[face]
         from_gate = gate is not None and at < 2
-        guess = self.corners[gate[at]] if from_gate else self.recent[position]
+        guess = self.vertex_of[gate[at]] if from_gate else self.recent[position]
         rest = [vertex for vertex in reversed(known) if vertex != guess]
         return min(len(known), 3) + (4 if from_gate else 0), [guess, *rest]
 
-    def record(self, corner: int, vertex: int) -> None:
+    def record(self, corner: int, vertex: int, index: int | None) -> None:
+        """Note the vertex a corner uses; index is the choice made, or None if none."""
         position = self.layout.welded[corner]
         known = self.seen.setdefault(position, [])
         if vertex not in known:
             known.append(vertex)
         self.recent[position] = vertex
+        self.vertex_of[corner] = vertex
+        if index is not None:
+            self.face_choice = 1 if index == 0 else 3 if index == 1 else 2
+            if index == 0:
+                self.seams.add(vertex)
+
+
+def _split_contexts(model: int) -> int:
+    return _SPLIT_CONTEXTS * (8 if model == 2 else 1)
 
 
 def _encode_splits(layout: _Layout, corners: list) -> bytes:
     """Return the splits under whichever model makes them smaller."""
     written = []
-    for by_gate in (0, 1):
-        writer = SymbolWriter(_SPLIT_CONTEXTS)
-        splits = _Splits(layout, corners, by_gate)
+    for by_gate in (0, 1, 2):
+        writer = SymbolWriter(_split_contexts(by_gate))
+        splits = _Splits(layout, by_gate)
         for corner, _first, at, face in layout.corners():
             vertex = corners[corner]
             choice = splits.options(corner, at, face)
+            index = None
             if choice is not None:
                 context, options = choice
                 index = options.index(vertex) + 1 if vertex in options else 0
                 _write_choice(writer, context, index)
-            splits.record(corner, vertex)
+            splits.record(corner, vertex, index)
         written.append(bytes((by_gate,)) + writer.to_bytes())
     return min(written, key=len)
 
 
 def _read_splits(data: bytes, layout: _Layout) -> tuple:
     """Return (each corner's vertex, each vertex's welded position)."""
-    if not data or data[0] > 1:
+    if not data or data[0] > 2:
         raise FormatError("Packed splits name no known model")
-    reader = SymbolReader(data[1:], _SPLIT_CONTEXTS)
+    reader = SymbolReader(data[1:], _split_contexts(data[0]))
     corners = [0] * len(layout.welded)
     position_of = []
-    splits = _Splits(layout, corners, data[0])
+    splits = _Splits(layout, data[0])
     for corner, _first, at, face in layout.corners():
         choice = splits.options(corner, at, face)
         index = 0
@@ -791,7 +834,7 @@ def _read_splits(data: bytes, layout: _Layout) -> tuple:
             vertex = len(position_of)
             position_of.append(layout.welded[corner])
         corners[corner] = vertex
-        splits.record(corner, vertex)
+        splits.record(corner, vertex, index if choice is not None else None)
     return corners, position_of
 
 
@@ -829,6 +872,37 @@ def _normal_context(seen: list, history: int) -> int:
     )
 
 
+class _SeenLookup:
+    """The values already seen where a corner looks: lookup 0 its welded position,
+    1 its vertex, 2 its vertex if it has any, else its position. Lookup 2 keys its
+    vertex choices from vertex_contexts up."""
+
+    def __init__(self, layout: _Layout, corners: list, lookup: int, vertex_contexts):
+        self.welded = layout.welded
+        self.corners = corners
+        self.lookup = lookup
+        self.vertex_contexts = vertex_contexts
+        self.by_position = {}
+        self.by_vertex = {}
+
+    def options(self, corner: int) -> tuple:
+        """Return (context, the values this corner may name); the list may be empty."""
+        position = self.by_position.setdefault(self.welded[corner], [])
+        vertex = self.by_vertex.setdefault(self.corners[corner], [])
+        if self.lookup == 1 or self.lookup == 2 and vertex:
+            context = min(len(vertex), _MAX_SEEN_CONTEXT)
+            return context + (self.vertex_contexts if self.lookup == 2 else 0), vertex
+        return min(len(position), _MAX_SEEN_CONTEXT), position
+
+    def record(self, corner: int, pair: tuple) -> None:
+        for seen in (
+            self.by_position[self.welded[corner]],
+            self.by_vertex[self.corners[corner]],
+        ):
+            if pair not in seen:
+                seen.append(pair)
+
+
 def _normal_keys(layout: _Layout, corners: list, rows: list, by_vertex: int) -> tuple:
     """Return (each corner's key, each key's grid row) for this way of predicting.
 
@@ -846,74 +920,79 @@ def _normal_keys(layout: _Layout, corners: list, rows: list, by_vertex: int) -> 
 def _encode_normals(layout: _Layout, corners: list, pairs: list, rows: list) -> bytes:
     """Return the normals each way, whichever is smaller.
 
-    The first byte's bit 0 predicts around vertices, bit 1 uses fine numbers.
+    The first byte's bit 0 predicts around vertices, bit 1 uses fine numbers, and
+    bits 2 and 3 say where a corner looks for a normal already seen, as for UVs.
     """
     return min(
         (
-            bytes((by_vertex | fine << 1,))
-            + _encode_normals_by(
-                layout.starts,
-                *_normal_keys(layout, corners, rows, by_vertex),
-                pairs,
-                fine,
-            )
+            bytes((by_vertex | fine << 1 | lookup << 2,))
+            + _encode_normals_by(layout, corners, by_vertex, rows, pairs, fine, lookup)
             for by_vertex in (0, 1)
             for fine in (0, 1)
+            for lookup in _SEEN_LOOKUPS
         ),
         key=len,
     )
 
 
-def _encode_normals_by(
-    starts: list, keys: list, rows: list, pairs: list, fine: int
-) -> bytes:
-    writer = SymbolWriter(_NORMAL_CONTEXTS, fine=bool(fine))
-    guesses = _vertex_normals(starts, keys, rows)
+def _normal_contexts(lookup: int) -> int:
+    return _NORMAL_CONTEXTS + (_MAX_SEEN_CONTEXT + 1 if lookup == 2 else 0)
+
+
+def _encode_normals_by(layout, corners, by_vertex, rows, pairs, fine, lookup) -> bytes:
+    keys, key_rows = _normal_keys(layout, corners, rows, by_vertex)
+    writer = SymbolWriter(_normal_contexts(lookup), fine=bool(fine))
+    guesses = _vertex_normals(layout.starts, keys, key_rows)
     history = [0, 0]
-    seen_at = [[] for _ in rows]
-    for corner, position in enumerate(keys):
-        seen = seen_at[position]
+    seen_normals = _SeenLookup(layout, corners, lookup, _NORMAL_CONTEXTS)
+    for corner, key in enumerate(keys):
+        context, seen = seen_normals.options(corner)
         pair = pairs[corner]
         if seen:
             at = seen.index(pair) + 1 if pair in seen else 0
-            _write_choice(writer, min(len(seen), _MAX_SEEN_CONTEXT), at)
+            _write_choice(writer, context, at)
             if at:
+                seen_normals.record(corner, pair)
                 continue
-        base = seen[-1] if seen else guesses[position]
+        base = seen[-1] if seen else guesses[key]
         for part in range(2):
             difference = pair[part] - base[part]
             writer.write_number(_normal_context(seen, history[part]), difference)
             history[part] = _magnitude(difference)
-        seen.append(pair)
+        seen_normals.record(corner, pair)
     return writer.to_bytes()
 
 
 def _read_normals(layout: _Layout, data: bytes, corners: list, rows: list) -> list:
-    if not data or data[0] > 3:
+    if not data or data[0] >> 2 not in _SEEN_LOOKUPS:
         raise FormatError("Packed normals name no known prediction")
+    lookup = data[0] >> 2
     keys, key_rows = _normal_keys(layout, corners, rows, data[0] & 1)
-    reader = SymbolReader(data[1:], _NORMAL_CONTEXTS, fine=bool(data[0] >> 1))
+    reader = SymbolReader(
+        data[1:], _normal_contexts(lookup), fine=bool(data[0] >> 1 & 1)
+    )
     guesses = _vertex_normals(layout.starts, keys, key_rows)
     history = [0, 0]
-    seen_at = [[] for _ in key_rows]
+    seen_normals = _SeenLookup(layout, corners, lookup, _NORMAL_CONTEXTS)
     pairs = []
-    for position in keys:
-        seen = seen_at[position]
+    for corner, key in enumerate(keys):
+        context, seen = seen_normals.options(corner)
         if seen:
-            at = _read_choice(reader, min(len(seen), _MAX_SEEN_CONTEXT))
+            at = _read_choice(reader, context)
             if not 0 <= at <= len(seen):
                 raise FormatError("A packed normal names a missing value")
             if at:
                 pairs.append(seen[at - 1])
+                seen_normals.record(corner, pairs[-1])
                 continue
-        base = seen[-1] if seen else guesses[position]
+        base = seen[-1] if seen else guesses[key]
         values = []
         for part in range(2):
             difference = reader.read_number(_normal_context(seen, history[part]))
             values.append(base[part] + difference)
             history[part] = _magnitude(difference)
         pair = tuple(values)
-        seen.append(pair)
+        seen_normals.record(corner, pair)
         pairs.append(pair)
     return pairs
 
@@ -970,31 +1049,46 @@ def _uv_base(layout, rows, values, corner, first, at, face, last, side_of) -> tu
     return candidates[1 if across > 0.0 else 0]
 
 
-def _encode_uvs(layout: _Layout, pairs: list, rows: list) -> bytes:
-    """Return the UVs with plain or fine numbers, whichever is smaller."""
+def _encode_uvs(layout: _Layout, corners: list, pairs: list, rows: list) -> bytes:
+    """Return the UVs in whichever form is smallest.
+
+    The form byte's bit 0 uses fine numbers; bits 1 and 2 say where a corner looks for
+    a UV already seen: 0 its welded position's, 1 its vertex's, 2 its vertex's if it
+    has any, else its position's. On meshes split at UV seams a vertex has one UV, so
+    the last makes repeats nearly free without repeating the seams splits hold.
+    """
     return min(
         (
-            bytes((fine,)) + _encode_uvs_with(layout, pairs, rows, fine)
+            bytes((fine | lookup << 1,))
+            + _encode_uvs_with(layout, corners, pairs, rows, fine, lookup)
             for fine in (0, 1)
+            for lookup in _SEEN_LOOKUPS
         ),
         key=len,
     )
 
 
-def _encode_uvs_with(layout: _Layout, pairs: list, rows: list, fine: int) -> bytes:
-    writer = SymbolWriter(_UV_CONTEXTS, fine=bool(fine))
+def _uv_contexts(lookup: int) -> int:
+    return _UV_CONTEXTS + (_MAX_SEEN_CONTEXT + 1 if lookup == 2 else 0)
+
+
+def _encode_uvs_with(
+    layout: _Layout, corners: list, pairs: list, rows: list, fine: int, lookup: int
+) -> bytes:
+    writer = SymbolWriter(_uv_contexts(lookup), fine=bool(fine))
     values = [None] * len(layout.welded)
     history = [0, 0]
     last = (0, 0)
-    seen_at = [[] for _ in rows]
+    seen_uvs = _SeenLookup(layout, corners, lookup, _UV_CONTEXTS)
     for corner, first, at, face in layout.corners():
-        seen = seen_at[layout.welded[corner]]
+        context, seen = seen_uvs.options(corner)
         pair = pairs[corner]
         values[corner] = pair
         if seen:
             choice = seen.index(pair) + 1 if pair in seen else 0
-            _write_choice(writer, min(len(seen), _MAX_SEEN_CONTEXT), choice)
+            _write_choice(writer, context, choice)
             if choice:
+                seen_uvs.record(corner, pair)
                 continue
 
         def side_of(candidates, actual=pair):
@@ -1018,19 +1112,20 @@ def _encode_uvs_with(layout: _Layout, pairs: list, rows: list, fine: int) -> byt
             bucket = history[part] // _UV_HISTORY_STEP
             writer.write_number(_UV_VALUE_FIRST + bucket, difference)
             history[part] = _magnitude(difference)
-        seen.append(pair)
+        seen_uvs.record(corner, pair)
         last = pair
     return writer.to_bytes()
 
 
-def _read_uvs(layout: _Layout, data: bytes, rows: list) -> list:
-    if not data or data[0] > 1:
-        raise FormatError("Packed UVs name no known number form")
-    reader = SymbolReader(data[1:], _UV_CONTEXTS, fine=bool(data[0]))
+def _read_uvs(layout: _Layout, data: bytes, corners: list, rows: list) -> list:
+    if not data or data[0] >> 1 not in _SEEN_LOOKUPS:
+        raise FormatError("Packed UVs name no known form")
+    lookup = data[0] >> 1
+    reader = SymbolReader(data[1:], _uv_contexts(lookup), fine=bool(data[0] & 1))
     values = [None] * len(layout.welded)
     history = [0, 0]
     last = (0, 0)
-    seen_at = [[] for _ in rows]
+    seen_uvs = _SeenLookup(layout, corners, lookup, _UV_CONTEXTS)
 
     def side_of(_candidates):
         side = reader.read(_UV_SIDE_CONTEXT)
@@ -1039,13 +1134,14 @@ def _read_uvs(layout: _Layout, data: bytes, rows: list) -> list:
         return side
 
     for corner, first, at, face in layout.corners():
-        seen = seen_at[layout.welded[corner]]
+        context, seen = seen_uvs.options(corner)
         if seen:
-            choice = _read_choice(reader, min(len(seen), _MAX_SEEN_CONTEXT))
+            choice = _read_choice(reader, context)
             if not 0 <= choice <= len(seen):
                 raise FormatError("A packed UV names a missing value")
             if choice:
                 values[corner] = seen[choice - 1]
+                seen_uvs.record(corner, values[corner])
                 continue
         base = (
             seen[-1]
@@ -1060,7 +1156,7 @@ def _read_uvs(layout: _Layout, data: bytes, rows: list) -> list:
             history[part] = _magnitude(difference)
         pair = tuple(pair)
         values[corner] = pair
-        seen.append(pair)
+        seen_uvs.record(corner, pair)
         last = pair
     return values
 
@@ -1113,8 +1209,8 @@ def pack_geometry(
     for face in packed_faces:
         starts.append(starts[-1] + len(face))
     connectivity = walk.to_bytes()
-    gates = _walk_gates(connectivity, walk.is_uniform, welded, starts)
-    layout = _Layout(welded, starts, gates, walk.newest + 1)
+    gates, across = _walk_gates(connectivity, walk.is_uniform, welded, starts)
+    layout = _Layout(welded, starts, gates, walk.newest + 1, across)
     used = max(corners) + 1 if corners else 0
     sections = [
         Section(SectionKind.PACKED_CONNECTIVITY, connectivity),
@@ -1137,7 +1233,7 @@ def pack_geometry(
             (encode_uv(values[at * 2]), encode_uv(values[at * 2 + 1]))
             for at in range(len(corners))
         ]
-        data = _encode_uvs(layout, pairs, position_rows)
+        data = _encode_uvs(layout, corners, pairs, position_rows)
         sections.append(Section(SectionKind.PACKED_UVS, data, layer=layer))
     return ordered, sections
 
@@ -1157,7 +1253,7 @@ def _grid_rows(positions, exponent: int, step: float) -> list:
 def _walk_gates(data: bytes, is_uniform: bool, welded: list, starts: list) -> list:
     return read_connectivity(
         data, len(starts) - 1, starts[1] if is_uniform else 0, len(welded)
-    )[2]
+    )[2::2]
 
 
 def _derived_edges(faces: list, loose: list) -> list:
@@ -1173,12 +1269,12 @@ def read_geometry(sections: SectionReader, info: tuple, uv_names: list) -> dict:
     vertices, faces, corner_count, edge_count, _, arity, exponent, flags = info
     if exponent == NO_GRID:
         raise FormatError("A packed mesh has no grid")
-    welded, starts, gates, position_count = read_connectivity(
+    welded, starts, gates, position_count, across = read_connectivity(
         sections.raw(SectionKind.PACKED_CONNECTIVITY), faces, arity, corner_count
     )
     if len(welded) != corner_count:
         raise FormatError("Packed faces do not fill their corners")
-    layout = _Layout(welded, starts, gates, position_count)
+    layout = _Layout(welded, starts, gates, position_count, across)
     corners, position_of = _read_splits(sections.raw(SectionKind.PACKED_SPLITS), layout)
     extra = vertices - len(position_of)
     if extra < 0:
@@ -1210,7 +1306,9 @@ def read_geometry(sections: SectionReader, info: tuple, uv_names: list) -> dict:
             "f", [part for pair in pairs for part in decode_normal(*pair)]
         )
     for layer, name in enumerate(uv_names):
-        pairs = _read_uvs(layout, sections.raw(SectionKind.PACKED_UVS, layer), rows)
+        pairs = _read_uvs(
+            layout, sections.raw(SectionKind.PACKED_UVS, layer), corners, rows
+        )
         fields["uv_layers"][name] = array(
             "f", [decode_uv(part) for pair in pairs for part in pair]
         )

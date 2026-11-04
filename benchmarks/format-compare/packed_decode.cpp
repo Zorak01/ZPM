@@ -242,11 +242,69 @@ struct Mesh
     std::vector<Gate> gates;
     // Model 2: each position's face count, and how many of its faces are placed.
     std::vector<uint32_t> faceTotal, facePlaced;
+    // The earlier corner at the same position across each closed edge, or None.
+    std::vector<uint32_t> across, nodeCornerFrom, nodeCornerTo;
+    std::vector<uint8_t> seamVertex;
     // Model 1 adds the symbol before last and which candidates exist; model 2 keys on
     // the faces each end still needs.
     int connectivityModel = 0, contextGate = 10, contextFar = 11, contextArity = 12;
     int contextSteps = 13, contextCount = 14, connectivityContexts = 14;
     int splitModel = 0;
+};
+
+struct SeenList
+{
+    std::vector<uint32_t> head, tail, next, count;
+
+    void reset(size_t keys, size_t corners)
+    {
+        count.assign(keys, 0);
+        head.resize(keys);
+        tail.resize(keys);
+        next.resize(corners);
+    }
+
+    void add(uint32_t key, uint32_t corner)
+    {
+        if (count[key])
+            next[tail[key]] = corner;
+        else
+            head[key] = corner;
+        tail[key] = corner;
+        count[key]++;
+    }
+
+    uint32_t nth(uint32_t key, uint32_t n) const
+    {
+        uint32_t corner = head[key];
+        for (uint32_t step = 1; step < n; step++)
+            corner = next[corner];
+        return corner;
+    }
+
+    void addIfNew(uint32_t key, uint32_t corner, const int32_t* values)
+    {
+        uint32_t item = head[key];
+        for (uint32_t step = 0; step < count[key]; step++, item = next[item])
+        {
+            if (values[item * 2ULL] == values[corner * 2ULL] && values[item * 2ULL + 1] == values[corner * 2ULL + 1])
+                return;
+        }
+        add(key, corner);
+    }
+};
+
+// Where a corner looks for a value already seen: 0 its position, 1 its vertex, 2 its
+// vertex if it has any, else its position.
+struct Lookup
+{
+    SeenList byPosition, byVertex;
+    int lookup = 0, vertexContexts = 0;
+
+    void reset(const Mesh& m, int mode, int contexts);
+    // Returns the list consulted and its key; context set for the choice.
+    SeenList& consult(const Mesh& m, uint32_t corner, uint32_t& key, int& context);
+    void record(const Mesh& m, uint32_t corner, const int32_t* values);
 };
 
 void setConnectivityModel(Mesh& m, int model)
@@ -282,16 +340,18 @@ inline bool isOpen(const Mesh& m, uint32_t u, uint32_t v)
     return false;
 }
 
-inline void removeOpen(Mesh& m, uint32_t u, uint32_t v)
+inline uint32_t removeOpen(Mesh& m, uint32_t u, uint32_t v)
 {
     uint32_t* link = &m.headInto[v];
     while (m.nodeFrom[*link] != u)
         link = &m.nextInto[*link];
+    uint32_t removed = *link;
     *link = m.nextInto[*link];
     link = &m.headOut[u];
     while (m.nodeTo[*link] != v)
         link = &m.nextOut[*link];
     *link = m.nextOut[*link];
+    return removed;
 }
 
 inline void readFace(Stream& s, Mesh& m, int known, uint32_t k0, uint32_t k1, const Gate& reached, uint32_t& newest, uint32_t& previous, uint32_t& before, uint32_t& nodes, uint32_t& previousCount)
@@ -375,12 +435,18 @@ inline void readFace(Stream& s, Mesh& m, int known, uint32_t k0, uint32_t k1, co
         uint32_t u = m.welded[first + at], v = m.welded[first + next];
         if (isOpen(m, v, u))
         {
-            removeOpen(m, v, u);
+            uint32_t closed = removeOpen(m, v, u);
+            if (m.across[first + at] == None)
+                m.across[first + at] = m.nodeCornerTo[closed];
+            if (m.across[first + next] == None)
+                m.across[first + next] = m.nodeCornerFrom[closed];
             continue;
         }
         uint32_t node = nodes++;
         m.nodeFrom[node] = u;
         m.nodeTo[node] = v;
+        m.nodeCornerFrom[node] = first + at;
+        m.nodeCornerTo[node] = first + next;
         m.nextInto[node] = m.headInto[v];
         m.headInto[v] = node;
         m.nextOut[node] = m.headOut[u];
@@ -398,6 +464,7 @@ void readConnectivity(Stream& s, Mesh& m)
     m.gates.clear();
     std::fill(m.headInto.begin(), m.headInto.end(), None);
     std::fill(m.headOut.begin(), m.headOut.end(), None);
+    std::fill(m.across.begin(), m.across.end(), None);
     uint32_t newest = None, previous = 0, before = 0, nodes = 0, previousCount = 6;
     const Gate noGate = {0, 0, 0, 0, None};
     while (m.faceStart.size() < m.faces)
@@ -434,13 +501,45 @@ void resetSeen(Mesh& m)
 
 // Model 0 names a vertex at its position by when it was made; model 1 first guesses
 // the vertex across the face's gate, or the one last used here, then the rest newest first.
+void Lookup::reset(const Mesh& m, int mode, int contexts)
+{
+    lookup = mode;
+    vertexContexts = contexts;
+    byPosition.reset(m.positionCount, m.welded.size());
+    byVertex.reset(m.positionOf.size(), m.welded.size());
+}
+
+SeenList& Lookup::consult(const Mesh& m, uint32_t corner, uint32_t& key, int& context)
+{
+    uint32_t vertex = m.corners[corner];
+    if (lookup == 1 || (lookup == 2 && byVertex.count[vertex]))
+    {
+        key = vertex;
+        context = (int)std::min<uint32_t>(byVertex.count[vertex], 2) + (lookup == 2 ? vertexContexts : 0);
+        return byVertex;
+    }
+    key = m.welded[corner];
+    context = (int)std::min<uint32_t>(byPosition.count[key], 2);
+    return byPosition;
+}
+
+void Lookup::record(const Mesh& m, uint32_t corner, const int32_t* values)
+{
+    if (lookup != 1)
+        byPosition.addIfNew(m.welded[corner], corner, values);
+    if (lookup != 0)
+        byVertex.addIfNew(m.corners[corner], corner, values);
+}
+
 void readSplits(Stream& s, Mesh& m)
 {
     resetSeen(m);
     m.corners.resize(m.welded.size());
     m.recent.resize(m.positionCount);
     m.positionOf.clear();
+    std::fill(m.seamVertex.begin(), m.seamVertex.end(), 0);
     uint32_t options[256];
+    uint32_t lastFace = None, faceChoice = 0;
     for (uint32_t face = 0; face < m.faces; face++)
     {
         const Gate& gate = m.faceGate[face];
@@ -450,13 +549,33 @@ void readSplits(Stream& s, Mesh& m)
             uint32_t position = m.welded[corner];
             uint32_t count = m.seenCount[position];
             uint32_t vertex = None;
+            uint32_t at = 0;
             if (count)
             {
-                uint32_t at;
                 if (m.splitModel)
                 {
-                    bool fromGate = gate.cornerThird != None && corner - first < 2;
-                    uint32_t guess = fromGate ? m.corners[corner == first ? gate.cornerV : gate.cornerU] : m.recent[position];
+                    bool fromGate;
+                    uint32_t guess;
+                    int extra = 0;
+                    if (m.splitModel == 2)
+                    {
+                        if (face != lastFace)
+                        {
+                            lastFace = face;
+                            faceChoice = 0;
+                        }
+                        // Only corners read so far can be across.
+                        uint32_t other = m.across[corner];
+                        fromGate = other != None && other < corner;
+                        guess = fromGate ? m.corners[other] : m.recent[position];
+                        int seam = fromGate && m.seamVertex[guess] ? 1 : 0;
+                        extra = 8 * ((int)faceChoice * 2 + seam);
+                    }
+                    else
+                    {
+                        fromGate = gate.cornerThird != None && corner - first < 2;
+                        guess = fromGate ? m.corners[corner == first ? gate.cornerV : gate.cornerU] : m.recent[position];
+                    }
                     uint32_t known[256], held = 0;
                     for (uint32_t item = m.head[position]; held < count; item = m.nextSeen[item])
                         known[held++] = item;
@@ -467,7 +586,7 @@ void readSplits(Stream& s, Mesh& m)
                         if (known[back] != guess)
                             options[total++] = known[back];
                     }
-                    at = s.readChoice((int)std::min<uint32_t>(count, 3) + (fromGate ? 4 : 0));
+                    at = s.readChoice((int)std::min<uint32_t>(count, 3) + (fromGate ? 4 : 0) + extra);
                     if (at)
                         vertex = options[at - 1];
                 }
@@ -482,10 +601,14 @@ void readSplits(Stream& s, Mesh& m)
                     }
                 }
             }
+            if (count)
+                faceChoice = at == 0 ? 1 : at == 1 ? 3 : 2;
             if (vertex == None)
             {
                 vertex = (uint32_t)m.positionOf.size();
                 m.positionOf.push_back(position);
+                if (count)
+                    m.seamVertex[vertex] = 1;
                 if (count)
                     m.nextSeen[m.tail[position]] = vertex;
                 else
@@ -574,7 +697,7 @@ void readPositions(Stream& s, Mesh& m, bool across)
 }
 
 // Predicts each corner's normal around its key: its welded position, or its vertex.
-void readNormals(Stream& s, Mesh& m, bool byVertex)
+void readNormals(Stream& s, Mesh& m, bool byVertex, Lookup& seen, int lookup)
 {
     const uint32_t* keys = byVertex ? m.corners.data() : m.welded.data();
     size_t keyCount = byVertex ? m.positionOf.size() : m.positionCount;
@@ -603,36 +726,38 @@ void readNormals(Stream& s, Mesh& m, bool byVertex)
             }
         }
     }
-    resetSeen(m, keyCount);
     size_t cornerCount = m.welded.size();
     m.normals.resize(cornerCount * 2);
     int32_t* values = m.normals.data();
+    seen.reset(m, lookup, 13);
     int history[2] = {0, 0};
     for (uint32_t corner = 0; corner < cornerCount; corner++)
     {
-        uint32_t position = keys[corner];
-        uint32_t count = m.seenCount[position];
+        uint32_t key;
+        int context;
+        SeenList& list = seen.consult(m, corner, key, context);
+        uint32_t count = list.count[key];
         if (count)
         {
-            uint32_t at = s.readChoice(count < 2 ? (int)count : 2);
+            uint32_t at = s.readChoice(context);
             if (at)
             {
-                uint32_t found = m.head[position];
-                for (uint32_t step = 1; step < at; step++)
-                    found = m.nextSeen[found];
+                uint32_t found = list.nth(key, at);
                 values[corner * 2ULL] = values[found * 2ULL];
                 values[corner * 2ULL + 1] = values[found * 2ULL + 1];
+                seen.record(m, corner, values);
                 continue;
             }
         }
         int64_t base[2];
+        uint32_t predicted = keys[corner];
         if (count)
         {
-            base[0] = values[m.tail[position] * 2ULL];
-            base[1] = values[m.tail[position] * 2ULL + 1];
+            base[0] = values[list.tail[key] * 2ULL];
+            base[1] = values[list.tail[key] * 2ULL + 1];
         }
         else
-            encodeNormal((double)totals[position * 3ULL], (double)totals[position * 3ULL + 1], (double)totals[position * 3ULL + 2], base[0], base[1]);
+            encodeNormal((double)totals[predicted * 3ULL], (double)totals[predicted * 3ULL + 1], (double)totals[predicted * 3ULL + 2], base[0], base[1]);
         int offset = count ? 1 : 0;
         for (int part = 0; part < 2; part++)
         {
@@ -640,20 +765,15 @@ void readNormals(Stream& s, Mesh& m, bool byVertex)
             values[corner * 2ULL + part] = (int32_t)(base[part] + difference);
             history[part] = magnitude(difference);
         }
-        if (count)
-            m.nextSeen[m.tail[position]] = corner;
-        else
-            m.head[position] = corner;
-        m.tail[position] = corner;
-        m.seenCount[position] = (uint8_t)std::min<uint32_t>(count + 1, 255);
+        seen.record(m, corner, values);
     }
 }
 
-void readUvs(Stream& s, Mesh& m, std::vector<int32_t>& store)
+void readUvs(Stream& s, Mesh& m, std::vector<int32_t>& store, Lookup& seen, int lookup)
 {
-    resetSeen(m);
     store.resize(m.welded.size() * 2);
     int32_t* values = store.data();
+    seen.reset(m, lookup, 8);
     const int32_t* rows = m.rows.data();
     const uint32_t* welded = m.welded.data();
     int history[2] = {0, 0};
@@ -665,17 +785,19 @@ void readUvs(Stream& s, Mesh& m, std::vector<int32_t>& store)
         for (uint32_t corner = first; corner < end; corner++)
         {
             uint32_t position = welded[corner];
-            uint32_t count = m.seenCount[position];
+            uint32_t key;
+            int context;
+            SeenList& list = seen.consult(m, corner, key, context);
+            uint32_t count = list.count[key];
             if (count)
             {
-                uint32_t choice = s.readChoice(count < 2 ? (int)count : 2);
+                uint32_t choice = s.readChoice(context);
                 if (choice)
                 {
-                    uint32_t found = m.head[position];
-                    for (uint32_t step = 1; step < choice; step++)
-                        found = m.nextSeen[found];
+                    uint32_t found = list.nth(key, choice);
                     values[corner * 2ULL] = values[found * 2ULL];
                     values[corner * 2ULL + 1] = values[found * 2ULL + 1];
+                    seen.record(m, corner, values);
                     continue;
                 }
             }
@@ -683,7 +805,7 @@ void readUvs(Stream& s, Mesh& m, std::vector<int32_t>& store)
             double base[2];
             if (at == 0)
             {
-                uint32_t from = m.tail[position];
+                uint32_t from = list.tail[key];
                 base[0] = count ? values[from * 2ULL] : last[0];
                 base[1] = count ? values[from * 2ULL + 1] : last[1];
             }
@@ -744,12 +866,7 @@ void readUvs(Stream& s, Mesh& m, std::vector<int32_t>& store)
                 values[corner * 2ULL + part] = (int32_t)((int64_t)std::nearbyint(base[part]) + difference);
                 history[part] = magnitude(difference);
             }
-            if (count)
-                m.nextSeen[m.tail[position]] = corner;
-            else
-                m.head[position] = corner;
-            m.tail[position] = corner;
-            m.seenCount[position] = (uint8_t)std::min<uint32_t>(count + 1, 255);
+            seen.record(m, corner, values);
             last[0] = values[corner * 2ULL];
             last[1] = values[corner * 2ULL + 1];
         }
@@ -799,25 +916,29 @@ int main(int, char** arguments)
     Stream connectivityStream, splitStream, positionStream, normalStream;
     std::vector<Stream> uvStreams(uvData.size());
     connectivityStream.open(connectivity, m.connectivityContexts);
-    splitStream.open(splits, 8);
+    splitStream.open(splits, m.splitModel == 2 ? 64 : 8);
     positionStream.open(positions, across ? 48 : 4);
     positionStream.fine = (positionForm & 1) != 0;
     bool normalsByVertex = normals && (normals[0] & 1);
     bool normalsFine = normals && (normals[0] & 2);
+    int normalLookup = normals ? normals[0] >> 2 : 0;
     if (normals)
         normals++;
     if (normals)
     {
-        normalStream.open(normals, 13);
+        normalStream.open(normals, 13 + (normalLookup == 2 ? 3 : 0));
         normalStream.fine = normalsFine;
     }
+    std::vector<int> uvLookups;
     for (size_t layer = 0; layer < uvData.size(); layer++)
     {
-        bool uvFine = uvData[layer][0] != 0;
+        bool uvFine = (uvData[layer][0] & 1) != 0;
+        uvLookups.push_back(uvData[layer][0] >> 1);
         uvData[layer]++;
-        uvStreams[layer].open(uvData[layer], 8);
+        uvStreams[layer].open(uvData[layer], 8 + (uvLookups.back() == 2 ? 3 : 0));
         uvStreams[layer].fine = uvFine;
     }
+    Lookup seen;
     const uint8_t* wordStarts[4] = {connectivityStream.wordAt, splitStream.wordAt, positionStream.wordAt, normalStream.wordAt};
     const uint8_t* rawStarts[4] = {connectivityStream.rawAt, splitStream.rawAt, positionStream.rawAt, normalStream.rawAt};
     std::vector<const uint8_t*> uvWords, uvRaw;
@@ -839,6 +960,10 @@ int main(int, char** arguments)
     m.seenCount.resize(bound);
     m.faceTotal.resize(bound);
     m.facePlaced.resize(bound);
+    m.across.resize(bound);
+    m.nodeCornerFrom.resize(bound);
+    m.nodeCornerTo.resize(bound);
+    m.seamVertex.resize(bound);
     m.uvs.resize(uvData.size());
     std::vector<double> times;
     for (int round = 0; round < Rounds; round++)
@@ -863,14 +988,14 @@ int main(int, char** arguments)
                 normalStream.restart(normals);
                 normalStream.wordAt = wordStarts[3];
                 normalStream.rawAt = rawStarts[3];
-                readNormals(normalStream, m, normalsByVertex);
+                readNormals(normalStream, m, normalsByVertex, seen, normalLookup);
             }
             for (size_t layer = 0; layer < uvData.size(); layer++)
             {
                 uvStreams[layer].restart(uvData[layer]);
                 uvStreams[layer].wordAt = uvWords[layer];
                 uvStreams[layer].rawAt = uvRaw[layer];
-                readUvs(uvStreams[layer], m, m.uvs[layer]);
+                readUvs(uvStreams[layer], m, m.uvs[layer], seen, uvLookups[layer]);
             }
         }
         std::chrono::duration<double, std::micro> took = std::chrono::steady_clock::now() - start;

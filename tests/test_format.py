@@ -132,6 +132,22 @@ def grid_mesh(side: int = 40) -> Mesh:
     return Mesh(positions, array("I", [4] * (len(corners) // 4)), corners, edges)
 
 
+def grid_edges(mesh: Mesh) -> list:
+    """Return each edge the faces reach once, lower vertex first."""
+    edges = []
+    seen = set()
+    first = 0
+    for size in mesh.face_sizes:
+        face = mesh.corners[first : first + size]
+        first += size
+        for j in range(size):
+            key = tuple(sorted((face[j], face[(j + 1) % size])))
+            if key not in seen:
+                seen.add(key)
+                edges.extend(key)
+    return edges
+
+
 def real_fixture() -> Mesh:
     root = Path(__file__).resolve().parents[1] / "benchmarks/mesh-core/fixtures"
     data = (root / "repository_obj418.zms").read_bytes()
@@ -1390,6 +1406,28 @@ class PackedTests(unittest.TestCase):
         corners = array("I", [0, 1, 2, 0, 1, 3, 0, 1, 4])
         edges = array("I", [0, 1, 1, 2, 0, 2, 1, 3, 0, 3, 1, 4, 0, 4])
         mesh = Mesh(positions, array("I", [3, 3, 3]), corners, edges)
+        self.assert_same_after_packing(mesh)
+
+    def test_a_face_touching_one_position_twice(self):
+        # Each slot-1 triangle has two vertices at one position, so it closes an edge
+        # it opened itself, and starts a new run of faces, as in Lantern.
+        mesh = grid_mesh(4)
+        count = mesh.vertex_count
+        faces = mesh.face_count
+        sizes = list(mesh.face_sizes)
+        corners = list(mesh.corners)
+        for vertex in (5, 6, 9, 10):
+            x, y, z = mesh.positions[vertex * 3 : vertex * 3 + 3]
+            mesh.positions.extend((x, y, z, x, y, z))
+        for at, (_, neighbour) in enumerate(((5, 6), (6, 10), (9, 10), (10, 5))):
+            first, second = count + 2 * at, count + 2 * at + 1
+            sizes.append(3)
+            corners += [first, second, neighbour]
+        mesh.face_sizes = array("I", sizes)
+        mesh.corners = array("I", corners)
+        mesh.face_materials = array("I", [0] * faces + [1] * 4)
+        mesh.material_slots = ["Base", "Degenerate"]
+        mesh.edges = array("I", grid_edges(mesh))
         self.assert_same_after_packing(mesh)
 
     def test_what_cannot_pack_stays_readable(self):

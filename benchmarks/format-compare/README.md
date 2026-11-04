@@ -2,7 +2,7 @@
 
 ## Packed form, latest run: 2026-11-04
 
-24 meshes, run `20261104T004526Z`. [Raw JSON](results/20261104T004526Z.json). The packed form is what saving writes. 12-bit normals and
+24 meshes, run `20261104T033615Z`. [Raw JSON](results/20261104T033615Z.json). The packed form is what saving writes. 12-bit normals and
 16-bit UVs for all. No zstd on any of them. `*` means normals are calculated from faces, so Draco holds positions,
 faces and UVs only, as ZPM does.
 
@@ -11,45 +11,45 @@ faces and UVs only, as ZPM does.
 twice as fine as both. Packed bytes are the whole mesh file, header and all, with edges worked out from the faces.
 Meshopt gets the same vertices.
 
-**Total: packed 1,950,832 bytes, Draco 1,968,482, meshopt 15,227,867.** Packed is 0.991x Draco and smaller on 21 of 24;
-**larger on BoomBox 1.008x, DamagedHelmet 1.057x, happy 1.008x**. Against the finer 21-bit Draco it is smaller on 23 of 24. Packed is
-7.81x smaller than meshopt and smaller on 24 of 24: **larger on none.**
+**Total: packed 1,944,280 bytes, Draco 1,968,482, meshopt 15,227,867.** Packed is 0.988x Draco and smaller on 22 of 24;
+**larger on DamagedHelmet 1.024x, happy 1.008x**. Against the finer 21-bit Draco it is smaller on 24 of 24. Packed is
+7.83x smaller than meshopt and smaller on 24 of 24: **larger on none.**
 
 Decoding, in microseconds, is `packed_decode.cpp`: native C++ built with `zig c++ -O3 -mavx2`, decoding connectivity,
 vertices, positions, normals and UVs into integer arrays, the median of many runs. It leaves out edges and the other
 sections, and it trusts its input; the Python reader checks everything. Draco is its native decoder called through
-Python; meshopt is native. **Packed decodes 2.3x to 15.6x faster than Draco on 24 of 24, and 4.3x to
-38.6x slower than native meshopt on all 24.** Every packed file decodes to the same integers in C++ and Python, by
+Python; meshopt is native. **Packed decodes 2.3x to 9.8x faster than Draco on 24 of 24, and 2.4x to
+46.8x slower than native meshopt on all 24.** Every packed file decodes to the same integers in C++ and Python, by
 checksum.
 
 | Mesh | Packed | Draco, 20 bits | Packed / Draco | Draco, 21 bits | Meshopt, same vertices | Packed decode | Draco decode | Meshopt native decode |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| armadillo | **268,368** | 270,636 * | 0.992 | 290,769 | 2,291,258 | **8,314** | 129,712 | 1,587 |
-| Avocado | **4,384** | 4,680 | 0.937 | 4,926 | 6,255 | **65** | 239 | 4 |
-| BoomBox | **32,716** | 32,446 | 1.008 | 34,379 | 51,417 | **933** | 2,541 | 29 |
-| CesiumMan | **20,888** | 21,759 | 0.960 | 22,851 | 41,501 | **684** | 1,944 | 25 |
-| cow | **17,288** | 17,616 * | 0.981 | 18,670 | 140,222 | **428** | 3,534 | 79 |
-| DamagedHelmet | **104,536** | 98,931 | 1.057 | 104,195 | 192,323 | **3,259** | 10,133 | 104 |
-| Duck | **23,180** | 23,536 | 0.985 | 24,587 | 35,146 | **669** | 2,239 | 19 |
-| fandisk | **27,680** | 29,055 * | 0.953 | 31,656 | 160,302 | **1,326** | 5,151 | 114 |
-| happy | **262,172** | 260,185 * | 1.008 | 289,365 | 2,259,566 | **8,737** | 64,030 | 2,017 |
-| Lantern | **18,092** | 18,734 | 0.966 | 19,579 | 32,262 | **493** | 1,700 | 25 |
-| lucy | **260,060** | 260,701 * | 0.998 | 280,697 | 2,289,250 | **9,420** | 70,965 | 1,627 |
-| RiggedFigure | **1,508** | 1,637 | 0.921 | 1,683 | 3,624 | **22** | 83 | 3 |
-| spot | **25,104** | 25,150 * | 0.998 | 26,366 | 194,541 | **734** | 3,902 | 118 |
-| stanford-bunny | **157,396** | 158,339 * | 0.994 | 171,710 | 1,525,807 | **6,812** | 43,641 | 1,254 |
-| suzanne | **4,772** | 5,230 | 0.912 | 5,446 | 4,988 | **56** | 342 | 4 |
-| teapot | **13,600** | 16,833 * | 0.808 | 18,218 | 107,678 | **771** | 4,096 | 81 |
-| WaterBottle | **18,784** | 22,510 | 0.834 | 23,660 | 34,393 | **826** | 1,887 | 21 |
-| xyzrgb_dragon | **623,168** | 624,576 * | 0.998 | 673,960 | 5,612,096 | **22,662** | 185,771 | 4,446 |
-| 04263 | **33,192** | 38,449 | 0.863 | 40,126 | 148,852 | **1,278** | 3,764 | 73 |
-| 04362 | **6,596** | 6,906 | 0.955 | 6,998 | 19,226 | **81** | 422 | 9 |
-| 11375 | **480** | 501 | 0.958 | 511 | 1,069 | **7** | 32 | 1 |
-| minotaur | **7,880** | 8,823 | 0.893 | 9,108 | 22,741 | **131** | 525 | 10 |
-| samurai | **11,876** | 13,705 | 0.867 | 14,129 | 36,377 | **372** | 964 | 31 |
-| werewolf | **7,112** | 7,544 | 0.943 | 7,789 | 16,973 | **215** | 866 | 12 |
+| armadillo | **268,368** | 270,636 * | 0.992 | 290,769 | 2,291,258 | **8,013** | 63,742 | 3,338 |
+| Avocado | **4,308** | 4,680 | 0.921 | 4,926 | 6,255 | **158** | 509 | 3 |
+| BoomBox | **32,052** | 32,446 | 0.988 | 34,379 | 51,417 | **1,111** | 2,840 | 28 |
+| CesiumMan | **20,380** | 21,759 | 0.937 | 22,851 | 41,501 | **762** | 1,730 | 23 |
+| cow | **17,288** | 17,616 * | 0.981 | 18,670 | 140,222 | **370** | 3,644 | 82 |
+| DamagedHelmet | **101,292** | 98,931 | 1.024 | 104,195 | 192,323 | **3,426** | 7,946 | 101 |
+| Duck | **22,968** | 23,536 | 0.976 | 24,587 | 35,146 | **615** | 1,784 | 19 |
+| fandisk | **27,680** | 29,055 * | 0.953 | 31,656 | 160,302 | **1,076** | 5,183 | 144 |
+| happy | **262,172** | 260,185 * | 1.008 | 289,365 | 2,259,566 | **8,047** | 75,514 | 1,965 |
+| Lantern | **17,596** | 18,734 | 0.939 | 19,579 | 32,262 | **549** | 1,269 | 18 |
+| lucy | **260,060** | 260,701 * | 0.998 | 280,697 | 2,289,250 | **8,005** | 59,245 | 1,471 |
+| RiggedFigure | **1,508** | 1,637 | 0.921 | 1,683 | 3,624 | **32** | 80 | 3 |
+| spot | **25,104** | 25,150 * | 0.998 | 26,366 | 194,541 | **606** | 3,175 | 114 |
+| stanford-bunny | **157,396** | 158,339 * | 0.994 | 171,710 | 1,525,807 | **6,152** | 38,278 | 1,016 |
+| suzanne | **4,768** | 5,230 | 0.912 | 5,446 | 4,988 | **56** | 217 | 3 |
+| teapot | **13,408** | 16,833 * | 0.797 | 18,218 | 107,678 | **482** | 2,343 | 66 |
+| WaterBottle | **18,576** | 22,510 | 0.825 | 23,660 | 34,393 | **649** | 1,537 | 21 |
+| xyzrgb_dragon | **623,168** | 624,576 * | 0.998 | 673,960 | 5,612,096 | **20,081** | 161,791 | 4,095 |
+| 04263 | **32,748** | 38,449 | 0.852 | 40,126 | 148,852 | **1,146** | 3,092 | 68 |
+| 04362 | **6,596** | 6,906 | 0.955 | 6,998 | 19,226 | **88** | 329 | 9 |
+| 11375 | **480** | 501 | 0.958 | 511 | 1,069 | **8** | 29 | 1 |
+| minotaur | **7,732** | 8,823 | 0.876 | 9,108 | 22,741 | **159** | 522 | 10 |
+| samurai | **11,676** | 13,705 | 0.852 | 14,129 | 36,377 | **220** | 770 | 18 |
+| werewolf | **6,956** | 7,544 | 0.922 | 7,789 | 16,973 | **191** | 495 | 9 |
 
-Saving takes longer: up to 19.7 s for one mesh in Python.
+Saving takes longer: up to 24.6 s for one mesh in Python.
 
 ## Direct form, run of 2026-11-02
 

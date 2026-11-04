@@ -140,8 +140,8 @@ it holds, from tangents to blendshapes, uses the sections above. `codec/packed.p
 | 278 | `PACKED_CONNECTIVITY` | One byte, the context model, then faces as a walk over welded positions |
 | 279 | `PACKED_SPLITS` | One byte, the model, then which vertex at its position each corner uses |
 | 280 | `PACKED_POSITIONS` | Grid step (Float32; 0 for 2^ the grid exponent), a form byte (bit 0 fine numbers, bit 1 contexts across axes), then grid integers of each welded position, then of vertices on no face |
-| 281 | `PACKED_NORMALS` | A byte (bit 0 predicts around vertices, not positions; bit 1 fine numbers), then the stream |
-| 282 | `PACKED_UVS` | Layered by UV layer, named by `UV_NAMES`: a byte (1 for fine numbers), then the stream |
+| 281 | `PACKED_NORMALS` | A byte (bit 0 predicts around vertices, not positions; bit 1 fine numbers; bits 2–3 the lookup), then the stream |
+| 282 | `PACKED_UVS` | Layered by UV layer, named by `UV_NAMES`: a byte (bit 0 fine numbers; bits 1–2 the lookup), then the stream |
 | 283 | `PACKED_LOOSE_EDGES` | Column: both vertex IDs of each edge on no face |
 
 Each stream is static-table rANS: a state (UInt32), then word count and raw byte count as varints (7 bits a byte, low
@@ -176,7 +176,10 @@ the open edges as in model 1, and a gate on what each end still needs, up to 2. 
 new vertex, else a vertex already at that position, from 1. Model 0 counts them in the order they were made. Model 1
 first names a guess: for a face's first two corners, the vertex at the matching corner of the face across its gate,
 else the vertex last used at this position; then the others, newest first. Contexts are the vertex count, up to 3,
-plus 4 when the guess came from a gate.
+plus 4 when the guess came from a gate. Model 2 guesses instead the vertex of the corner across, wherever a face
+closed an open edge there and that corner is already read: the earlier face's corner at the same position. Its
+context adds 8 × (2 × the face's last choice, as 0 none yet, 1 a new vertex, 2 another, 3 the guess, + 1 if the vertex
+across began as a new vertex at a known position).
 
 **Positions.** Welded positions in the order they first appear, each axis a number added to a prediction from where
 the position first appears in its face. At the first corner: the last position read. At the second: the first
@@ -186,8 +189,10 @@ With 4,000 positions or more, each axis's number takes a context from the size o
 length up to 3. Across axes, the context is instead half the largest bit length so far among this position's earlier
 axes, or for the first axis its own last, up to 7, times 6, plus a third of its own last bit length up to 5.
 
-**Normals and UVs.** Corners in order. A corner whose key, position or vertex, already holds values reads a choice:
-0 for new values, or which of them. New values are numbers added to a prediction: for normals, the 12-bit direction
+**Normals and UVs.** Corners in order. A corner looks for values already seen by its lookup: 0 its welded
+position's, 1 its vertex's, 2 its vertex's if it has any, else its position's, with the vertex's choices keyed from
+13 for normals and 8 for UVs. If there are any it reads a choice: 0 for new values, or which of them. Every value is
+added to each list it is not yet in. New values are numbers added to a prediction: for normals, the 12-bit direction
 of the summed face normals around the key, with integer cross products, or the key's last value; for UVs, from the
 triangle's shape in space, with a symbol picking the side when the walk does not settle it. All prediction uses IEEE
 doubles and rounds halves to even, so every reader gets the same integers.

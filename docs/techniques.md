@@ -521,8 +521,8 @@ a file in other units or axes looks right without changing its vertices.
 ## The packed form
 
 Saved files hold each mesh's geometry packed: decoded once, start to end, then read like the direct form. On 24 meshes,
-at Draco's own 20-bit precision, it is 0.991x Draco's size and smaller on 21 of 24, 7.81x smaller than meshopt,
-and decodes 2.3x to 15.6x faster than Draco. [The comparison](../benchmarks/format-compare/README.md) has every mesh.
+at Draco's own 20-bit precision, it is 0.988x Draco's size and smaller on 22 of 24, 7.83x smaller than meshopt,
+and decodes 2.3x to 9.8x faster than Draco. [The comparison](../benchmarks/format-compare/README.md) has every mesh.
 
 ### Static-table rANS, with raw low bits
 
@@ -564,7 +564,18 @@ low bits. That alone saved a raw bit on most of them, and took `lucy` and `xyzrg
 
 The walk runs over welded positions, so a corner only says which vertex at its position it uses. Vertices stay
 exactly as Blender has them. A second model guesses the vertex across the face's gate first, which a corner reached
-through a gate nearly always uses; the encoder keeps whichever model is smaller.
+through a gate nearly always uses; a third guesses the vertex across any edge a face closed. Seams run in chains, so
+the third also keys on the face's last choice and on whether the vertex across began at a seam: `DamagedHelmet`
+splits went from 3.6 to 2.9 KB. The encoder keeps whichever model is smaller.
+
+### Seams told once
+
+UVs and normals used to look a corner's value up among those at its position, which spent a choice at every seam
+the splits had already told. A corner now looks first among its own vertex's values, and only a new vertex looks
+among its position's. That cut `DamagedHelmet` UVs by 2.5 KB and took `BoomBox` past Draco.
+
+A splits reader and writer only ever consult corners already read. A degenerate face can close an edge it opened
+itself, which once pointed one corner across to a later corner of the same face; `Lantern` caught it.
 
 ### Draco's grid for positions
 
@@ -709,15 +720,15 @@ its bones, weights and animation, but no controllers.
 ## Where ZPM stands against Draco on size
 
 The direct form is about 1.7x larger than Draco: a format that reads any value alone gives up predicting from what
-came before. The packed form decodes in order like Draco does. At the same precision it is 0.991x Draco in total
-and smaller on 21 of 24. Draco is still smaller on BoomBox 1.008x, DamagedHelmet 1.057x, happy 1.008x.
+came before. The packed form decodes in order like Draco does. At the same precision it is 0.988x Draco in total
+and smaller on 22 of 24. Draco is still smaller on DamagedHelmet 1.024x, happy 1.008x.
 
 ## What we can and can't claim
 
 - **Can say:** on these 17 meshes, smaller than every earlier ZPM experiment on all but tiny meshes,
   with zero allocations when reading.
-- **Can say:** saved files are 7.8x smaller than meshopt on these 24 meshes, smaller than Draco on 21 of them at
-  the same precision and 0.991x Draco in total, and decode 2x to 16x faster than Draco in native code.
+- **Can say:** saved files are 7.8x smaller than meshopt on these 24 meshes, smaller than Draco on 22 of them at
+  the same precision and 0.988x Draco in total, and decode 2x to 10x faster than Draco in native code.
 - **Can't say:** smaller than Draco on every mesh, or faster than meshopt at decoding a whole mesh. It has been measured: see
   [the comparison](../benchmarks/format-compare/README.md). The direct form wins on reading part of a mesh and on memory.
 - **Not new inventions:** the building blocks above are known. What's unusual is combining them in a

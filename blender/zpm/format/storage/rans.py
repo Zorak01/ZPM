@@ -7,9 +7,16 @@ stored as its zigzag bit length, as a symbol, then the bits below its top bit, r
 the lengths cost a table lookup, so decoding stays fast. The encoder works from the end
 of the stream, so a reader takes symbols in the order they were written.
 
-    State (UInt32), word count, raw byte count (UInt32 each)
-    Per context: entry count (Byte), then symbol (Byte) and frequency (UInt16) per entry
+    State (UInt32), then word count and raw byte count as varints
+    Tables, bit-packed low bits first, padded to a byte
     Words (UInt16), then raw bytes
+
+A varint is 7 bits per byte, low first, the top bit set on all but the last. Each
+context's table is its entry count, then, if any, a 4-bit k, then per entry the
+symbol's gap from the one before (the first from -1) less one, then all but the last
+entry's frequency less one as an order-k Exp-Golomb code; the last takes what is left.
+Counts and gaps are order-0 codes. An order-k code of v is as many clear bits as
+v + 2^k has bits past k + 1, a set bit, then its bits below the top one, low first.
 """
 
 import struct
@@ -22,9 +29,137 @@ _SLOT_MASK = _TOTAL - 1
 _LOWEST_STATE = 1 << 16
 _WORD_BITS = 16
 _WORD_MASK = (1 << _WORD_BITS) - 1
-_HEAD = struct.Struct("<III")
-_ENTRY = struct.Struct("<BH")
+_STATE = struct.Struct("<I")
 _MAX_SYMBOL = 255
+_MAX_K = 15
+_K_BITS = 4
+
+
+def _varint(value: int) -> bytes:
+    out = bytearray()
+    while value >= 0x80:
+        out.append(value & 0x7F | 0x80)
+        value >>= 7
+    out.append(value)
+    return bytes(out)
+
+
+def _read_varint(data: bytes, at: int) -> tuple:
+    value = shift = 0
+    while True:
+        if at >= len(data) or shift > 28:
+            raise FormatError("A packed stream is truncated")
+        byte = data[at]
+        at += 1
+        value |= (byte & 0x7F) << shift
+        shift += 7
+        if byte < 0x80:
+            return value, at
+
+
+class _BitWriter:
+    def __init__(self):
+        self.out = bytearray()
+        self.pending = 0
+        self.count = 0
+
+    def bits(self, value: int, count: int) -> None:
+        self.pending |= value << self.count
+        self.count += count
+        while self.count >= 8:
+            self.out.append(self.pending & 255)
+            self.pending >>= 8
+            self.count -= 8
+
+    def golomb(self, value: int, k: int) -> None:
+        stored = value + (1 << k)
+        top = stored.bit_length() - 1
+        self.bits(1 << (top - k), top - k + 1)
+        self.bits(stored & ((1 << top) - 1), top)
+
+    def to_bytes(self) -> bytes:
+        if self.count:
+            self.out.append(self.pending & 255)
+        return bytes(self.out)
+
+
+def _golomb_bits(value: int, k: int) -> int:
+    top = (value + (1 << k)).bit_length() - 1
+    return 2 * top - k + 1
+
+
+class _BitReader:
+    def __init__(self, data: bytes, at: int):
+        self.data = data
+        self.at = at
+        self.pending = 0
+        self.count = 0
+
+    def bits(self, count: int) -> int:
+        while self.count < count:
+            if self.at >= len(self.data):
+                raise FormatError("A packed table is truncated")
+            self.pending |= self.data[self.at] << self.count
+            self.at += 1
+            self.count += 8
+        value = self.pending & ((1 << count) - 1)
+        self.pending >>= count
+        self.count -= count
+        return value
+
+    def golomb(self, k: int) -> int:
+        zeros = 0
+        while not self.bits(1):
+            zeros += 1
+            if zeros > 24:
+                raise FormatError("A packed table has a bad code")
+        top = zeros + k
+        return ((1 << top) | self.bits(top)) - (1 << k)
+
+
+def _write_table(bits: _BitWriter, table: dict) -> None:
+    symbols = sorted(table)
+    bits.golomb(len(symbols), 0)
+    if not symbols:
+        return
+    stored = [table[symbol] - 1 for symbol in symbols[:-1]]
+    k = min(
+        range(_MAX_K + 1),
+        key=lambda k: sum(_golomb_bits(value, k) for value in stored),
+    )
+    bits.bits(k, _K_BITS)
+    previous = -1
+    for symbol in symbols:
+        bits.golomb(symbol - previous - 1, 0)
+        previous = symbol
+    for value in stored:
+        bits.golomb(value, k)
+
+
+def _read_table(bits: _BitReader) -> list | None:
+    """Return the table's slots, each (symbol, frequency, its first slot), or None."""
+    count = bits.golomb(0)
+    if not count:
+        return None
+    if count > _MAX_SYMBOL + 1:
+        raise FormatError("A packed table has too many entries")
+    k = bits.bits(_K_BITS)
+    symbols = []
+    previous = -1
+    for _ in range(count):
+        previous += bits.golomb(0) + 1
+        if previous > _MAX_SYMBOL:
+            raise FormatError("A packed table names a symbol out of range")
+        symbols.append(previous)
+    frequencies = [bits.golomb(k) + 1 for _ in range(count - 1)]
+    frequencies.append(_TOTAL - sum(frequencies))
+    if frequencies[-1] < 1:
+        raise FormatError("A packed table does not add up")
+    slots = []
+    for symbol, frequency in zip(symbols, frequencies, strict=True):
+        start = len(slots)
+        slots += [(symbol, frequency, start)] * frequency
+    return slots
 
 
 def _to_zigzag(value: int) -> int:
@@ -79,16 +214,15 @@ class SymbolWriter:
     def to_bytes(self) -> bytes:
         tables = [_frequencies(counts) if counts else {} for counts in self._counts]
         starts = []
-        table_bytes = bytearray()
+        table_bits = _BitWriter()
         for table in tables:
             at = 0
             start = {}
-            table_bytes.append(len(table))
             for symbol in sorted(table):
                 start[symbol] = at
                 at += table[symbol]
-                table_bytes += _ENTRY.pack(symbol, table[symbol])
             starts.append(start)
+            _write_table(table_bits, table)
         state = _LOWEST_STATE
         words = []
         limit_factor = (_LOWEST_STATE >> _PROBABILITY_BITS) << _WORD_BITS
@@ -107,8 +241,10 @@ class SymbolWriter:
         if self._pending_bits:
             raw += bytes([self._pending & 255])
         return (
-            _HEAD.pack(state, len(words), len(raw))
-            + bytes(table_bytes)
+            _STATE.pack(state)
+            + _varint(len(words))
+            + _varint(len(raw))
+            + table_bits.to_bytes()
             + struct.pack(f"<{len(words)}H", *words)
             + raw
         )
@@ -118,29 +254,14 @@ class SymbolReader:
     """Takes symbols and numbers back. Raises FormatError if they run out."""
 
     def __init__(self, data: bytes, context_count: int):
-        if len(data) < _HEAD.size:
+        if len(data) < _STATE.size:
             raise FormatError("A packed stream is truncated")
-        self._state, word_count, raw_bytes = _HEAD.unpack_from(data)
-        at = _HEAD.size
-        self._slots = []
-        for _ in range(context_count):
-            if at >= len(data):
-                raise FormatError("A packed stream is truncated")
-            entries = data[at]
-            at += 1
-            slots = None
-            if entries:
-                slots = []
-                for _ in range(entries):
-                    if at + _ENTRY.size > len(data):
-                        raise FormatError("A packed stream is truncated")
-                    symbol, frequency = _ENTRY.unpack_from(data, at)
-                    at += _ENTRY.size
-                    start = len(slots)
-                    slots += [(symbol, frequency, start)] * frequency
-                if len(slots) != _TOTAL:
-                    raise FormatError("A packed table does not add up")
-            self._slots.append(slots)
+        (self._state,) = _STATE.unpack_from(data)
+        word_count, at = _read_varint(data, _STATE.size)
+        raw_bytes, at = _read_varint(data, at)
+        bits = _BitReader(data, at)
+        self._slots = [_read_table(bits) for _ in range(context_count)]
+        at = bits.at
         if at + word_count * 2 + raw_bytes > len(data):
             raise FormatError("A packed stream is truncated")
         self._words = struct.unpack_from(f"<{word_count}H", data, at)

@@ -34,27 +34,86 @@ struct Stream
     // Per slot of each context: symbol, then frequency, then the slot's offset in its symbol.
     std::vector<uint32_t> entries;
 
+    static uint32_t readVarint(const uint8_t*& at)
+    {
+        uint32_t value = 0;
+        for (int shift = 0;; shift += 7)
+        {
+            uint8_t byte = *at++;
+            value |= (uint32_t)(byte & 0x7F) << shift;
+            if (byte < 0x80)
+                return value;
+        }
+    }
+
+    struct Bits
+    {
+        const uint8_t* at;
+        uint64_t pending = 0;
+        int count = 0;
+
+        uint32_t take(int bits)
+        {
+            while (count < bits)
+            {
+                pending |= (uint64_t)*at++ << count;
+                count += 8;
+            }
+            uint32_t value = (uint32_t)(pending & ((1ULL << bits) - 1));
+            pending >>= bits;
+            count -= bits;
+            return value;
+        }
+
+        uint32_t golomb(int k)
+        {
+            int zeros = 0;
+            while (!take(1))
+                zeros++;
+            int top = zeros + k;
+            return ((1u << top) | take(top)) - (1u << k);
+        }
+    };
+
     void open(const uint8_t* data, int contexts)
     {
         state = readAt<uint32_t>(data);
-        uint32_t words = readAt<uint32_t>(data + 4);
-        const uint8_t* at = data + 12;
+        const uint8_t* at = data + 4;
+        uint32_t words = readVarint(at);
+        readVarint(at);
+        Bits bits{at};
         entries.assign((size_t)contexts * 1024, 0);
+        uint32_t symbols[256], frequencies[256];
         for (int context = 0; context < contexts; context++)
         {
-            int count = *at++;
-            uint32_t slot = 0;
-            for (int entry = 0; entry < count; entry++, at += 3)
+            uint32_t count = bits.golomb(0);
+            if (!count)
+                continue;
+            int k = (int)bits.take(4);
+            int previous = -1;
+            for (uint32_t entry = 0; entry < count; entry++)
             {
-                uint32_t value = at[0];
-                uint32_t frequency = readAt<uint16_t>(at + 1);
+                previous += (int)bits.golomb(0) + 1;
+                symbols[entry] = (uint32_t)previous;
+            }
+            uint32_t used = 0;
+            for (uint32_t entry = 0; entry + 1 < count; entry++)
+            {
+                frequencies[entry] = bits.golomb(k) + 1;
+                used += frequencies[entry];
+            }
+            frequencies[count - 1] = 1024 - used;
+            uint32_t slot = 0;
+            for (uint32_t entry = 0; entry < count; entry++)
+            {
+                uint32_t frequency = frequencies[entry];
                 for (uint32_t step = 0; step < frequency; step++)
-                    entries[(size_t)context * 1024 + slot + step] = value | (frequency << 8) | (step << 20);
+                    entries[(size_t)context * 1024 + slot + step] = symbols[entry] | (frequency << 8) | (step << 20);
                 slot += frequency;
             }
         }
-        wordAt = at;
-        rawAt = at + words * 2;
+        wordAt = bits.at;
+        rawAt = wordAt + words * 2;
         pending = 0;
         pendingBits = 0;
     }
@@ -167,10 +226,17 @@ struct Mesh
     std::vector<uint32_t> headInto, headOut, nodeFrom, nodeTo, nextInto, nextOut;
     std::vector<uint32_t> head, tail, nextSeen;
     std::vector<uint8_t> seenCount;
+    std::vector<uint32_t> recent;
     std::vector<Gate> gates;
+    // Connectivity model 1 adds the symbol before last and which candidates exist.
+    int connectivityModel = 0, contextGate = 10, contextFar = 11, contextArity = 12;
+    int splitModel = 0;
 };
 
-const int ContextGate = 10, ContextFar = 11, ContextArity = 12, ConnectivityContexts = 13;
+int connectivityContexts(int model)
+{
+    return (model ? 10 * 20 : 10) + 3;
+}
 
 inline bool isOpen(const Mesh& m, uint32_t u, uint32_t v)
 {
@@ -194,9 +260,9 @@ inline void removeOpen(Mesh& m, uint32_t u, uint32_t v)
     *link = m.nextOut[*link];
 }
 
-inline void readFace(Stream& s, Mesh& m, int known, uint32_t k0, uint32_t k1, const Gate& reached, uint32_t& newest, uint32_t& previous, uint32_t& nodes)
+inline void readFace(Stream& s, Mesh& m, int known, uint32_t k0, uint32_t k1, const Gate& reached, uint32_t& newest, uint32_t& previous, uint32_t& before, uint32_t& nodes)
 {
-    uint32_t count = m.arity ? m.arity : (uint32_t)s.readNumber(ContextArity);
+    uint32_t count = m.arity ? m.arity : (uint32_t)s.readNumber(m.contextArity);
     uint32_t first = (uint32_t)m.welded.size();
     m.faceStart.push_back(first);
     m.faceGate.push_back(reached);
@@ -207,13 +273,22 @@ inline void readFace(Stream& s, Mesh& m, int known, uint32_t k0, uint32_t k1, co
     }
     for (uint32_t at = known; at < count; at++)
     {
-        uint32_t symbol = s.read((int)previous * 2 + (at == count - 1 ? 1 : 0));
+        int context = (int)previous * 2 + (at == count - 1 ? 1 : 0);
+        if (m.connectivityModel)
+        {
+            int kinds = 0;
+            if (m.welded.size() > first)
+                kinds = (m.headInto[m.welded.back()] != None ? 1 : 0) | (m.headOut[m.welded[first]] != None ? 2 : 0);
+            context = (context * 5 + (int)before) * 4 + kinds;
+        }
+        uint32_t symbol = s.read(context);
+        before = previous;
         previous = symbol;
         uint32_t vertex;
         if (symbol == 0)
             vertex = ++newest;
         else if (symbol == 4)
-            vertex = newest - (uint32_t)s.readNumber(ContextFar);
+            vertex = newest - (uint32_t)s.readNumber(m.contextFar);
         else if (symbol == 1)
             vertex = m.nodeFrom[m.headInto[m.welded.back()]];
         else if (symbol == 2)
@@ -251,19 +326,19 @@ void readConnectivity(Stream& s, Mesh& m)
     m.gates.clear();
     std::fill(m.headInto.begin(), m.headInto.end(), None);
     std::fill(m.headOut.begin(), m.headOut.end(), None);
-    uint32_t newest = None, previous = 0, nodes = 0;
+    uint32_t newest = None, previous = 0, before = 0, nodes = 0;
     const Gate noGate = {0, 0, 0, 0, None};
     while (m.faceStart.size() < m.faces)
     {
-        readFace(s, m, 0, 0, 0, noGate, newest, previous, nodes);
+        readFace(s, m, 0, 0, 0, noGate, newest, previous, before, nodes);
         while (!m.gates.empty() && m.faceStart.size() < m.faces)
         {
             Gate gate = m.gates.back();
             m.gates.pop_back();
             if (!isOpen(m, gate.u, gate.v))
                 continue;
-            if (s.read(ContextGate))
-                readFace(s, m, 2, gate.v, gate.u, gate, newest, previous, nodes);
+            if (s.read(m.contextGate))
+                readFace(s, m, 2, gate.v, gate.u, gate, newest, previous, before, nodes);
             else
                 removeOpen(m, gate.u, gate.v);
         }
@@ -282,35 +357,70 @@ void resetSeen(Mesh& m)
     resetSeen(m, m.positionCount);
 }
 
+// Model 0 names a vertex at its position by when it was made; model 1 first guesses
+// the vertex across the face's gate, or the one last used here, then the rest newest first.
 void readSplits(Stream& s, Mesh& m)
 {
     resetSeen(m);
     m.corners.resize(m.welded.size());
+    m.recent.resize(m.positionCount);
     m.positionOf.clear();
-    for (size_t corner = 0; corner < m.welded.size(); corner++)
+    uint32_t options[256];
+    for (uint32_t face = 0; face < m.faces; face++)
     {
-        uint32_t position = m.welded[corner];
-        uint32_t count = m.seenCount[position];
-        uint32_t at = 0;
-        if (count)
-            at = s.readChoice(count < 3 ? (int)count : 3);
-        if (at)
+        const Gate& gate = m.faceGate[face];
+        uint32_t first = m.faceStart[face], end = m.faceStart[face + 1];
+        for (uint32_t corner = first; corner < end; corner++)
         {
-            uint32_t vertex = m.head[position];
-            for (uint32_t step = 1; step < at; step++)
-                vertex = m.nextSeen[vertex];
+            uint32_t position = m.welded[corner];
+            uint32_t count = m.seenCount[position];
+            uint32_t vertex = None;
+            if (count)
+            {
+                uint32_t at;
+                if (m.splitModel)
+                {
+                    bool fromGate = gate.cornerThird != None && corner - first < 2;
+                    uint32_t guess = fromGate ? m.corners[corner == first ? gate.cornerV : gate.cornerU] : m.recent[position];
+                    uint32_t known[256], held = 0;
+                    for (uint32_t item = m.head[position]; held < count; item = m.nextSeen[item])
+                        known[held++] = item;
+                    uint32_t total = 0;
+                    options[total++] = guess;
+                    for (uint32_t back = held; back-- > 0;)
+                    {
+                        if (known[back] != guess)
+                            options[total++] = known[back];
+                    }
+                    at = s.readChoice((int)std::min<uint32_t>(count, 3) + (fromGate ? 4 : 0));
+                    if (at)
+                        vertex = options[at - 1];
+                }
+                else
+                {
+                    at = s.readChoice(count < 3 ? (int)count : 3);
+                    if (at)
+                    {
+                        vertex = m.head[position];
+                        for (uint32_t step = 1; step < at; step++)
+                            vertex = m.nextSeen[vertex];
+                    }
+                }
+            }
+            if (vertex == None)
+            {
+                vertex = (uint32_t)m.positionOf.size();
+                m.positionOf.push_back(position);
+                if (count)
+                    m.nextSeen[m.tail[position]] = vertex;
+                else
+                    m.head[position] = vertex;
+                m.tail[position] = vertex;
+                m.seenCount[position] = (uint8_t)std::min<uint32_t>(count + 1, 255);
+            }
             m.corners[corner] = vertex;
-            continue;
+            m.recent[position] = vertex;
         }
-        uint32_t vertex = (uint32_t)m.positionOf.size();
-        m.positionOf.push_back(position);
-        if (count)
-            m.nextSeen[m.tail[position]] = vertex;
-        else
-            m.head[position] = vertex;
-        m.tail[position] = vertex;
-        m.seenCount[position] = (uint8_t)std::min<uint32_t>(count + 1, 255);
-        m.corners[corner] = vertex;
     }
 }
 
@@ -595,12 +705,18 @@ int main(int, char** arguments)
         uvData.push_back(sections.find(282, layer));
     const uint8_t* connectivity = sections.find(278);
     const uint8_t* splits = sections.find(279);
-    const uint8_t* positions = sections.find(280);
+    const uint8_t* positions = sections.find(280) + 4;
     const uint8_t* normals = sections.find(281);
+    m.connectivityModel = *connectivity++;
+    int contexts = connectivityContexts(m.connectivityModel);
+    m.contextGate = contexts - 3;
+    m.contextFar = contexts - 2;
+    m.contextArity = contexts - 1;
+    m.splitModel = *splits++;
     Stream connectivityStream, splitStream, positionStream, normalStream;
     std::vector<Stream> uvStreams(uvData.size());
-    connectivityStream.open(connectivity, ConnectivityContexts);
-    splitStream.open(splits, 4);
+    connectivityStream.open(connectivity, contexts);
+    splitStream.open(splits, 8);
     positionStream.open(positions, 4);
     bool normalsByVertex = normals && normals[0] == 1;
     if (normals)

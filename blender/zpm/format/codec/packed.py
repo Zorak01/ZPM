@@ -18,15 +18,16 @@ rounds halves to even, so every reader gets exactly the same integers.
 """
 
 import math
+import struct
 from array import array
+from dataclasses import replace
 
 from ..container.layout import NO_GRID, MeshFlags, SectionKind
 from ..container.sections import Section, SectionReader
 from ..errors import FormatError
 from ..mesh import Mesh
-from ..processing.faces import face_edges, face_lists
+from ..processing.faces import corner_normals_from_faces, face_edges, face_lists
 from ..processing.reordering import reorder_by
-from ..processing.snapping import grid_exponent, normals_match_faces
 from ..storage.rans import SymbolReader, SymbolWriter
 from .quantize import decode_normal, decode_uv, encode_normal, encode_uv
 
@@ -36,11 +37,8 @@ _VERTEX_INTO_FIRST = 2
 _VERTEX_INTO_LAST_OLDER = 3
 _VERTEX_FAR = 4
 _VERTEX_SYMBOLS = 5
-_CONTEXT_GATE = _VERTEX_SYMBOLS * 2
-_CONTEXT_FAR = _CONTEXT_GATE + 1
-_CONTEXT_ARITY = _CONTEXT_GATE + 2
-_CONNECTIVITY_CONTEXTS = _CONTEXT_GATE + 3
-_SPLIT_CONTEXTS = 4
+_CANDIDATE_KINDS = 4
+_SPLIT_CONTEXTS = 8
 _POSITION_CONTEXTS = 4
 _POSITION_HISTORY_STEP = 4
 _POSITION_CONTEXT_MIN_ROWS = 4000
@@ -57,6 +55,12 @@ _UV_VALUE_FIRST = _UV_SIDE_CONTEXT + 1
 _UV_CONTEXTS = _UV_VALUE_FIRST + _UV_HISTORY_BUCKETS
 _AXES = 3
 _CHOICE_ESCAPE = 200
+_STEP = struct.Struct("<f")
+_SPAN_BITS = 20
+_STEP_MANTISSA_BITS = 6
+# Grid integers stay this far inside Float32's precision, so a position read back
+# always rounds to the same integer again.
+_SPAN_HEADROOM_BITS = 21
 
 
 def _write_choice(writer: SymbolWriter, context: int, choice: int) -> None:
@@ -129,12 +133,45 @@ class _OpenEdges:
         )
 
 
-def _write_vertex(writer, open_edges, vertex, ring, newest, previous, is_last) -> tuple:
-    """Write one corner's vertex. Returns (newest vertex, the symbol used)."""
-    context = previous * 2 + (1 if is_last else 0)
+class _ConnectivityModel:
+    """Which context each connectivity symbol takes. The stream's first byte picks one.
+
+    Model 0 keys a corner on the symbol before it and whether it ends its face. Model 1
+    adds the symbol before that and which candidates exist, which pays on larger meshes.
+    """
+
+    def __init__(self, model: int):
+        self.model = model
+        vertex_contexts = _VERTEX_SYMBOLS * 2
+        if model:
+            vertex_contexts *= _VERTEX_SYMBOLS * _CANDIDATE_KINDS
+        self.gate = vertex_contexts
+        self.far = vertex_contexts + 1
+        self.arity = vertex_contexts + 2
+        self.count = vertex_contexts + 3
+
+    def vertex(self, previous: int, before: int, is_last: bool, kinds: int) -> int:
+        context = previous * 2 + (1 if is_last else 0)
+        if self.model:
+            context = (context * _VERTEX_SYMBOLS + before) * _CANDIDATE_KINDS + kinds
+        return context
+
+
+_CONNECTIVITY_MODELS = (_ConnectivityModel(0), _ConnectivityModel(1))
+
+
+def _candidate_kinds(open_edges: _OpenEdges, ring: list) -> int:
+    """Return bit 0 set if an open edge leads into the ring's last vertex, bit 1 out
+    of its first."""
+    if not ring:
+        return 0
+    into = 1 if open_edges.into.get(ring[-1]) else 0
+    return into | (2 if open_edges.out_of.get(ring[0]) else 0)
+
+
+def _vertex_symbol(open_edges, vertex, ring, newest) -> int:
     if vertex == newest + 1:
-        writer.write(context, _VERTEX_NEW)
-        return vertex, _VERTEX_NEW
+        return _VERTEX_NEW
     last = ring[-1] if ring else None
     first = ring[0] if ring else None
     into_last, into_first, older = open_edges.candidates(last, first)
@@ -144,20 +181,17 @@ def _write_vertex(writer, open_edges, vertex, ring, newest, previous, is_last) -
         (_VERTEX_INTO_LAST_OLDER, older),
     ):
         if candidate == vertex:
-            writer.write(context, symbol)
-            return newest, symbol
-    writer.write(context, _VERTEX_FAR)
-    writer.write_number(_CONTEXT_FAR, newest - vertex)
-    return newest, _VERTEX_FAR
+            return symbol
+    return _VERTEX_FAR
 
 
-def _read_vertex(reader, open_edges, ring, newest, previous, is_last) -> tuple:
+def _read_vertex(reader, model, open_edges, ring, newest, context) -> tuple:
     """Return (vertex, newest vertex, the symbol used)."""
-    symbol = reader.read(previous * 2 + (1 if is_last else 0))
+    symbol = reader.read(context)
     if symbol == _VERTEX_NEW:
         return newest + 1, newest + 1, symbol
     if symbol == _VERTEX_FAR:
-        vertex = newest - reader.read_number(_CONTEXT_FAR)
+        vertex = newest - reader.read_number(model.far)
         if not 0 <= vertex <= newest:
             raise FormatError("A packed corner names a missing position")
         return vertex, newest, symbol
@@ -178,11 +212,13 @@ class _Walk:
         self.faces = faces
         self.materials = materials
         self.is_uniform = is_uniform
-        self.writer = SymbolWriter(_CONNECTIVITY_CONTEXTS)
+        # What the walk decided, in order, to write under either model.
+        self.events = []
         self.ids = {}
         self.sources = []
         self.newest = -1
         self.previous = _VERTEX_NEW
+        self.before = _VERTEX_NEW
         self.open_edges = _OpenEdges()
         self.used = [False] * len(faces)
         self.order = []
@@ -200,19 +236,21 @@ class _Walk:
         count = len(face)
         turned = face[turn:] + face[:turn]
         if not self.is_uniform:
-            self.writer.write_number(_CONTEXT_ARITY, count)
+            self.events.append(("arity", count))
         ring = [self.ids[source] for source in turned[:known]]
         for at, source in enumerate(turned[known:], known):
             walk_id = self.ids.get(source, self.newest + 1)
-            self.newest, self.previous = _write_vertex(
-                self.writer,
-                self.open_edges,
-                walk_id,
-                ring,
-                self.newest,
-                self.previous,
-                at == count - 1,
+            symbol = _vertex_symbol(self.open_edges, walk_id, ring, self.newest)
+            kinds = _candidate_kinds(self.open_edges, ring)
+            far = self.newest - walk_id if symbol == _VERTEX_FAR else None
+            self.events.append(
+                ("vertex", symbol, self.previous, self.before, at == count - 1, kinds)
             )
+            if far is not None:
+                self.events.append(("far", far))
+            if symbol == _VERTEX_NEW:
+                self.newest = walk_id
+            self.before, self.previous = self.previous, symbol
             if source not in self.ids:
                 self.ids[source] = walk_id
                 self.sources.append(source)
@@ -245,7 +283,7 @@ class _Walk:
                 if not self.open_edges.is_open(u, v):
                     continue
                 found = self._next_across(u, v, material)
-                self.writer.write(_CONTEXT_GATE, 1 if found else 0)
+                self.events.append(("gate", 1 if found else 0))
                 if not found:
                     self.open_edges.remove(u, v)
                     continue
@@ -254,27 +292,50 @@ class _Walk:
             if placed == total:
                 return
 
+    def to_bytes(self) -> bytes:
+        """Return the walk under whichever model makes it smaller."""
+        return min((self._written(model) for model in _CONNECTIVITY_MODELS), key=len)
+
+    def _written(self, model: _ConnectivityModel) -> bytes:
+        writer = SymbolWriter(model.count)
+        for event in self.events:
+            if event[0] == "vertex":
+                writer.write(model.vertex(*event[2:]), event[1])
+            elif event[0] == "far":
+                writer.write_number(model.far, event[1])
+            elif event[0] == "gate":
+                writer.write(model.gate, event[1])
+            else:
+                writer.write_number(model.arity, event[1])
+        return bytes((model.model,)) + writer.to_bytes()
+
 
 def read_connectivity(data: bytes, faces: int, arity: int, corner_count: int) -> tuple:
     """Return (welded position per corner, face starts, gate per face, positions)."""
-    reader = SymbolReader(data, _CONNECTIVITY_CONTEXTS)
+    if not data or data[0] >= len(_CONNECTIVITY_MODELS):
+        raise FormatError("Packed connectivity names no known model")
+    model = _CONNECTIVITY_MODELS[data[0]]
+    reader = SymbolReader(data[1:], model.count)
     open_edges = _OpenEdges()
     welded = []
     starts = []
     gates_of_faces = []
     newest = -1
-    previous = _VERTEX_NEW
+    previous = before = _VERTEX_NEW
 
     def read_face(known: list, gate) -> None:
-        nonlocal newest, previous
-        count = arity or reader.read_number(_CONTEXT_ARITY)
+        nonlocal newest, previous, before
+        count = arity or reader.read_number(model.arity)
         if count < 3 or len(welded) + count > corner_count:
             raise FormatError("A packed face has an impossible size")
         ring = list(known)
         for at in range(len(known), count):
-            vertex, newest, previous = _read_vertex(
-                reader, open_edges, ring, newest, previous, at == count - 1
+            kinds = _candidate_kinds(open_edges, ring)
+            context = model.vertex(previous, before, at == count - 1, kinds)
+            vertex, newest, symbol = _read_vertex(
+                reader, model, open_edges, ring, newest, context
             )
+            before, previous = previous, symbol
             ring.append(vertex)
         first = len(welded)
         starts.append(first)
@@ -289,7 +350,7 @@ def read_connectivity(data: bytes, faces: int, arity: int, corner_count: int) ->
             u, v, corner_u, corner_v, corner_third = gates.pop()
             if not open_edges.is_open(u, v):
                 continue
-            if reader.read(_CONTEXT_GATE):
+            if reader.read(model.gate):
                 read_face([v, u], (corner_v, corner_u, corner_third))
             else:
                 open_edges.remove(u, v)
@@ -333,7 +394,77 @@ def _parallelogram(layout: _Layout, first: int, at: int, face: int, rows: list):
     return (a[0] + b[0] - c[0], a[1] + b[1] - c[1], a[2] + b[2] - c[2])
 
 
-def _encode_positions(layout: _Layout, rows: list, extra: list) -> bytes:
+def packing_step(positions, exponent: int) -> float:
+    """Return the grid step packed positions use, or 0 for the power-of-two grid.
+
+    The step is the model's largest size over 2^20, as Draco's 20-bit grid, rounded
+    down to 6 significant bits, so no point moves more than 1 / 2^21 of that size: the
+    same bound as the power-of-two grid, which can be up to twice as fine. Positions
+    already exactly on a neighbouring step keep it, so saving again changes nothing.
+    Kept only when coarser than the power-of-two grid and when positions read back
+    from Float32 land on the same integers.
+    """
+    if exponent == NO_GRID or not positions:
+        return 0.0
+    extent = max(
+        max(positions[axis::_AXES]) - min(positions[axis::_AXES])
+        for axis in range(_AXES)
+    )
+    if extent <= 0:
+        return 0.0
+    scale = math.frexp(math.ldexp(extent, -_SPAN_BITS))[1] - _STEP_MANTISSA_BITS
+    whole = math.floor(math.ldexp(extent, -_SPAN_BITS - scale))
+    steps = [math.ldexp(value, scale) for value in (whole, whole - 1, whole + 1)]
+    step = next((step for step in steps if _on_grid(positions, step)), steps[0])
+    largest = max(abs(value) for value in positions)
+    if step <= math.ldexp(1.0, exponent):
+        return 0.0
+    return 0.0 if largest > math.ldexp(step, _SPAN_HEADROOM_BITS) else step
+
+
+def _on_grid(positions, step: float) -> bool:
+    if step <= 0:
+        return False
+    snapped = array("f", [round(value / step) * step for value in positions])
+    return snapped == positions
+
+
+def snap_to_step(
+    mesh: Mesh, source, step: float, exponent: int, from_faces: bool
+) -> Mesh:
+    """Return the mesh with positions on the packing grid, as a reader gets them back.
+
+    Positions round from source, the positions before any snapping, so each moves at
+    most half a step. Shape targets keep their moves in steps of 2^exponent, as their
+    sections store them.
+    """
+    if not step:
+        return mesh
+    old = mesh.positions
+    new = array("f", [round(value / step) * step for value in source])
+    unit = math.ldexp(1.0, exponent)
+    targets = []
+    for target in mesh.shape_targets:
+        moved = array("f", new)
+        offsets = [buffer for buffer in (target.normal_offsets, target.tangent_offsets)]
+        for vertex in range(len(new) // _AXES):
+            slots = range(vertex * _AXES, vertex * _AXES + _AXES)
+            if all(target.positions[slot] == old[slot] for slot in slots) and not any(
+                buffer[slot] for buffer in offsets if buffer for slot in slots
+            ):
+                continue
+            # A changed vertex comes back from the base's power-of-two grid point.
+            for slot in slots:
+                delta = round(target.positions[slot] / unit) - round(old[slot] / unit)
+                moved[slot] = math.ldexp(round(new[slot] / unit) + delta, exponent)
+        targets.append(replace(target, positions=moved))
+    snapped = replace(mesh, positions=new, shape_targets=targets)
+    if from_faces:
+        snapped.corner_normals = corner_normals_from_faces(new, face_lists(snapped))
+    return snapped
+
+
+def _encode_positions(layout: _Layout, rows: list, extra: list, step: float) -> bytes:
     writer = SymbolWriter(_POSITION_CONTEXTS)
     previous = (0, 0, 0)
     history = [0, 0, 0]
@@ -356,11 +487,11 @@ def _encode_positions(layout: _Layout, rows: list, extra: list) -> bytes:
         for axis in range(_AXES):
             writer.write_number(0, row[axis] - previous[axis])
         previous = row
-    return writer.to_bytes()
+    return _STEP.pack(step) + writer.to_bytes()
 
 
 def _read_positions(layout: _Layout, data: bytes, extra: int) -> tuple:
-    reader = SymbolReader(data, _POSITION_CONTEXTS)
+    reader = SymbolReader(data[_STEP.size :], _POSITION_CONTEXTS)
     rows = []
     previous = (0, 0, 0)
     history = [0, 0, 0]
@@ -386,39 +517,84 @@ def _read_positions(layout: _Layout, data: bytes, extra: int) -> tuple:
     return rows, extras
 
 
-def _encode_splits(corners: list, welded: list) -> bytes:
-    writer = SymbolWriter(_SPLIT_CONTEXTS)
-    seen = {}
-    for vertex, position in zip(corners, welded, strict=True):
-        known = seen.setdefault(position, [])
-        if known:
-            at = known.index(vertex) + 1 if vertex in known else 0
-            _write_choice(writer, min(len(known), _SPLIT_CONTEXTS - 1), at)
+class _Splits:
+    """Which vertex at its position each corner uses, read and written alike.
+
+    Model 0 names a vertex by when it was made, from 1. Model 1 names first a guess:
+    for a face's first two corners, the vertex across its gate, else the vertex last
+    used here; then the rest, newest first. Either way 0 is a new vertex.
+    """
+
+    def __init__(self, layout: _Layout, corners: list, by_gate: int):
+        self.layout = layout
+        self.corners = corners
+        self.by_gate = by_gate
+        self.seen = {}
+        self.recent = {}
+
+    def options(self, corner: int, at: int, face: int) -> tuple | None:
+        """Return (context, the vertices this corner may name), or None if none yet."""
+        position = self.layout.welded[corner]
+        known = self.seen.get(position)
+        if not known:
+            return None
+        if not self.by_gate:
+            return min(len(known), 3), known
+        gate = self.layout.gates[face]
+        from_gate = gate is not None and at < 2
+        guess = self.corners[gate[at]] if from_gate else self.recent[position]
+        rest = [vertex for vertex in reversed(known) if vertex != guess]
+        return min(len(known), 3) + (4 if from_gate else 0), [guess, *rest]
+
+    def record(self, corner: int, vertex: int) -> None:
+        position = self.layout.welded[corner]
+        known = self.seen.setdefault(position, [])
         if vertex not in known:
             known.append(vertex)
-    return writer.to_bytes()
+        self.recent[position] = vertex
 
 
-def _read_splits(data: bytes, welded: list) -> tuple:
+def _encode_splits(layout: _Layout, corners: list) -> bytes:
+    """Return the splits under whichever model makes them smaller."""
+    written = []
+    for by_gate in (0, 1):
+        writer = SymbolWriter(_SPLIT_CONTEXTS)
+        splits = _Splits(layout, corners, by_gate)
+        for corner, _first, at, face in layout.corners():
+            vertex = corners[corner]
+            choice = splits.options(corner, at, face)
+            if choice is not None:
+                context, options = choice
+                index = options.index(vertex) + 1 if vertex in options else 0
+                _write_choice(writer, context, index)
+            splits.record(corner, vertex)
+        written.append(bytes((by_gate,)) + writer.to_bytes())
+    return min(written, key=len)
+
+
+def _read_splits(data: bytes, layout: _Layout) -> tuple:
     """Return (each corner's vertex, each vertex's welded position)."""
-    reader = SymbolReader(data, _SPLIT_CONTEXTS)
-    seen = {}
-    corners = []
+    if not data or data[0] > 1:
+        raise FormatError("Packed splits name no known model")
+    reader = SymbolReader(data[1:], _SPLIT_CONTEXTS)
+    corners = [0] * len(layout.welded)
     position_of = []
-    for position in welded:
-        known = seen.setdefault(position, [])
-        at = 0
-        if known:
-            at = _read_choice(reader, min(len(known), _SPLIT_CONTEXTS - 1))
-            if not 0 <= at <= len(known):
+    splits = _Splits(layout, corners, data[0])
+    for corner, _first, at, face in layout.corners():
+        choice = splits.options(corner, at, face)
+        index = 0
+        if choice is not None:
+            context, options = choice
+            index = _read_choice(reader, context)
+            if not 0 <= index <= len(options):
                 raise FormatError("A packed corner names a missing vertex")
-        if at:
-            corners.append(known[at - 1])
-            continue
-        vertex = len(position_of)
-        position_of.append(position)
-        known.append(vertex)
-        corners.append(vertex)
+        if index:
+            vertex = options[index - 1]
+        else:
+            vertex = len(position_of)
+            position_of.append(layout.welded[corner])
+        corners[corner] = vertex
+        splits.record(corner, vertex)
     return corners, position_of
 
 
@@ -683,16 +859,19 @@ def _uses_only_face_edges(mesh: Mesh, faces: list) -> bool:
     return all(key in held for key in reached)
 
 
-def pack_geometry(mesh: Mesh) -> tuple | None:
+def pack_geometry(
+    mesh: Mesh, step: float, exponent: int, from_faces: bool
+) -> tuple | None:
     """Return (the mesh in packed order, its sections), or None if it cannot be packed.
 
-    Meshes with no faces, with holes or with no grid are left to the plain sections.
+    The mesh is already on its packing grid: step, or 2^exponent when step is 0.
+    Normals are left out when readers calculate them from faces. Meshes with no faces,
+    with holes or with no grid are left to the plain sections.
     """
-    exponent = grid_exponent(mesh)
     if not mesh.face_count or mesh.hole_starts or exponent == NO_GRID:
         return None
     source = face_lists(mesh)
-    rows = _grid_rows(mesh.positions, exponent)
+    rows = _grid_rows(mesh.positions, exponent, step)
     weld = {}
     faces = [[weld.setdefault(rows[v], len(weld)) for v in face] for face in source]
     materials = list(mesh.face_materials) or [0] * mesh.face_count
@@ -705,7 +884,7 @@ def pack_geometry(mesh: Mesh) -> tuple | None:
     if not _uses_only_face_edges(ordered, packed_faces):
         return None
     corners = list(ordered.corners)
-    new_rows = _grid_rows(ordered.positions, exponent)
+    new_rows = _grid_rows(ordered.positions, exponent, step)
     position_rows = [None] * (walk.newest + 1)
     for source_key, source_id in weld.items():
         if source_id in walk.ids:
@@ -714,17 +893,19 @@ def pack_geometry(mesh: Mesh) -> tuple | None:
     starts = [0]
     for face in packed_faces:
         starts.append(starts[-1] + len(face))
-    layout = _Layout(welded, starts, _walk_gates(walk, welded, starts), walk.newest + 1)
+    connectivity = walk.to_bytes()
+    gates = _walk_gates(connectivity, walk.is_uniform, welded, starts)
+    layout = _Layout(welded, starts, gates, walk.newest + 1)
     used = max(corners) + 1 if corners else 0
     sections = [
-        Section(SectionKind.PACKED_CONNECTIVITY, walk.writer.to_bytes()),
-        Section(SectionKind.PACKED_SPLITS, _encode_splits(corners, welded)),
+        Section(SectionKind.PACKED_CONNECTIVITY, connectivity),
+        Section(SectionKind.PACKED_SPLITS, _encode_splits(layout, corners)),
         Section(
             SectionKind.PACKED_POSITIONS,
-            _encode_positions(layout, position_rows, new_rows[used:]),
+            _encode_positions(layout, position_rows, new_rows[used:], step),
         ),
     ]
-    if mesh.corner_normals and not normals_match_faces(mesh):
+    if mesh.corner_normals and not from_faces:
         normals = ordered.corner_normals
         pairs = [
             encode_normal(*normals[at * 3 : at * 3 + 3]) for at in range(len(corners))
@@ -742,19 +923,21 @@ def pack_geometry(mesh: Mesh) -> tuple | None:
     return ordered, sections
 
 
-def _grid_rows(positions, exponent: int) -> list:
+def _grid_rows(positions, exponent: int, step: float) -> list:
+    if step:
+        return [
+            tuple(round(v / step) for v in positions[at : at + _AXES])
+            for at in range(0, len(positions), _AXES)
+        ]
     return [
         tuple(round(math.ldexp(v, -exponent)) for v in positions[at : at + _AXES])
         for at in range(0, len(positions), _AXES)
     ]
 
 
-def _walk_gates(walk: _Walk, welded: list, starts: list) -> list:
+def _walk_gates(data: bytes, is_uniform: bool, welded: list, starts: list) -> list:
     return read_connectivity(
-        walk.writer.to_bytes(),
-        len(starts) - 1,
-        0 if not walk.is_uniform else starts[1],
-        len(welded),
+        data, len(starts) - 1, starts[1] if is_uniform else 0, len(welded)
     )[2]
 
 
@@ -777,18 +960,23 @@ def read_geometry(sections: SectionReader, info: tuple, uv_names: list) -> dict:
     if len(welded) != corner_count:
         raise FormatError("Packed faces do not fill their corners")
     layout = _Layout(welded, starts, gates, position_count)
-    corners, position_of = _read_splits(sections.raw(SectionKind.PACKED_SPLITS), welded)
+    corners, position_of = _read_splits(sections.raw(SectionKind.PACKED_SPLITS), layout)
     extra = vertices - len(position_of)
     if extra < 0:
         raise FormatError("A packed mesh has too many vertices")
-    rows, extras = _read_positions(
-        layout, sections.raw(SectionKind.PACKED_POSITIONS), extra
-    )
+    data = sections.raw(SectionKind.PACKED_POSITIONS)
+    if len(data) < _STEP.size:
+        raise FormatError("Packed positions are truncated")
+    (step,) = _STEP.unpack_from(data)
+    if not (step == 0 or math.isfinite(step) and step > 0):
+        raise FormatError("Packed positions have a bad grid step")
+    rows, extras = _read_positions(layout, data, extra)
+    unit = step or math.ldexp(1.0, exponent)
     positions = array("f")
     for position in position_of:
-        positions.extend(math.ldexp(value, exponent) for value in rows[position])
+        positions.extend(value * unit for value in rows[position])
     for row in extras:
-        positions.extend(math.ldexp(value, exponent) for value in row)
+        positions.extend(value * unit for value in row)
     fields = {
         "positions": positions,
         "sizes": [b - a for a, b in zip(starts, starts[1:], strict=False)],

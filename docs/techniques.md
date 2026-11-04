@@ -520,15 +520,17 @@ a file in other units or axes looks right without changing its vertices.
 
 ## The packed form
 
-Saved files hold each mesh's geometry packed: decoded once, start to end, then read like the direct form. On 24 meshes
-it is 7.34x smaller than meshopt, between Draco at 20 and 21 position bits in size (1.054x and 0.978x),
-and decodes 3.7x to 12.8x faster than Draco. [The comparison](../benchmarks/format-compare/README.md) has every mesh.
+Saved files hold each mesh's geometry packed: decoded once, start to end, then read like the direct form. On 24 meshes,
+at Draco's own 20-bit precision, it is 1.014x Draco's size and smaller on 16 of 24, 7.63x smaller than meshopt,
+and decodes 3.0x to 11.1x faster than Draco. [The comparison](../benchmarks/format-compare/README.md) has every mesh.
 
 ### Static-table rANS, with raw low bits
 
 Every stream is rANS with one fixed table of symbol frequencies per context, stored in the stream. A number is
 coded as its bit length; only that costs a table lookup, and the bits below its top bit are copied raw. 10-bit
-tables made streams no larger than 12-bit and decode faster, since a table fits in cache.
+tables made streams no larger than 12-bit and decode faster, since a table fits in cache. Tables are bit-packed:
+symbol gaps and frequencies as Exp-Golomb codes, the last frequency implied, and stream lengths as varints. That cut
+small files by up to a quarter: `11375` went from 648 to 476 bytes.
 
 ### Faces walked across open edges
 
@@ -536,11 +538,21 @@ The walk keeps only open edges: directed edges with a face on one side so far. E
 symbol saying whether a face lies across it, and that face starts with the edge's two positions known. Its other
 corners are almost always a new position, or one closing an open edge into its last or out of its first corner.
 Faces of one material stay together. Connectivity then costs 1.2 to 2.5 bits per triangle on the meshes checked.
+The encoder writes the walk under two context models and keeps the smaller: the symbol before, or that plus the one
+before it and which candidates exist. The second saved 20% of connectivity on `DamagedHelmet`.
 
 ### Splits as a choice per corner
 
-The walk runs over welded positions, so a corner only says which vertex at its position it uses: almost always
-usually the one before, which costs little. Vertices stay exactly as Blender has them.
+The walk runs over welded positions, so a corner only says which vertex at its position it uses. Vertices stay
+exactly as Blender has them. A second model guesses the vertex across the face's gate first, which a corner reached
+through a gate nearly always uses; the encoder keeps whichever model is smaller.
+
+### Draco's grid for positions
+
+The direct form's grid step is a power of two, so it can be up to twice as fine as the 1 / 2^21 bound needs, which
+costs up to 3 bits a position. Packed positions use the largest size over 2^20, as Draco does, rounded down to 6
+significant bits so saving again finds the same step. That made the big scans 4% to 5% smaller, and makes the
+comparison with Draco like for like.
 
 ### Predictions from what is already decoded, in one pass
 
@@ -558,7 +570,7 @@ bit, proved by checksum on every mesh.
 ### What it costs
 
 A reader must decode before reading anything, so packed files lose the direct form's reads in place. Saving takes
-up to 14 s for one mesh in Python. The C# reader reads only the direct form.
+up to 17 s for one mesh in Python. The C# reader reads only the direct form.
 
 ## The file itself
 
@@ -622,6 +634,9 @@ renders, so this may overstate ZPM's part. A less extreme glossy surface and dir
 | Whole-mesh adaptive binary coding, simulated | 1.2x to 1.3x larger than Draco | Its connectivity and UV prediction were weak; the packed form replaced both |
 | Packed normals corrected from decoded neighbours | Larger on every mesh tried | The geometry prediction already holds what neighbours add |
 | Packed decoding with tables of neighbours | About Draco's speed | Rebuilt as one pass in walk order, several times faster |
+| Packed positions from every parallelogram already decoded, averaged | 2% smaller to 4% larger | The walk decodes a position as soon as one parallelogram exists, so there is rarely a second |
+| Packed position contexts from the gate edge's length, or the vertex's other axes | Within 1%, often larger | Residuals are already coded close to their entropy |
+| Finer number bins: bit length plus the next bit as the symbol | Under 0.5% | Raw low bits are nearly uniform already |
 | One vertex list for all blendshape targets (union mask) | 3.2x larger on a test face rig of 30 local targets | Every target then stores every vertex |
 | Branch-free strip vertices | Whole reads about 1.3x slower | The branch predicts better than expected |
 | Smaller blocks with their own widths and bases | About 1% at best, often larger | The width reflects real variation, not outliers |
@@ -668,17 +683,17 @@ its bones, weights and animation, but no controllers.
 ## Where ZPM stands against Draco on size
 
 The direct form is about 1.7x larger than Draco: a format that reads any value alone gives up predicting from what
-came before. The packed form decodes in order like Draco does, and lands between Draco at 20 and 21 position bits,
-1.054x and 0.978x in total. It wins at 21 bits on 20 of 24; the rest are within a few percent, except
-tiny meshes, where the container costs more.
+came before. The packed form decodes in order like Draco does. At the same precision it is 1.014x Draco in total
+and smaller on 16 of 24. On the big scans positions are level with Draco's, and connectivity is 30% to 45% larger:
+Draco's valence-driven coder beats this walk's symbols there. That is the next thing to build.
 
 ## What we can and can't claim
 
 - **Can say:** on these 17 meshes, smaller than every earlier ZPM experiment on all but tiny meshes,
   with zero allocations when reading.
-- **Can say:** saved files are 7.3x smaller than meshopt on these 24 meshes, about the size of Draco, and decode
-  4x to 13x faster than Draco in native code.
-- **Can't say:** smaller than Draco, or faster than meshopt at decoding a whole mesh. It has been measured: see
+- **Can say:** saved files are 7.6x smaller than meshopt on these 24 meshes, smaller than Draco on 16 of them at
+  the same precision and 1.014x Draco in total, and decode 3x to 11x faster than Draco in native code.
+- **Can't say:** smaller than Draco on every mesh, or faster than meshopt at decoding a whole mesh. It has been measured: see
   [the comparison](../benchmarks/format-compare/README.md). The direct form wins on reading part of a mesh and on memory.
 - **Not new inventions:** the building blocks above are known. What's unusual is combining them in a
   mesh file so nothing needs decoding. We have not surveyed every format, so say "unusual", not "first".

@@ -28,7 +28,10 @@ The file holds the same shape, not always the same bytes as the source.
 - **Positions snap to a grid.** The step is a power of two, at most 1 / 2^20 of the model's largest
   size, so no point moves more than 1 / 2^21 of it: about 1 micron on a 2 m character. Equal
   positions stay equal, so shared points cannot crack apart. Snapping twice changes nothing. A mesh
-  with a non-finite position is stored with its bits unchanged.
+  with a non-finite position is stored with its bits unchanged. A packed mesh uses a coarser step
+  when it can, the largest size over 2^20 rounded down to 6 significant bits, as Draco's 20-bit
+  grid: the same 1 / 2^21 bound, rounding from the original positions. `snap_as_saved` gives a
+  mesh as saving stores it.
 - **Elements may be reordered.** The encoder also tries walking faces across shared edges, starting
   from a space-filling curve, with vertices and edges in the order those faces reach them, and keeps
   whichever file is smaller.
@@ -134,16 +137,20 @@ it holds, from tangents to blendshapes, uses the sections above. `codec/packed.p
 
 | Kind | Name | Holds |
 | ---: | --- | --- |
-| 278 | `PACKED_CONNECTIVITY` | Faces as a walk over welded positions |
-| 279 | `PACKED_SPLITS` | Which vertex at its position each corner uses |
-| 280 | `PACKED_POSITIONS` | Grid integers of each welded position, then of vertices on no face |
+| 278 | `PACKED_CONNECTIVITY` | One byte, the context model, then faces as a walk over welded positions |
+| 279 | `PACKED_SPLITS` | One byte, the model, then which vertex at its position each corner uses |
+| 280 | `PACKED_POSITIONS` | Grid step (Float32; 0 for 2^ the grid exponent), then grid integers of each welded position, then of vertices on no face |
 | 281 | `PACKED_NORMALS` | One byte, 0 to predict around positions or 1 around vertices, then the stream |
 | 282 | `PACKED_UVS` | Layered by UV layer, named by `UV_NAMES` |
 | 283 | `PACKED_LOOSE_EDGES` | Column: both vertex IDs of each edge on no face |
 
-Each stream is static-table rANS: a state (UInt32), word count and raw byte count (UInt32 each); per context an entry
-count (Byte), then a symbol (Byte) and frequency (UInt16) per entry, frequencies summing to 1,024; then the words
-(UInt16), read from the first, then the raw bytes. A symbol takes the state's low 10 bits as its slot; the state becomes
+Each stream is static-table rANS: a state (UInt32), then word count and raw byte count as varints (7 bits a byte, low
+first, top bit set on all but the last); then the tables, bit-packed low bits first and padded to a byte; then the
+words (UInt16), read from the first, then the raw bytes. A table is its entry count, then, if any, a 4-bit k, each
+entry's symbol as its gap from the one before (the first from −1) less one, then every entry's frequency but the
+last, less one, as an order-k Exp-Golomb code; the last takes what remains of 1,024. Counts and gaps are order-0 codes.
+An order-k code of v is as many clear bits as v + 2^k has bits past k + 1, a set bit, then its bits below the top one,
+low first. A symbol takes the state's low 10 bits as its slot; the state becomes
 frequency × (state >> 10) + slot − the symbol's first slot, and takes the next word whenever it falls below 65,536. A
 number is its zigzag value's bit length as a symbol, then the bits below the top one, raw, low bits first. A choice is
 one symbol, or 200 then a number to add to 200.
@@ -153,12 +160,16 @@ and a stack of them, newest last. It reads a face with nothing known, then pops 
 otherwise a gate symbol says whether a face lies across it. If so, that face starts with the edge's two positions
 reversed, else the edge closes. When the stack empties and faces remain, a new face with nothing known starts. A
 face's size is a number when `MESH_INFO`'s shared size is 0. Each later corner is a symbol, under a context of the
-symbol before and whether it is the face's last corner: a new position, the newest position closing an open edge into
+symbol before and whether it is the face's last corner; model 1 adds the symbol before that and whether open edges
+lead into the last corner and out of the first. The symbol is a new position, the newest position closing an open edge into
 the last corner, the one out of the face's first corner, an older one into the last, or far, a number counting back
 from the newest position. A face's corners are its ring in this order, which sets winding and first corner.
 
 **Splits.** Corners in order. The first corner at a position makes a new vertex. Later ones read a choice: 0 for a
-new vertex, or which of that position's vertices so far, from 1.
+new vertex, else a vertex already at that position, from 1. Model 0 counts them in the order they were made. Model 1
+first names a guess: for a face's first two corners, the vertex at the matching corner of the face across its gate,
+else the vertex last used at this position; then the others, newest first. Contexts are the vertex count, up to 3,
+plus 4 when the guess came from a gate.
 
 **Positions.** Welded positions in the order they first appear, each axis a number added to a prediction from where
 the position first appears in its face. At the first corner: the last position read. At the second: the first

@@ -23,7 +23,7 @@ from zpm.format import (
     load,
     same_geometry,
     save,
-    snap_mesh,
+    snap_as_saved,
 )
 
 
@@ -369,8 +369,8 @@ def check_colors_tangents_and_weights(directory):
     total = sum(len(vertex.groups) for vertex in imported.data.vertices)
     assert total == 80, total
     assert sorted(imported.data.color_attributes.keys()) == ["Heat", "Paint"]
-    expected = snap_mesh(mesh_adapter.capture_object(obj))
-    actual = snap_mesh(mesh_adapter.capture_object(imported))
+    expected = snap_as_saved(mesh_adapter.capture_object(obj))
+    actual = snap_as_saved(mesh_adapter.capture_object(imported))
     assert same_geometry(actual, expected, compare_normals=False)
     print("PASS: colors, tangents, vertex groups and weights")
 
@@ -390,11 +390,11 @@ def check_surface_data(directory):
     creases.data[7].value = 0.5
     vertex_creases = mesh.attributes.new("crease_vert", "FLOAT", "POINT")
     vertex_creases.data[9].value = 0.25
-    expected = snap_mesh(mesh_adapter.capture_mesh(mesh))
+    expected = snap_as_saved(mesh_adapter.capture_mesh(mesh))
     path = str(Path(directory) / "surface.zpm")
     export_alone(bpy.context.active_object, path)
     result = mesh_adapter.create_mesh(load(path).meshes[0], name="surface-result")
-    actual = snap_mesh(mesh_adapter.capture_mesh(result))
+    actual = snap_as_saved(mesh_adapter.capture_mesh(result))
     assert same_geometry(actual, expected, compare_normals=False)
     assert sorted(result.uv_layers.keys()) == sorted(mesh.uv_layers.keys())
     assert "Detail" in result.uv_layers
@@ -435,7 +435,7 @@ def check_materials_and_authored_marks(directory):
     mesh["zpm_crease_chain_vertices"] = list(mesh.edges[0].vertices)
     mesh.color_attributes.new("Linear", "FLOAT_COLOR", "POINT")
     mesh.color_attributes.new("Paint", "BYTE_COLOR", "POINT")
-    expected = snap_mesh(mesh_adapter.capture_mesh(mesh))
+    expected = snap_as_saved(mesh_adapter.capture_mesh(mesh))
     path = str(Path(directory) / "materials.zpm")
     export_alone(bpy.context.active_object, path)
     geometry = load(path).meshes[0]
@@ -446,7 +446,7 @@ def check_materials_and_authored_marks(directory):
     assert not geometry.color_layers["Linear"].is_srgb
     result = mesh_adapter.create_mesh(geometry, name="materials-result")
     assert [m.name if m else "" for m in result.materials] == ["Skin", "", "Metal"]
-    actual = snap_mesh(mesh_adapter.capture_mesh(result))
+    actual = snap_as_saved(mesh_adapter.capture_mesh(result))
     assert same_geometry(actual, expected, compare_normals=False)
     print("PASS: materials, per-layer data and authored marks")
 
@@ -485,7 +485,7 @@ def check_attributes_and_shape_keys(directory):
     for index in range(0, len(smile.data), 7):
         smile.data[index].co.z += 0.1
     bpy.context.scene.unit_settings.scale_length = 0.5
-    expected = snap_mesh(mesh_adapter.capture_mesh(mesh))
+    expected = snap_as_saved(mesh_adapter.capture_mesh(mesh))
     path = str(Path(directory) / "attributes.zpm")
     export_alone(bpy.context.active_object, path)
     geometry = load(path).meshes[0]
@@ -496,7 +496,7 @@ def check_attributes_and_shape_keys(directory):
     assert bpy.ops.import_mesh.zpm(filepath=path) == {"FINISHED"}
     imported = bpy.data.objects[(set(bpy.data.objects.keys()) - before).pop()]
     assert imported.scale[0] == 1.0, "Same units must not rescale"
-    actual = snap_mesh(mesh_adapter.capture_mesh(imported.data))
+    actual = snap_as_saved(mesh_adapter.capture_mesh(imported.data))
     assert same_geometry(actual, expected, compare_normals=False)
     bpy.context.scene.unit_settings.scale_length = 1.0
     check_shape_extremes(obj, imported)
@@ -720,7 +720,7 @@ def run():
             bpy.context.collection.objects.link(obj)
             bpy.context.view_layer.objects.active = obj
             obj.location = (10, 20, 30)
-            expected = snap_mesh(mesh_adapter.capture_mesh(source))
+            expected = snap_as_saved(mesh_adapter.capture_mesh(source))
             path = str(Path(directory) / f"{name}.zpm")
             export_alone(obj, path)
             geometry = load(path).meshes[0]

@@ -6,7 +6,7 @@ All positions are Float32. Index arrays use unsigned 16- or 32-bit integers.
 Saving may reorder elements and snap values by a tiny amount; see processing/.
 """
 
-from .codec.mesh_codec import decode, encode
+from .codec.mesh_codec import decode, encode, snap_as_saved
 from .codec.scene_codec import decode_scene, encode_scene
 from .container.file_map import FileRegion, map_file
 from .container.layout import (
@@ -86,5 +86,6 @@ __all__ = [
     "map_file",
     "same_geometry",
     "save",
+    "snap_as_saved",
     "snap_mesh",
 ]

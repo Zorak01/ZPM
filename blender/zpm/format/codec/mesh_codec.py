@@ -32,7 +32,7 @@ from .corners import (
 )
 from .edges import encode_edge_endpoints, encode_edges, read_edges
 from .materials import encode_materials, read_materials
-from .packed import pack_geometry, read_geometry
+from .packed import pack_geometry, packing_step, read_geometry, snap_to_step
 from .positions import (
     encode_positions,
     first_use_ids,
@@ -76,6 +76,33 @@ def encode(mesh: Mesh, *, keep_vertex_order: bool = False) -> bytes:
     return reordered if len(reordered) < len(as_stored) else as_stored
 
 
+def snap_for_packing(mesh: Mesh) -> tuple:
+    """Return (the mesh as pack stores it, step, exponent, normals from faces).
+
+    As snap_mesh, then positions on the packing grid when it is coarser: see
+    packing_step. A step of 0 means the power-of-two grid. Shape targets keep moves in
+    steps of 2^exponent.
+    """
+    snapped = snap_mesh(mesh)
+    from_faces = normals_match_faces(snapped)
+    exponent = grid_exponent(snapped)
+    step = packing_step(mesh.positions, exponent)
+    snapped = snap_to_step(snapped, mesh.positions, step, exponent, from_faces)
+    return snapped, step, exponent, from_faces
+
+
+def snap_as_saved(mesh: Mesh) -> Mesh:
+    """Return the mesh as saving stores it: on the packing grid when it packs.
+
+    A mesh the packed form cannot hold is saved directly, and snaps as snap_mesh does.
+    """
+    mesh.validate()
+    snapped, step, exponent, from_faces = snap_for_packing(mesh)
+    if pack_geometry(snapped, step, exponent, from_faces) is None:
+        return snap_mesh(mesh)
+    return snapped
+
+
 def pack(mesh: Mesh) -> bytes:
     """Return the smallest form of a mesh, to be read once from start to end.
 
@@ -83,8 +110,8 @@ def pack(mesh: Mesh) -> bytes:
     longer than encode, and a reader must unpack the result before using it.
     """
     mesh.validate()
-    snapped = snap_mesh(mesh)
-    packed = pack_geometry(snapped)
+    snapped, step, exponent, from_faces = snap_for_packing(mesh)
+    packed = pack_geometry(snapped, step, exponent, from_faces)
     if packed is None:
         return encode(mesh)
     ordered, sections = packed
@@ -92,7 +119,7 @@ def pack(mesh: Mesh) -> bytes:
     flags = MeshFlags.NONE
     if ordered.has_custom_normals:
         flags |= MeshFlags.CUSTOM_NORMALS
-    if normals_match_faces(snapped):
+    if from_faces:
         flags |= MeshFlags.NORMALS_FROM_FACES
     reached = {key for face in face_lists(ordered) for key in face_edges(face)}
     loose = [
@@ -109,7 +136,6 @@ def pack(mesh: Mesh) -> bytes:
     sections += encode_tangents(ordered, None)
     sections += encode_tangent_method(ordered)
     sections += encode_attributes(ordered)
-    exponent = grid_exponent(ordered)
     sections += encode_shapes(ordered, exponent)
     sections += encode_uv_seams(ordered)
     sections += encode_materials(ordered)

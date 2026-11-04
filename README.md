@@ -7,11 +7,11 @@ The goal is simple: **smaller files, faster loading, lower memory use, and more
 of your work preserved when you export.**
 
 ZPM is in early development. Scenes import and export today, with everything in the table below,
-but the layout can still change. On 24 test meshes, saved files are 7.34x smaller than meshoptimizer in total
-and smaller on 23 of them, with the same vertices. Against Draco they are 1.05x larger at Draco's 20-bit positions,
-which are coarser than ZPM's, and 0.98x at 21 bits, which are finer: about a tie.
+but the layout can still change. On 24 test meshes, saved files are 7.63x smaller than meshoptimizer in total
+and smaller on 23 of them, with the same vertices. At Draco's own 20-bit precision they are 1.014x Draco's size in
+total and smaller on 16 of 24; Draco stays smaller on the big scans, by a few percent.
 
-**Saved files decode once on load,** start to end: 4x to 13x faster than Draco in native code, and still
+**Saved files decode once on load,** start to end: 3x to 11x faster than Draco in native code, and still
 several times slower than meshoptimizer. ZPM also has a direct form, read by index straight from the file bytes with no
 decode step and no heap allocation: one face on a real 3,682-vertex character takes about 0.09 microseconds. Saving
 uses it only for meshes the packed form cannot hold.
@@ -107,7 +107,7 @@ reference codec**, not Python API speed or end-to-end Blender loading.
 
 These results compare mesh-core encodings on identical input. For other formats, see
 [ZPM against Draco and meshoptimizer](benchmarks/format-compare/README.md): saved files are
-7.34x smaller than meshopt and roughly tie with Draco on size, and decode faster than Draco and slower than meshopt.
+7.63x smaller than meshopt and within 1.4% of Draco on size, smaller on 16 of 24, and decode faster than Draco and slower than meshopt.
 
 These are earlier experiments, kept as the comparison.
 [Current results](benchmarks/mesh-read/README.md) measure today's layout next to

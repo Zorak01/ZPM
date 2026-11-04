@@ -55,7 +55,7 @@ from zpm.format import (
     save,
     snap_mesh,
 )
-from zpm.format.codec.mesh_codec import pack
+from zpm.format.codec.mesh_codec import pack, snap_for_packing
 from zpm.format.codec.quantize import decode_normal, encode_normal
 from zpm.format.codec.scene_tables import read_indices
 from zpm.format.container.layout import (
@@ -1343,7 +1343,8 @@ class PackedTests(unittest.TestCase):
         names = {region.name for region in map_file(data)}
         self.assertIn("PACKED_CONNECTIVITY", names)
         again = decode(data)
-        self.assertTrue(same_geometry(snap_mesh(mesh), again))
+        self.assertTrue(same_geometry(snap_for_packing(mesh)[0], again))
+        self.assertEqual(pack(again), data)
         return again
 
     def test_every_kind_of_face_comes_back(self):
@@ -1399,6 +1400,16 @@ class PackedTests(unittest.TestCase):
         holed = holed_mesh()
         self.assertTrue(same_geometry(snap_mesh(holed), decode(pack(holed))))
 
+    def test_positions_move_no_more_than_the_grid_allows(self):
+        mesh = real_fixture()
+        moved = snap_for_packing(mesh)[0].positions
+        extent = max(
+            max(mesh.positions[axis::3]) - min(mesh.positions[axis::3])
+            for axis in range(3)
+        )
+        largest = max(abs(a - b) for a, b in zip(mesh.positions, moved, strict=True))
+        self.assertLessEqual(largest, math.ldexp(extent, -21) * 1.0001)
+
     def test_packing_is_smaller_than_the_direct_form(self):
         mesh = real_fixture()
         self.assertLess(len(pack(mesh)), len(encode(mesh)))
@@ -1410,8 +1421,10 @@ class PackedTests(unittest.TestCase):
         packed = encode_scene(scene, packed=True)
         self.assertLess(len(packed), len(direct))
         stored = decode_scene(packed)
-        for first, second in zip(scene.meshes, stored.meshes, strict=True):
-            self.assertTrue(same_geometry(snap_mesh(first), second))
+        # A vertex parent names the first mesh's vertices, so it keeps the direct form.
+        named, grid = scene.meshes
+        self.assertTrue(same_geometry(snap_mesh(named), stored.meshes[0]))
+        self.assertTrue(same_geometry(snap_for_packing(grid)[0], stored.meshes[1]))
 
     def test_damaged_packed_files_are_refused_or_read_safely(self):
         source = bytearray(pack(surface_mesh()))

@@ -2,54 +2,55 @@
 
 ## Packed form, latest run: 2026-11-03
 
-24 meshes, run `20261103T023951Z`. [Raw JSON](results/20261103T023951Z.json). The packed form is what saving writes since 2026-11-03. 20-bit
-Draco positions, 12-bit normals, 16-bit UVs. No zstd on any of them. `*` means normals are calculated from faces, so
-Draco holds positions, faces and UVs only, as ZPM does.
+24 meshes, run `20261103T032430Z`. [Raw JSON](results/20261103T032430Z.json). The packed form is what saving writes. 12-bit normals and
+16-bit UVs for all. No zstd on any of them. `*` means normals are calculated from faces, so Draco holds positions,
+faces and UVs only, as ZPM does.
 
-ZPM's position grid is a power of two, finer than Draco's at 20 bits on every mesh and coarser than at 21, so the two
-Draco columns bracket a comparison at equal precision. Packed bytes are the whole mesh file, header and all, with edges
-worked out from the faces. Meshopt gets the same vertices.
+**Same precision.** Packed positions use Draco's 20-bit grid, the largest size over 2^20, with the step rounded down to
+6 significant bits, so ZPM is never coarser than Draco at 20 bits and at most 1.6% finer. Draco at 21 bits is shown too,
+twice as fine as both. Packed bytes are the whole mesh file, header and all, with edges worked out from the faces.
+Meshopt gets the same vertices.
 
-**Total: packed 2,075,556 bytes, Draco 1,968,482 at 20 bits and 2,121,378 at 21, meshopt 15,227,867.** Packed is 1.054x Draco
-at 20 bits, smaller on 7 of 24, and 0.978x at 21 bits, smaller on 20 of 24: about a tie, not a win. It is
-7.34x smaller than meshopt and smaller on 23 of 24. **Larger than Draco at 21 bits: DamagedHelmet 1.027x, RiggedFigure 1.048x, spot 1.003x, 11375 1.268x.
-Larger than meshopt: suzanne 1.073x.**
+**Total: packed 1,996,804 bytes, Draco 1,968,482, meshopt 15,227,867.** Packed is 1.014x Draco and smaller on 16 of 24;
+**larger on armadillo 1.013x, BoomBox 1.015x, DamagedHelmet 1.066x, happy 1.031x, lucy 1.021x, spot 1.009x, stanford-bunny 1.033x, xyzrgb_dragon 1.023x**. Those are the big scans, where ZPM's connectivity is 30% to 45% larger than
+Draco's while positions are level, plus DamagedHelmet, BoomBox and spot. Against the finer 21-bit Draco it is smaller on
+23 of 24. Packed is 7.63x smaller than meshopt and smaller on 23 of 24: **larger on suzanne 1.013x.**
 
 Decoding, in microseconds, is `packed_decode.cpp`: native C++ built with `zig c++ -O3 -mavx2`, decoding connectivity,
 vertices, positions, normals and UVs into integer arrays, the median of many runs. It leaves out edges and the other
 sections, and it trusts its input; the Python reader checks everything. Draco is its native decoder called through
-Python; meshopt is native. **Packed decodes 3.7x to 12.8x faster than Draco on 24 of 24, and
-3.5x to 22.4x slower than native meshopt on 24 of 24.** Every packed file decodes to the
-same integers in C++ and Python, by checksum.
+Python; meshopt is native. **Packed decodes 3.0x to 11.1x faster than Draco on 24 of 24, and 2.5x to
+27.8x slower than native meshopt on all 24.** Every packed file decodes to the same integers in C++ and Python, by
+checksum.
 
-| Mesh | Packed | Draco, 20 bits | Draco, 21 bits | Meshopt, same vertices | Packed decode | Draco decode | Meshopt native decode |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| armadillo | **278,784** | 270,636 * | 290,769 | 2,291,258 | **6,387** | 60,980 | 1,516 |
-| Avocado | **4,724** | 4,680 | 4,926 | 6,255 | **57** | 235 | 3 |
-| BoomBox | **33,936** | 32,446 | 34,379 | 51,417 | **611** | 2,705 | 27 |
-| CesiumMan | **21,884** | 21,759 | 22,851 | 41,501 | **437** | 1,675 | 23 |
-| cow | **17,956** | 17,616 * | 18,670 | 140,222 | **283** | 3,638 | 78 |
-| DamagedHelmet | **107,004** | 98,931 | 104,195 | 192,323 | **2,149** | 7,847 | 97 |
-| Duck | **23,972** | 23,536 | 24,587 | 35,146 | **391** | 1,516 | 18 |
-| fandisk | **28,708** | 29,055 * | 31,656 | 160,302 | **697** | 4,801 | 102 |
-| happy | **280,800** | 260,185 * | 289,365 | 2,259,566 | **6,789** | 65,883 | 1,614 |
-| Lantern | **18,976** | 18,734 | 19,579 | 32,262 | **358** | 1,338 | 20 |
-| lucy | **278,356** | 260,701 * | 280,697 | 2,289,250 | **6,606** | 58,592 | 1,626 |
-| RiggedFigure | **1,764** | 1,637 | 1,683 | 3,624 | **18** | 79 | 3 |
-| spot | **26,432** | 25,150 * | 26,366 | 194,541 | **442** | 3,336 | 126 |
-| stanford-bunny | **168,096** | 158,339 * | 171,710 | 1,525,807 | **4,155** | 34,684 | 933 |
-| suzanne | **5,352** | 5,230 | 5,446 | 4,988 | **46** | 230 | 5 |
-| teapot | **15,800** | 16,833 * | 18,218 | 107,678 | **294** | 2,246 | 69 |
-| WaterBottle | **20,080** | 22,510 | 23,660 | 34,393 | **398** | 1,547 | 20 |
-| xyzrgb_dragon | **670,344** | 624,576 * | 673,960 | 5,612,096 | **16,356** | 148,182 | 3,993 |
-| 04263 | **36,512** | 38,449 | 40,126 | 148,852 | **662** | 3,105 | 68 |
-| 04362 | **6,864** | 6,906 | 6,998 | 19,226 | **58** | 292 | 9 |
-| 11375 | **648** | 501 | 511 | 1,069 | **6** | 29 | 1 |
-| minotaur | **8,296** | 8,823 | 9,108 | 22,741 | **100** | 500 | 10 |
-| samurai | **12,640** | 13,705 | 14,129 | 36,377 | **160** | 764 | 18 |
-| werewolf | **7,628** | 7,544 | 7,789 | 16,973 | **129** | 492 | 9 |
+| Mesh | Packed | Draco, 20 bits | Packed / Draco | Draco, 21 bits | Meshopt, same vertices | Packed decode | Draco decode | Meshopt native decode |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| armadillo | **274,264** | 270,636 * | 1.013 | 290,769 | 2,291,258 | **7,262** | 61,374 | 1,476 |
+| Avocado | **4,388** | 4,680 | 0.938 | 4,926 | 6,255 | **60** | 244 | 4 |
+| BoomBox | **32,936** | 32,446 | 1.015 | 34,379 | 51,417 | **734** | 2,185 | 26 |
+| CesiumMan | **21,036** | 21,759 | 0.967 | 22,851 | 41,501 | **477** | 1,579 | 24 |
+| cow | **17,432** | 17,616 * | 0.990 | 18,670 | 140,222 | **303** | 3,363 | 77 |
+| DamagedHelmet | **105,452** | 98,931 | 1.066 | 104,195 | 192,323 | **2,306** | 8,053 | 95 |
+| Duck | **23,284** | 23,536 | 0.989 | 24,587 | 35,146 | **438** | 1,484 | 18 |
+| fandisk | **28,468** | 29,055 * | 0.980 | 31,656 | 160,302 | **767** | 4,673 | 100 |
+| happy | **268,220** | 260,185 * | 1.031 | 289,365 | 2,259,566 | **7,762** | 63,218 | 1,446 |
+| Lantern | **18,312** | 18,734 | 0.977 | 19,579 | 32,262 | **325** | 1,237 | 19 |
+| lucy | **266,080** | 260,701 * | 1.021 | 280,697 | 2,289,250 | **6,787** | 51,410 | 2,740 |
+| RiggedFigure | **1,508** | 1,637 | 0.921 | 1,683 | 3,624 | **24** | 139 | 3 |
+| spot | **25,364** | 25,150 * | 1.009 | 26,366 | 194,541 | **476** | 3,456 | 121 |
+| stanford-bunny | **163,612** | 158,339 * | 1.033 | 171,710 | 1,525,807 | **4,959** | 40,156 | 1,114 |
+| suzanne | **5,052** | 5,230 | 0.966 | 5,446 | 4,988 | **48** | 249 | 3 |
+| teapot | **14,928** | 16,833 * | 0.887 | 18,218 | 107,678 | **367** | 2,484 | 67 |
+| WaterBottle | **19,548** | 22,510 | 0.868 | 23,660 | 34,393 | **453** | 1,594 | 20 |
+| xyzrgb_dragon | **638,864** | 624,576 * | 1.023 | 673,960 | 5,612,096 | **18,363** | 154,423 | 4,113 |
+| 04263 | **34,036** | 38,449 | 0.885 | 40,126 | 148,852 | **866** | 3,348 | 69 |
+| 04362 | **6,588** | 6,906 | 0.954 | 6,998 | 19,226 | **63** | 312 | 9 |
+| 11375 | **476** | 501 | 0.950 | 511 | 1,069 | **6** | 30 | 1 |
+| minotaur | **7,900** | 8,823 | 0.895 | 9,108 | 22,741 | **114** | 523 | 10 |
+| samurai | **11,920** | 13,705 | 0.870 | 14,129 | 36,377 | **178** | 772 | 18 |
+| werewolf | **7,136** | 7,544 | 0.946 | 7,789 | 16,973 | **144** | 476 | 9 |
 
-Saving takes longer: up to 14.3 s for one mesh in Python.
+Saving takes longer: up to 17.2 s for one mesh in Python.
 
 ## Direct form, run of 2026-11-02
 

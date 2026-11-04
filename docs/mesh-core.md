@@ -132,8 +132,9 @@ its lowest four, a set bit, then its bits below the top one. Thirteen clear bits
 
 ### Packed sections
 
-A packed mesh holds these in place of the direct position, corner, edge, normal and UV sections. Everything else
-it holds, from tangents to blendshapes, uses the sections above. `codec/packed/` is the reference.
+A packed mesh holds these in place of the direct position, corner, edge, normal and UV sections, and in place of
+the tangent and weight sections when smaller. Everything else it holds, from attributes to blendshapes, uses the
+sections above. `codec/packed/` is the reference.
 
 | Kind | Name | Holds |
 | ---: | --- | --- |
@@ -143,6 +144,8 @@ it holds, from tangents to blendshapes, uses the sections above. `codec/packed/`
 | 281 | `PACKED_NORMALS` | A byte (bit 0 predicts around vertices, not positions; bit 1 fine numbers; bits 2–3 the lookup; bit 4 pairs), then the stream |
 | 282 | `PACKED_UVS` | Layered by UV layer, named by `UV_NAMES`: a byte (bit 0 fine numbers; bits 1–2 the lookup; bit 3 pairs), then the stream |
 | 283 | `PACKED_LOOSE_EDGES` | Column: both vertex IDs of each edge on no face |
+| 286 | `PACKED_TANGENTS` | Layered by UV layer, for layers with tangents: a byte, the fine level, then the stream |
+| 287 | `PACKED_WEIGHTS` | Every vertex's weights as one stream, when each row adds up to exactly 1 |
 
 Each stream is static-table rANS: a state (UInt32), then word count and raw byte count as varints (7 bits a byte, low
 first, top bit set on all but the last); then the tables, bit-packed low bits first and padded to a byte; then the
@@ -203,6 +206,27 @@ half the first part's bit length up to 7; for UVs, the first part then also take
 of the summed face normals around the key, with integer cross products, or the key's last value; for UVs, from the
 triangle's shape in space, with a symbol picking the side when the walk does not settle it. All prediction uses IEEE
 doubles and rounds halves to even, so every reader gets the same integers.
+
+**Tangents.** Corners in order, after normals and UVs. A corner looks for tangents already seen at its vertex
+(lookup 1) and reads a choice as normals do. Otherwise it reads a symbol, 1 when the sign is not the guessed one, and
+two numbers added to the guessed 12-bit direction; the sign is bit 12 of the second value. Contexts: 0–2 the choice,
+3 the sign, then 4 + 5 × part + a third of that part's last bit length. The guess uses the corner's normal (decoded,
+or with no normals stored, its face's from its first three corners, normalized) and for each face corner c with next
+corner n and previous corner p, edges e1 = P(n) − P(c) and e2 = P(p) − P(c) in grid integers, and UV changes
+(du1, dv1), (du2, dv2) in stored integers. The side s is 1 when du1 dv2 − du2 dv1 ≥ 0, else −1, and the guessed sign
+bit is 1 when s is −1. The direction (e1 dv2 − e2 dv1) s, less its part along the normal, is normalized (left 0 if
+its length is 0) and times the corner's angle: with h = √((1 − cos) / 2), cos from e1 and e2 clamped to [−1, 1]
+(an angle of 0 if either is 0 long), the angle is 2h (1 + h² (1/6 + h² · 3/40)). Corners with equal welded position,
+UV and stored normal add these up. Each corner's guess is that sum less its part along the corner's normal, as
+encode_normal stores it.
+
+**Weights.** Vertices in order, each a choice: 0 a new row, or one of the last 32 rows used, most recent from 1.
+A new row reads its size less one as a choice, then per weight a choice naming its group among those used lately,
+most recent from 1, or 0 and the group as a choice; and for each but the last, a number added to a guess. The last
+takes what the others leave of 4,095. With what is left L, the weight before w (or L for the first) and n weights
+to go, the guess is the group's last weight (or min(L, w) // 2 for a group not seen yet), raised to at least L / n
+rounded up and lowered to at most min(L, w). Contexts: 0 rows, 1 sizes, 2 recent groups, 3 new groups, 4 the first
+weight, 5 later ones.
 
 ### Scene files
 

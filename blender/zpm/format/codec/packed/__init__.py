@@ -8,6 +8,8 @@ order in one pass, needing no tables of neighbours, which keeps decoding fast:
 
     walk: connectivity        splits: which vertex each corner uses
     positions: parallelograms normals, uvs: predicted from the decoded geometry
+    tangents: predicted from positions, UVs and normals, as MikkTSpace makes them,
+        or in their direct sections when those are smaller
 
 Each predicted value is a rANS number, and each stream picks its own smallest form.
 Everything else a mesh holds stays in its usual sections. All prediction uses integers,
@@ -18,17 +20,26 @@ from array import array
 from typing import NamedTuple
 
 from ...container.layout import NO_GRID, SectionKind
-from ...container.sections import Section, SectionReader
+from ...container.sections import Section, SectionReader, stored_bytes
 from ...errors import FormatError
 from ...mesh import Mesh
 from ...processing.faces import face_edges, face_lists
 from ...processing.reordering import reorder_by
 from ...processing.snapping import PackingGrid
-from ..quantize import decode_normal, decode_uv, encode_normal, encode_uv
+from ..quantize import (
+    decode_normal,
+    decode_tangent,
+    decode_uv,
+    encode_normal,
+    encode_tangent,
+    encode_uv,
+)
+from ..surface import encode_tangents as encode_direct_tangents
 from .layout import Layout
 from .normals import encode_normals, read_normals
 from .positions import encode_positions, grid_rows, read_positions
 from .splits import encode_splits, read_splits
+from .tangents import encode_tangents, read_tangents
 from .uvs import encode_uvs, read_uvs
 from .walk import FaceWalk, read_connectivity
 
@@ -49,6 +60,7 @@ class PackedGeometry(NamedTuple):
     edges: list
     corner_normals: array
     uv_layers: dict
+    tangent_layers: dict
 
 
 def pack_geometry(grid: PackingGrid) -> PackedMesh | None:
@@ -92,8 +104,26 @@ def pack_geometry(grid: PackingGrid) -> PackedMesh | None:
             encode_positions(layout, position_rows, new_rows[used:], grid.step),
         ),
     ]
-    sections += _normal_sections(ordered, layout, corners, position_rows, grid)
-    sections += _uv_sections(ordered, layout, corners, position_rows)
+    normals = _normal_pairs(ordered, grid)
+    if normals:
+        data = encode_normals(layout, corners, normals, position_rows)
+        sections.append(Section(SectionKind.PACKED_NORMALS, data))
+    tangent_sections = []
+    for layer, name in enumerate(sorted(ordered.uv_layers)):
+        uvs = _uv_pairs(ordered.uv_layers[name])
+        data = encode_uvs(layout, corners, uvs, position_rows)
+        sections.append(Section(SectionKind.PACKED_UVS, data, layer=layer))
+        if name in ordered.tangent_layers:
+            tangents = _tangent_pairs(ordered.tangent_layers[name])
+            data = encode_tangents(
+                layout, corners, tangents, position_rows, normals, uvs
+            )
+            kind = SectionKind.PACKED_TANGENTS
+            tangent_sections.append(Section(kind, data, layer=layer))
+    # On a small mesh the stream's tables can cost more than the direct sections.
+    direct = encode_direct_tangents(ordered, None)
+    smaller = stored_bytes(direct) < stored_bytes(tangent_sections)
+    sections += direct if smaller else tangent_sections
     return PackedMesh(ordered, sections)
 
 
@@ -125,58 +155,50 @@ def read_geometry(
     for row in stored.extras:
         positions.extend(value * unit for value in row)
     starts = layout.starts
+    corners = splits.corners
+    normals = []
+    if sections.has(SectionKind.PACKED_NORMALS):
+        data = sections.raw(SectionKind.PACKED_NORMALS)
+        normals = read_normals(layout, data, corners, stored.rows)
+    uv_layers, tangent_layers = {}, {}
+    for layer, name in enumerate(uv_names):
+        data = sections.raw(SectionKind.PACKED_UVS, layer)
+        uvs = read_uvs(layout, data, corners, stored.rows)
+        uv_layers[name] = array("f", [decode_uv(part) for pair in uvs for part in pair])
+        if sections.has(SectionKind.PACKED_TANGENTS, layer):
+            data = sections.raw(SectionKind.PACKED_TANGENTS, layer)
+            pairs = read_tangents(layout, data, corners, stored.rows, normals, uvs)
+            tangent_layers[name] = array(
+                "f", [part for pair in pairs for part in decode_tangent(*pair)]
+            )
     return PackedGeometry(
         positions,
         [b - a for a, b in zip(starts, starts[1:], strict=False)],
-        splits.corners,
-        _edges(sections, layout, splits.corners, edge_count),
-        _read_normal_values(sections, layout, splits.corners, stored.rows),
-        {
-            name: _read_uv_values(sections, layer, layout, splits.corners, stored.rows)
-            for layer, name in enumerate(uv_names)
-        },
+        corners,
+        _edges(sections, layout, corners, edge_count),
+        array("f", [part for pair in normals for part in decode_normal(*pair)]),
+        uv_layers,
+        tangent_layers,
     )
 
 
-def _normal_sections(ordered: Mesh, layout: Layout, corners, rows, grid) -> list:
+def _normal_pairs(ordered: Mesh, grid: PackingGrid) -> list:
+    """Return each corner's stored normal, or nothing when no normals are stored."""
     if not ordered.corner_normals or grid.normals_from_faces:
         return []
     normals = ordered.corner_normals
-    pairs = [encode_normal(*normals[at * 3 : at * 3 + 3]) for at in range(len(corners))]
-    data = encode_normals(layout, corners, pairs, rows)
-    return [Section(SectionKind.PACKED_NORMALS, data)]
+    return [encode_normal(*normals[at : at + 3]) for at in range(0, len(normals), 3)]
 
 
-def _uv_sections(ordered: Mesh, layout: Layout, corners, rows) -> list:
-    sections = []
-    for layer, name in enumerate(sorted(ordered.uv_layers)):
-        values = ordered.uv_layers[name]
-        pairs = [
-            (encode_uv(values[at * 2]), encode_uv(values[at * 2 + 1]))
-            for at in range(len(corners))
-        ]
-        data = encode_uvs(layout, corners, pairs, rows)
-        sections.append(Section(SectionKind.PACKED_UVS, data, layer=layer))
-    return sections
+def _uv_pairs(values: array) -> list:
+    return [
+        (encode_uv(values[at]), encode_uv(values[at + 1]))
+        for at in range(0, len(values), 2)
+    ]
 
 
-def _read_normal_values(
-    sections: SectionReader, layout: Layout, corners, rows
-) -> array:
-    if not sections.has(SectionKind.PACKED_NORMALS):
-        return array("f")
-    pairs = read_normals(
-        layout, sections.raw(SectionKind.PACKED_NORMALS), corners, rows
-    )
-    return array("f", [part for pair in pairs for part in decode_normal(*pair)])
-
-
-def _read_uv_values(
-    sections: SectionReader, layer: int, layout, corners, rows
-) -> array:
-    data = sections.raw(SectionKind.PACKED_UVS, layer)
-    pairs = read_uvs(layout, data, corners, rows)
-    return array("f", [decode_uv(part) for pair in pairs for part in pair])
+def _tangent_pairs(values: array) -> list:
+    return [encode_tangent(*values[at : at + 4]) for at in range(0, len(values), 4)]
 
 
 def _edges(

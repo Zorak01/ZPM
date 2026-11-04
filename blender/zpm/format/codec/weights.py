@@ -8,6 +8,8 @@ column, whenever that is smaller. A row is one lookup further than a vertex.
 Weights adding up to exactly 1 on the 12-bit grid store no last value in each row, since
 the others say what it is. A row's values then start at its group offset minus its row
 number. WEIGHT_SUM on the values column says so.
+
+A packed mesh may instead hold such weights in PACKED_WEIGHTS: see packed/weights.py.
 """
 
 from array import array
@@ -17,6 +19,9 @@ from ..container.sections import Section, SectionReader, column_section, stored_
 from ..errors import FormatError
 from ..mesh import Mesh
 from ..storage.names import encode_names, read_names
+from .packed.weights import WeightRows
+from .packed.weights import encode_weights as encode_weight_stream
+from .packed.weights import read_weights as read_weight_stream
 from .quantize import decode_unit, encode_unit
 
 _ON_GRID_TOLERANCE = 1e-6
@@ -37,7 +42,7 @@ def _row_columns(offsets: list, groups: list, values: list, *, sums: bool) -> li
     ]
 
 
-def _sum_steps(mesh: Mesh) -> list | None:
+def sum_steps(mesh: Mesh) -> list | None:
     """Return weights as whole steps, if every row adds up to exactly 1."""
     offsets = mesh.weight_offsets
     steps = [round(value * WEIGHT_TOTAL) for value in mesh.weight_values]
@@ -70,21 +75,32 @@ def _shared_rows(mesh: Mesh, stored: list, *, sums: bool) -> list:
     ]
 
 
-def encode_weights(mesh: Mesh) -> list:
-    """Return group names, and per-vertex weights when any vertex has them."""
+def encode_weights(mesh: Mesh, *, packed: bool = False) -> list:
+    """Return group names, and per-vertex weights when any vertex has them.
+
+    packed also tries one stream, for rows adding up to exactly 1, and keeps whichever
+    form is smallest; it is read vertex by vertex, not by index.
+    """
     sections = []
     if mesh.vertex_groups:
         names = encode_names(mesh.vertex_groups)
         sections.append(Section(SectionKind.GROUP_NAMES, names))
     if mesh.weight_values:
-        steps = _sum_steps(mesh)
+        steps = sum_steps(mesh)
         sums = steps is not None
         stored = steps if sums else [encode_unit(v) for v in mesh.weight_values]
         plain = _row_columns(
             list(mesh.weight_offsets), list(mesh.weight_groups), stored, sums=sums
         )
         shared = _shared_rows(mesh, stored, sums=sums)
-        sections += shared if stored_bytes(shared) < stored_bytes(plain) else plain
+        forms = [plain, shared]
+        if packed and sums:
+            rows = WeightRows(
+                list(mesh.weight_offsets), list(mesh.weight_groups), steps
+            )
+            data = encode_weight_stream(rows)
+            forms.append([Section(SectionKind.PACKED_WEIGHTS, data)])
+        sections += min(forms, key=stored_bytes)
     return sections
 
 
@@ -98,6 +114,13 @@ def read_weights(sections: SectionReader, vertex_count: int) -> dict:
     }
     if sections.has(SectionKind.GROUP_NAMES):
         fields["vertex_groups"] = read_names(sections.raw(SectionKind.GROUP_NAMES))
+    if sections.has(SectionKind.PACKED_WEIGHTS):
+        data = sections.raw(SectionKind.PACKED_WEIGHTS)
+        rows = read_weight_stream(data, vertex_count, len(fields["vertex_groups"]))
+        fields["weight_offsets"] = array("I", rows.offsets)
+        fields["weight_groups"] = array("I", rows.groups)
+        fields["weight_values"] = array("f", [s / WEIGHT_TOTAL for s in rows.steps])
+        return fields
     if not sections.has(SectionKind.WEIGHT_OFFSETS):
         return fields
     has_rows = sections.has(SectionKind.WEIGHT_SET_OF_VERTEX)

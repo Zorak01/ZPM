@@ -123,7 +123,6 @@ def pack(mesh: Mesh) -> bytes:
     if ordered.uv_layers:
         names = encode_names(sorted(ordered.uv_layers))
         sections.append(Section(SectionKind.UV_NAMES, names))
-    sections += encode_tangents(ordered, None)
     sections += encode_tangent_method(ordered)
     sections += encode_attributes(ordered)
     sections += encode_shapes(ordered, grid.exponent)
@@ -131,7 +130,7 @@ def pack(mesh: Mesh) -> bytes:
     sections += encode_materials(ordered)
     sections += encode_colors(ordered)
     sections += encode_marks(ordered)
-    sections += encode_weights(ordered)
+    sections += encode_weights(ordered, packed=True)
     info = MESH_INFO.pack(
         ordered.vertex_count,
         ordered.face_count,
@@ -261,6 +260,8 @@ def decode(data: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
         position_ids = None
         normals = geometry.corner_normals
         uv_layers = geometry.uv_layers
+        # A small mesh keeps its tangents in the direct sections, when smaller.
+        tangents = geometry.tangent_layers or read_tangents(sections, corners, None)
     else:
         positions = array("f", read_positions(sections, vertices, unique, exponent))
         position_ids = read_position_ids(sections, vertices, unique)
@@ -274,6 +275,7 @@ def decode(data: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
         edges = read_edges(sections, edge_count, corners, sizes)
         normals = read_normals(sections, corners, position_ids)
         uv_layers = read_uv_layers(sections, corners, positions, exponent, position_ids)
+        tangents = read_tangents(sections, corners, position_ids)
     code = "H" if width == 2 else "I"
     sizes = {
         AttributeDomain.POINT: vertices,
@@ -293,7 +295,7 @@ def decode(data: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
             has_custom_normals=bool(MeshFlags(flags) & MeshFlags.CUSTOM_NORMALS),
             uv_layers=uv_layers,
             uv_seams=read_uv_seams(sections, edge_count),
-            tangent_layers=read_tangents(sections, corners, position_ids),
+            tangent_layers=tangents,
             hole_starts=holes,
             tangent_method=read_tangent_method(sections),
             attributes=read_attributes(sections, sizes),

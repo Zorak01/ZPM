@@ -291,6 +291,8 @@ class SectionKind(IntEnum):
     PACKED_LOOSE_EDGES = 283
     PACKED_TRACKS = 284
     PACKED_TABLES = 285
+    PACKED_TANGENTS = 286
+    PACKED_WEIGHTS = 287
 
 
 class StreamRole(IntEnum):

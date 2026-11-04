@@ -509,6 +509,36 @@ two keys before was larger, not smaller.
 **Can improve:** values are near their floor at this grid. Fewer bits needs a coarser grid, which is a choice about
 error, not coding.
 
+### Tangents predicted the way they were made
+
+**Problem:** Tangents cost as much as positions. CesiumMan's took 12.6 KB of a 43.7 KB mesh.
+
+**Technique:** Blender makes tangents with MikkTSpace from positions, UVs and normals, which the reader already
+has when tangents come. So the reader makes nearly the same tangents: each face corner gives the way its positions
+run as U rises, laid flat against the normal and weighted by the corner's angle, and corners with one position, UV
+and normal add theirs up. Only the difference to the stored tangent is written, and a tangent already seen at the
+vertex costs a choice. The angle comes from a short arcsine series, using only square roots and sums, so every
+reader gets the same guess. A small mesh keeps its tangents in the direct sections when those are smaller.
+
+**Numbers:** glTF samples imported in Blender, tangent bytes before and after. CesiumMan 12,605 to 2,212,
+DamagedHelmet 52,174 to 9,136, Duck 11,496 to 3,464. Whole meshes: DamagedHelmet 151,216 to 108,140, CesiumMan
+43,668 to 29,944 with weights. Every tangent comes back exactly as stored.
+
+**Can improve:** Duck has a tail of large differences that this guess does not explain. MikkTSpace's own rules for
+quads and degenerate UVs may close it.
+
+### Skin weights as recent rows
+
+**Technique:** Rows are already whole steps of 1 / 4,095 adding up to exactly 1, with the last weight left out.
+Packed, a vertex names one of the last 32 rows when it can, since neighbours in walk order share them; a new row
+names its groups among those used lately, and each weight is a change from that group's last weight, kept between
+an even share of what is left and what the row still allows.
+
+**Numbers:** CesiumMan's weights, 9,883 bytes in four columns, take 6,620; RiggedFigure's 939 take 768.
+
+**Can improve:** weights themselves cost about 14 bits each: they are close to noise at this grid. Guessing from
+mesh neighbours instead of recent rows was larger.
+
 ### Scene tables in one stream
 
 **Technique:** Saved files hold every scene table in one rANS stream instead of fixed records. A record table goes

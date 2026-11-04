@@ -284,6 +284,39 @@ def authored_mesh() -> Mesh:
     return mesh
 
 
+def skinned_mesh(side: int = 24) -> Mesh:
+    """A curved sheet with UVs, tangents along U and weights over three bones."""
+    mesh = grid_mesh(side)
+    for vertex in range(mesh.vertex_count):
+        x = mesh.positions[vertex * 3]
+        mesh.positions[vertex * 3 + 2] = math.sin(x / 4)
+    uvs, tangents, normals = array("f"), array("f"), array("f")
+    for vertex in mesh.corners:
+        x, y = vertex % side, vertex // side
+        uvs.extend((x / side, y / side))
+        slope = math.cos(x / 4) / 4
+        length = math.hypot(1.0, slope)
+        tangents.extend((1 / length, 0.0, slope / length, 1.0))
+        normals.extend((-slope / length, 0.0, 1 / length))
+    mesh.uv_layers = {"UVMap": uvs}
+    mesh.tangent_layers = {"UVMap": tangents}
+    mesh.corner_normals = normals
+    mesh.has_custom_normals = True
+    mesh.vertex_groups = ["Root", "Middle", "Tip"]
+    offsets, groups, values = [0], [], []
+    for vertex in range(mesh.vertex_count):
+        share = (vertex % side) * 4095 // (side - 1)
+        row = [(1, share // 2), (0, 4095 - share), (2, share - share // 2)]
+        row = sorted((item for item in row if item[1]), key=lambda item: -item[1])
+        groups += [group for group, _ in row]
+        values += [step / 4095 for _, step in row]
+        offsets.append(len(values))
+    mesh.weight_offsets = array("I", offsets)
+    mesh.weight_groups = array("I", groups)
+    mesh.weight_values = array("f", values)
+    return mesh
+
+
 def attributes_for(mesh: Mesh) -> dict:
     points, edges = mesh.vertex_count, mesh.edge_count
     faces, corners = mesh.face_count, len(mesh.corners)
@@ -1496,6 +1529,31 @@ class PackedTests(unittest.TestCase):
         )
         self.assert_same_after_packing(summed_weight_mesh())
         self.assert_same_after_packing(authored_mesh())
+
+    def test_tangents_and_weights_pack(self):
+        mesh = skinned_mesh()
+        names = {region.name for region in map_file(pack(mesh))}
+        self.assertTrue({"PACKED_TANGENTS", "PACKED_WEIGHTS"} <= names)
+        self.assert_same_after_packing(mesh)
+
+    def test_damaged_tangents_and_weights_are_refused_or_read_safely(self):
+        source = pack(skinned_mesh())
+        regions = [
+            region
+            for region in map_file(source)
+            if region.name in ("PACKED_TANGENTS", "PACKED_WEIGHTS")
+        ]
+        generator = random.Random(13)
+        for _ in range(300):
+            data = bytearray(source)
+            region = generator.choice(regions)
+            for _ in range(generator.randint(1, 3)):
+                at = region.offset + generator.randrange(region.length)
+                data[at] = generator.randrange(256)
+            try:
+                decode(bytes(data), max_bytes=1 << 22)
+            except FormatError:
+                pass
 
     def test_loose_vertices_and_edges_stay(self):
         mesh = grid_mesh(4)

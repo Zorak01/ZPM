@@ -37,6 +37,8 @@ _RAW_KINDS = {
     SectionKind.PACKED_UVS,
     SectionKind.PACKED_TRACKS,
     SectionKind.PACKED_TABLES,
+    SectionKind.PACKED_TANGENTS,
+    SectionKind.PACKED_WEIGHTS,
     SectionKind.POSITION_REPEAT_MASK,
     SectionKind.EDGE_LOOSE_MASK,
     SectionKind.FACE_STARTS,

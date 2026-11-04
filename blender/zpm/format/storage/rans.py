@@ -3,7 +3,9 @@
 """Static-table rANS: fast entropy coding for streams that are read start to end.
 
 Each context holds its own table of symbol frequencies, summing to 1024. A number is
-stored as its zigzag bit length, as a symbol, then the bits below its top bit, raw. Only
+stored as its zigzag bit length, as a symbol, then the bits below its top bit, raw. In a
+fine stream a number of two bits or more also puts its second bit in the symbol: 2 × its
+length − 2 + that bit, then the bits below it, raw. Only
 the lengths cost a table lookup, so decoding stays fast. The encoder works from the end
 of the stream, so a reader takes symbols in the order they were written.
 
@@ -185,7 +187,8 @@ def _frequencies(counts: dict) -> dict:
 class SymbolWriter:
     """Collects symbols and numbers, each under a context from 0 to context_count."""
 
-    def __init__(self, context_count: int):
+    def __init__(self, context_count: int, *, fine: bool = False):
+        self._fine = fine
         self._counts = [{} for _ in range(context_count)]
         self._symbols = []
         self._raw = bytearray()
@@ -202,14 +205,22 @@ class SymbolWriter:
     def write_number(self, context: int, value: int) -> None:
         stored = _to_zigzag(value)
         length = stored.bit_length()
+        if self._fine and length > 1:
+            second = (stored >> (length - 2)) & 1
+            self.write(context, 2 * length - 2 + second)
+            self._write_raw(stored, length - 2)
+            return
         self.write(context, length)
         if length > 1:
-            self._pending |= (stored & ((1 << (length - 1)) - 1)) << self._pending_bits
-            self._pending_bits += length - 1
-            while self._pending_bits >= 8:
-                self._raw.append(self._pending & 255)
-                self._pending >>= 8
-                self._pending_bits -= 8
+            self._write_raw(stored, length - 1)
+
+    def _write_raw(self, value: int, count: int) -> None:
+        self._pending |= (value & ((1 << count) - 1)) << self._pending_bits
+        self._pending_bits += count
+        while self._pending_bits >= 8:
+            self._raw.append(self._pending & 255)
+            self._pending >>= 8
+            self._pending_bits -= 8
 
     def to_bytes(self) -> bytes:
         tables = [_frequencies(counts) if counts else {} for counts in self._counts]
@@ -253,7 +264,8 @@ class SymbolWriter:
 class SymbolReader:
     """Takes symbols and numbers back. Raises FormatError if they run out."""
 
-    def __init__(self, data: bytes, context_count: int):
+    def __init__(self, data: bytes, context_count: int, *, fine: bool = False):
+        self._fine = fine
         if len(data) < _STATE.size:
             raise FormatError("A packed stream is truncated")
         (self._state,) = _STATE.unpack_from(data)
@@ -288,17 +300,26 @@ class SymbolReader:
         return symbol
 
     def read_number(self, context: int) -> int:
-        length = self.read(context)
-        if length <= 1:
-            return _from_zigzag(length)
-        extra = length - 1
-        while self._pending_bits < extra:
+        symbol = self.read(context)
+        if symbol <= 1:
+            return _from_zigzag(symbol)
+        if self._fine:
+            length = (symbol + 2) // 2
+            extra = length - 2
+            top = (2 | symbol & 1) << extra
+        else:
+            extra = symbol - 1
+            top = 1 << extra
+        return _from_zigzag(top | self._read_raw(extra))
+
+    def _read_raw(self, count: int) -> int:
+        while self._pending_bits < count:
             if self._next_raw >= len(self._raw):
                 raise FormatError("A packed stream ran out of bits")
             self._pending |= self._raw[self._next_raw] << self._pending_bits
             self._next_raw += 1
             self._pending_bits += 8
-        low = self._pending & ((1 << extra) - 1)
-        self._pending >>= extra
-        self._pending_bits -= extra
-        return _from_zigzag(1 << extra | low)
+        low = self._pending & ((1 << count) - 1)
+        self._pending >>= count
+        self._pending_bits -= count
+        return low

@@ -521,8 +521,8 @@ a file in other units or axes looks right without changing its vertices.
 ## The packed form
 
 Saved files hold each mesh's geometry packed: decoded once, start to end, then read like the direct form. On 24 meshes,
-at Draco's own 20-bit precision, it is 1.014x Draco's size and smaller on 16 of 24, 7.63x smaller than meshopt,
-and decodes 3.0x to 11.1x faster than Draco. [The comparison](../benchmarks/format-compare/README.md) has every mesh.
+at Draco's own 20-bit precision, it is 0.991x Draco's size and smaller on 21 of 24, 7.81x smaller than meshopt,
+and decodes 2.3x to 15.6x faster than Draco. [The comparison](../benchmarks/format-compare/README.md) has every mesh.
 
 ### Static-table rANS, with raw low bits
 
@@ -538,8 +538,27 @@ The walk keeps only open edges: directed edges with a face on one side so far. E
 symbol saying whether a face lies across it, and that face starts with the edge's two positions known. Its other
 corners are almost always a new position, or one closing an open edge into its last or out of its first corner.
 Faces of one material stay together. Connectivity then costs 1.2 to 2.5 bits per triangle on the meshes checked.
-The encoder writes the walk under two context models and keeps the smaller: the symbol before, or that plus the one
-before it and which candidates exist. The second saved 20% of connectivity on `DamagedHelmet`.
+The encoder writes the walk under three context models and keeps the smallest: the symbol before; that plus the one
+before it and which candidates exist, which saved 20% of connectivity on `DamagedHelmet`; or face counts, below.
+
+### Corners named by steps along the boundary
+
+A corner that no candidate names is still almost always on the open boundary, two or three edges along from the
+face's last corner or back from its first. Naming it by that count instead of its distance from the newest position
+cut connectivity on the big scans by 11% (`stanford-bunny`) to 22% (`lucy`), level with Draco's on most of them.
+
+### Face counts, as valence coders use
+
+The third model stores each new position's count of faces, keyed on the count before. A reader then knows how many
+faces each position still needs, and keys every corner and gate on that: once a position needs one more face, that
+face nearly always closes its fan. This is what valence-driven coders like Draco's rely on. On regular meshes it pays,
+`stanford-bunny` connectivity 8.2 to 6.3 KB; on irregular scans the counts cost more than they save, so the encoder
+keeps whichever model is smaller.
+
+### Counts as symbols, not numbers
+
+Steps, face sizes and face counts are never negative, so they are stored as symbols, not as signed numbers with raw
+low bits. That alone saved a raw bit on most of them, and took `lucy` and `xyzrgb_dragon` past Draco.
 
 ### Splits as a choice per corner
 
@@ -553,6 +572,13 @@ The direct form's grid step is a power of two, so it can be up to twice as fine 
 costs up to 3 bits a position. Packed positions use the largest size over 2^20, as Draco does, rounded down to 6
 significant bits so saving again finds the same step. That made the big scans 4% to 5% smaller, and makes the
 comparison with Draco like for like.
+
+### Each stream picks its own number form and contexts
+
+Positions, normals and UVs are each written with plain or fine numbers, fine putting a number's second bit in its
+symbol too, and kept in whichever is smaller. Positions also try contexts keyed on the earlier axes of the same
+position: a large residual on one axis predicts large ones on the others. That made `stanford-bunny` 2.5% smaller and
+`teapot` 9%, and is skipped where it does not pay.
 
 ### Predictions from what is already decoded, in one pass
 
@@ -683,16 +709,15 @@ its bones, weights and animation, but no controllers.
 ## Where ZPM stands against Draco on size
 
 The direct form is about 1.7x larger than Draco: a format that reads any value alone gives up predicting from what
-came before. The packed form decodes in order like Draco does. At the same precision it is 1.014x Draco in total
-and smaller on 16 of 24. On the big scans positions are level with Draco's, and connectivity is 30% to 45% larger:
-Draco's valence-driven coder beats this walk's symbols there. That is the next thing to build.
+came before. The packed form decodes in order like Draco does. At the same precision it is 0.991x Draco in total
+and smaller on 21 of 24. Draco is still smaller on BoomBox 1.008x, DamagedHelmet 1.057x, happy 1.008x.
 
 ## What we can and can't claim
 
 - **Can say:** on these 17 meshes, smaller than every earlier ZPM experiment on all but tiny meshes,
   with zero allocations when reading.
-- **Can say:** saved files are 7.6x smaller than meshopt on these 24 meshes, smaller than Draco on 16 of them at
-  the same precision and 1.014x Draco in total, and decode 3x to 11x faster than Draco in native code.
+- **Can say:** saved files are 7.8x smaller than meshopt on these 24 meshes, smaller than Draco on 21 of them at
+  the same precision and 0.991x Draco in total, and decode 2x to 16x faster than Draco in native code.
 - **Can't say:** smaller than Draco on every mesh, or faster than meshopt at decoding a whole mesh. It has been measured: see
   [the comparison](../benchmarks/format-compare/README.md). The direct form wins on reading part of a mesh and on memory.
 - **Not new inventions:** the building blocks above are known. What's unusual is combining them in a

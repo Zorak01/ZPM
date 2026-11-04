@@ -139,9 +139,9 @@ it holds, from tangents to blendshapes, uses the sections above. `codec/packed.p
 | ---: | --- | --- |
 | 278 | `PACKED_CONNECTIVITY` | One byte, the context model, then faces as a walk over welded positions |
 | 279 | `PACKED_SPLITS` | One byte, the model, then which vertex at its position each corner uses |
-| 280 | `PACKED_POSITIONS` | Grid step (Float32; 0 for 2^ the grid exponent), then grid integers of each welded position, then of vertices on no face |
-| 281 | `PACKED_NORMALS` | One byte, 0 to predict around positions or 1 around vertices, then the stream |
-| 282 | `PACKED_UVS` | Layered by UV layer, named by `UV_NAMES` |
+| 280 | `PACKED_POSITIONS` | Grid step (Float32; 0 for 2^ the grid exponent), a form byte (bit 0 fine numbers, bit 1 contexts across axes), then grid integers of each welded position, then of vertices on no face |
+| 281 | `PACKED_NORMALS` | A byte (bit 0 predicts around vertices, not positions; bit 1 fine numbers), then the stream |
+| 282 | `PACKED_UVS` | Layered by UV layer, named by `UV_NAMES`: a byte (1 for fine numbers), then the stream |
 | 283 | `PACKED_LOOSE_EDGES` | Column: both vertex IDs of each edge on no face |
 
 Each stream is static-table rANS: a state (UInt32), then word count and raw byte count as varints (7 bits a byte, low
@@ -152,18 +152,25 @@ last, less one, as an order-k Exp-Golomb code; the last takes what remains of 1,
 An order-k code of v is as many clear bits as v + 2^k has bits past k + 1, a set bit, then its bits below the top one,
 low first. A symbol takes the state's low 10 bits as its slot; the state becomes
 frequency × (state >> 10) + slot − the symbol's first slot, and takes the next word whenever it falls below 65,536. A
-number is its zigzag value's bit length as a symbol, then the bits below the top one, raw, low bits first. A choice is
-one symbol, or 200 then a number to add to 200.
+number is its zigzag value's bit length as a symbol, then the bits below the top one, raw, low bits first. In a fine
+stream a number of two bits or more is instead 2 × its length − 2 + its second bit, then the bits below that. A choice
+is one symbol, or 200 then a number to add to 200; counts that cannot be negative are choices.
 
 **Connectivity.** Faces arrive as a walk. The reader keeps open edges: directed edges with a face on one side so far,
 and a stack of them, newest last. It reads a face with nothing known, then pops edges: any no longer open is skipped;
 otherwise a gate symbol says whether a face lies across it. If so, that face starts with the edge's two positions
 reversed, else the edge closes. When the stack empties and faces remain, a new face with nothing known starts. A
-face's size is a number when `MESH_INFO`'s shared size is 0. Each later corner is a symbol, under a context of the
-symbol before and whether it is the face's last corner; model 1 adds the symbol before that and whether open edges
-lead into the last corner and out of the first. The symbol is a new position, the newest position closing an open edge into
-the last corner, the one out of the face's first corner, an older one into the last, or far, a number counting back
-from the newest position. A face's corners are its ring in this order, which sets winding and first corner.
+face's size is a choice when `MESH_INFO`'s shared size is 0. Each later corner is a symbol: 0 a new position; 1 the
+newest position closing an open edge into the face's last corner; 2 the one out of its first corner; 3 an older one
+into the last; 4 far, a number counting back from the newest position; 5 a choice plus one of steps forward along open
+edges from the last corner, taking the newest edge at each step; 6 the same backward from the first corner. A face's
+corners are its ring in this order, which sets winding and first corner. Contexts count symbols 4 and up as one.
+
+Model 0 keys a corner on the symbol before and whether it ends its face; model 1 adds the symbol before that and
+whether open edges lead into the last corner and out of the first. Model 2 follows each new position with a choice,
+its count of corners in all faces, keyed on the count before it up to 9 (starting from 6), and keys a corner on how
+many faces its face's first and last positions still need (none, 0, 1, 2, or 3 and up) with whether it is last and
+the open edges as in model 1, and a gate on what each end still needs, up to 2. Model 0 and 1 gates share one context.
 
 **Splits.** Corners in order. The first corner at a position makes a new vertex. Later ones read a choice: 0 for a
 new vertex, else a vertex already at that position, from 1. Model 0 counts them in the order they were made. Model 1
@@ -175,7 +182,9 @@ plus 4 when the guess came from a gate.
 the position first appears in its face. At the first corner: the last position read. At the second: the first
 corner's. At the third, reached through a gate: the two gate corners added, minus the third corner of the face the
 gate came from; with no gate, the corner before. At later corners: the corner before plus the first minus the second.
-With 4,000 positions or more, each axis's number takes a context from the size of the last.
+With 4,000 positions or more, each axis's number takes a context from the size of the last, a quarter of its bit
+length up to 3. Across axes, the context is instead half the largest bit length so far among this position's earlier
+axes, or for the first axis its own last, up to 7, times 6, plus a third of its own last bit length up to 5.
 
 **Normals and UVs.** Corners in order. A corner whose key, position or vertex, already holds values reads a choice:
 0 for new values, or which of them. New values are numbers added to a prediction: for normals, the 12-bit direction

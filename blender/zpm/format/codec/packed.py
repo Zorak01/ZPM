@@ -36,12 +36,25 @@ _VERTEX_INTO_LAST = 1
 _VERTEX_INTO_FIRST = 2
 _VERTEX_INTO_LAST_OLDER = 3
 _VERTEX_FAR = 4
-_VERTEX_SYMBOLS = 5
+_VERTEX_FORWARD = 5
+_VERTEX_BACK = 6
+_VERTEX_SYMBOLS = 7
+# Contexts tell apart new, the three candidates and anything further.
+_CONTEXT_SYMBOLS = 5
+# The furthest a corner may name a position along the open boundary.
+_MAX_STEPS = 64
 _CANDIDATE_KINDS = 4
+_REMAINING_KINDS = 5
+_GATE_REMAINING = 3
+_COUNT_CONTEXTS = 10
+_TYPICAL_FACE_COUNT = 6
 _SPLIT_CONTEXTS = 8
 _POSITION_CONTEXTS = 4
 _POSITION_HISTORY_STEP = 4
 _POSITION_CONTEXT_MIN_ROWS = 4000
+_ACROSS_KINDS = 8
+_ACROSS_HISTORY_KINDS = 6
+_ACROSS_HISTORY_STEP = 3
 _MAX_SEEN_CONTEXT = 2
 _HISTORY_MAX = 14
 _NORMAL_HISTORY_STEP = 3
@@ -138,26 +151,78 @@ class _ConnectivityModel:
 
     Model 0 keys a corner on the symbol before it and whether it ends its face. Model 1
     adds the symbol before that and which candidates exist, which pays on larger meshes.
+    Model 2 stores each new position's face count, then keys a corner on how many faces
+    its face's first and last positions still need, and a gate on its two ends: on
+    regular meshes that settles most corners.
     """
 
     def __init__(self, model: int):
         self.model = model
-        vertex_contexts = _VERTEX_SYMBOLS * 2
-        if model:
-            vertex_contexts *= _VERTEX_SYMBOLS * _CANDIDATE_KINDS
-        self.gate = vertex_contexts
-        self.far = vertex_contexts + 1
-        self.arity = vertex_contexts + 2
-        self.count = vertex_contexts + 3
+        if model == 2:
+            vertex_contexts = _REMAINING_KINDS * _REMAINING_KINDS * 2 * _CANDIDATE_KINDS
+            gate_contexts = _GATE_REMAINING * _GATE_REMAINING
+        else:
+            vertex_contexts = _CONTEXT_SYMBOLS * 2
+            if model:
+                vertex_contexts *= _CONTEXT_SYMBOLS * _CANDIDATE_KINDS
+            gate_contexts = 1
+        self.writes_counts = model == 2
+        self.gate_first = vertex_contexts
+        self.far = vertex_contexts + gate_contexts
+        self.arity = self.far + 1
+        self.steps = self.far + 2
+        self.count_first = self.far + 3
+        self.count = self.count_first + (_COUNT_CONTEXTS if model == 2 else 0)
 
-    def vertex(self, previous: int, before: int, is_last: bool, kinds: int) -> int:
+    def vertex(self, previous, before, is_last, kinds, first_left, last_left) -> int:
+        if self.model == 2:
+            context = _remaining_kind(first_left) * _REMAINING_KINDS
+            context = (context + _remaining_kind(last_left)) * 2 + (1 if is_last else 0)
+            return context * _CANDIDATE_KINDS + kinds
+        previous = min(previous, _CONTEXT_SYMBOLS - 1)
         context = previous * 2 + (1 if is_last else 0)
         if self.model:
-            context = (context * _VERTEX_SYMBOLS + before) * _CANDIDATE_KINDS + kinds
+            before = min(before, _CONTEXT_SYMBOLS - 1)
+            context = (context * _CONTEXT_SYMBOLS + before) * _CANDIDATE_KINDS + kinds
         return context
 
+    def gate(self, u_left: int, v_left: int) -> int:
+        if self.model != 2:
+            return self.gate_first
+        u_kind = min(u_left, _GATE_REMAINING - 1)
+        return (
+            self.gate_first
+            + u_kind * _GATE_REMAINING
+            + min(v_left, _GATE_REMAINING - 1)
+        )
 
-_CONNECTIVITY_MODELS = (_ConnectivityModel(0), _ConnectivityModel(1))
+    def face_count(self, previous_count: int) -> int:
+        return self.count_first + min(previous_count, _COUNT_CONTEXTS - 1)
+
+
+_CONNECTIVITY_MODELS = tuple(_ConnectivityModel(model) for model in range(3))
+
+
+def _remaining_kind(left) -> int:
+    """Return 0 for no position, else 1 + the faces it still needs, up to 3."""
+    return 0 if left is None else 1 + min(max(left, 0), _REMAINING_KINDS - 2)
+
+
+class _FaceCounts:
+    """How many faces each position has in all, and how many are placed so far."""
+
+    def __init__(self):
+        self.total = {}
+        self.placed = {}
+
+    def left(self, position) -> int | None:
+        if position is None:
+            return None
+        return self.total.get(position, 0) - self.placed.get(position, 0)
+
+    def place(self, ring: list) -> None:
+        for position in ring:
+            self.placed[position] = self.placed.get(position, 0) + 1
 
 
 def _candidate_kinds(open_edges: _OpenEdges, ring: list) -> int:
@@ -169,9 +234,41 @@ def _candidate_kinds(open_edges: _OpenEdges, ring: list) -> int:
     return into | (2 if open_edges.out_of.get(ring[0]) else 0)
 
 
-def _vertex_symbol(open_edges, vertex, ring, newest) -> int:
+def _along(open_edges: _OpenEdges, start: int, steps: int, forward: bool):
+    """Return the position this many open edges on from start, or None."""
+    links = open_edges.out_of if forward else open_edges.into
+    at = start
+    for _ in range(steps):
+        following = links.get(at)
+        if not following:
+            return None
+        at = following[-1]
+    return at
+
+
+def _steps_to(open_edges: _OpenEdges, start: int, target: int, forward: bool):
+    """Return how many open edges on from start the target is, within reach, or None."""
+    links = open_edges.out_of if forward else open_edges.into
+    at = start
+    for steps in range(1, _MAX_STEPS + 1):
+        following = links.get(at)
+        if not following:
+            return None
+        at = following[-1]
+        if at == target:
+            return steps
+    return None
+
+
+def _vertex_symbol(open_edges, vertex, ring, newest) -> tuple:
+    """Return (the symbol naming this corner's position, then its number or None).
+
+    A position no candidate names is usually a few open edges along the boundary,
+    forward from the ring's last corner or back from its first. Only one beyond
+    reach is counted back from the newest position.
+    """
     if vertex == newest + 1:
-        return _VERTEX_NEW
+        return _VERTEX_NEW, None
     last = ring[-1] if ring else None
     first = ring[0] if ring else None
     into_last, into_first, older = open_edges.candidates(last, first)
@@ -181,8 +278,15 @@ def _vertex_symbol(open_edges, vertex, ring, newest) -> int:
         (_VERTEX_INTO_LAST_OLDER, older),
     ):
         if candidate == vertex:
-            return symbol
-    return _VERTEX_FAR
+            return symbol, None
+    if ring:
+        forward = _steps_to(open_edges, last, vertex, True)
+        back = _steps_to(open_edges, first, vertex, False)
+        if forward is not None and (back is None or forward <= back):
+            return _VERTEX_FORWARD, forward - 1
+        if back is not None:
+            return _VERTEX_BACK, back - 1
+    return _VERTEX_FAR, newest - vertex
 
 
 def _read_vertex(reader, model, open_edges, ring, newest, context) -> tuple:
@@ -194,6 +298,15 @@ def _read_vertex(reader, model, open_edges, ring, newest, context) -> tuple:
         vertex = newest - reader.read_number(model.far)
         if not 0 <= vertex <= newest:
             raise FormatError("A packed corner names a missing position")
+        return vertex, newest, symbol
+    if symbol in (_VERTEX_FORWARD, _VERTEX_BACK):
+        steps = _read_choice(reader, model.steps) + 1
+        if not ring or not 1 <= steps <= _MAX_STEPS:
+            raise FormatError("A packed corner reaches too far along the boundary")
+        forward = symbol == _VERTEX_FORWARD
+        vertex = _along(open_edges, ring[-1] if forward else ring[0], steps, forward)
+        if vertex is None:
+            raise FormatError("A packed corner names a missing open edge")
         return vertex, newest, symbol
     if symbol >= _VERTEX_SYMBOLS:
         raise FormatError("A packed corner has an unknown symbol")
@@ -220,6 +333,12 @@ class _Walk:
         self.previous = _VERTEX_NEW
         self.before = _VERTEX_NEW
         self.open_edges = _OpenEdges()
+        self.counts = _FaceCounts()
+        self.source_counts = {}
+        for face in faces:
+            for source in face:
+                self.source_counts[source] = self.source_counts.get(source, 0) + 1
+        self.previous_count = _TYPICAL_FACE_COUNT
         self.used = [False] * len(faces)
         self.order = []
         self.turns = {}
@@ -240,22 +359,39 @@ class _Walk:
         ring = [self.ids[source] for source in turned[:known]]
         for at, source in enumerate(turned[known:], known):
             walk_id = self.ids.get(source, self.newest + 1)
-            symbol = _vertex_symbol(self.open_edges, walk_id, ring, self.newest)
+            symbol, number = _vertex_symbol(self.open_edges, walk_id, ring, self.newest)
             kinds = _candidate_kinds(self.open_edges, ring)
-            far = self.newest - walk_id if symbol == _VERTEX_FAR else None
+            first_left = self.counts.left(ring[0] if ring else None)
+            last_left = self.counts.left(ring[-1] if ring else None)
             self.events.append(
-                ("vertex", symbol, self.previous, self.before, at == count - 1, kinds)
+                (
+                    "vertex",
+                    symbol,
+                    self.previous,
+                    self.before,
+                    at == count - 1,
+                    kinds,
+                    first_left,
+                    last_left,
+                )
             )
-            if far is not None:
-                self.events.append(("far", far))
+            if symbol == _VERTEX_FAR:
+                self.events.append(("far", number))
+            elif number is not None:
+                self.events.append(("steps", number))
             if symbol == _VERTEX_NEW:
                 self.newest = walk_id
+                total = self.source_counts[source]
+                self.counts.total[walk_id] = total
+                self.events.append(("count", total, self.previous_count))
+                self.previous_count = total
             self.before, self.previous = self.previous, symbol
             if source not in self.ids:
                 self.ids[source] = walk_id
                 self.sources.append(source)
             ring.append(walk_id)
         self.open_edges.add_face(ring, self.corner)
+        self.counts.place(ring)
         self.corner += count
         self.used[index] = True
         self.order.append(index)
@@ -283,7 +419,8 @@ class _Walk:
                 if not self.open_edges.is_open(u, v):
                     continue
                 found = self._next_across(u, v, material)
-                self.events.append(("gate", 1 if found else 0))
+                ends = (self.counts.left(u), self.counts.left(v))
+                self.events.append(("gate", 1 if found else 0, *ends))
                 if not found:
                     self.open_edges.remove(u, v)
                     continue
@@ -303,10 +440,15 @@ class _Walk:
                 writer.write(model.vertex(*event[2:]), event[1])
             elif event[0] == "far":
                 writer.write_number(model.far, event[1])
+            elif event[0] == "steps":
+                _write_choice(writer, model.steps, event[1])
             elif event[0] == "gate":
-                writer.write(model.gate, event[1])
+                writer.write(model.gate(*event[2:]), event[1])
+            elif event[0] == "count":
+                if model.writes_counts:
+                    _write_choice(writer, model.face_count(event[2]), event[1])
             else:
-                writer.write_number(model.arity, event[1])
+                _write_choice(writer, model.arity, event[1])
         return bytes((model.model,)) + writer.to_bytes()
 
 
@@ -317,24 +459,36 @@ def read_connectivity(data: bytes, faces: int, arity: int, corner_count: int) ->
     model = _CONNECTIVITY_MODELS[data[0]]
     reader = SymbolReader(data[1:], model.count)
     open_edges = _OpenEdges()
+    counts = _FaceCounts()
     welded = []
     starts = []
     gates_of_faces = []
     newest = -1
     previous = before = _VERTEX_NEW
+    previous_count = _TYPICAL_FACE_COUNT
 
     def read_face(known: list, gate) -> None:
-        nonlocal newest, previous, before
-        count = arity or reader.read_number(model.arity)
+        nonlocal newest, previous, before, previous_count
+        count = arity or _read_choice(reader, model.arity)
         if count < 3 or len(welded) + count > corner_count:
             raise FormatError("A packed face has an impossible size")
         ring = list(known)
         for at in range(len(known), count):
             kinds = _candidate_kinds(open_edges, ring)
-            context = model.vertex(previous, before, at == count - 1, kinds)
+            first_left = counts.left(ring[0] if ring else None)
+            last_left = counts.left(ring[-1] if ring else None)
+            context = model.vertex(
+                previous, before, at == count - 1, kinds, first_left, last_left
+            )
             vertex, newest, symbol = _read_vertex(
                 reader, model, open_edges, ring, newest, context
             )
+            if symbol == _VERTEX_NEW and model.writes_counts:
+                total = _read_choice(reader, model.face_count(previous_count))
+                if not 1 <= total <= corner_count:
+                    raise FormatError("A packed position has an impossible face count")
+                counts.total[vertex] = total
+                previous_count = total
             before, previous = previous, symbol
             ring.append(vertex)
         first = len(welded)
@@ -342,6 +496,7 @@ def read_connectivity(data: bytes, faces: int, arity: int, corner_count: int) ->
         gates_of_faces.append(gate)
         welded.extend(ring)
         open_edges.add_face(ring, first)
+        counts.place(ring)
 
     gates = open_edges.gates
     while len(starts) < faces:
@@ -350,7 +505,7 @@ def read_connectivity(data: bytes, faces: int, arity: int, corner_count: int) ->
             u, v, corner_u, corner_v, corner_third = gates.pop()
             if not open_edges.is_open(u, v):
                 continue
-            if reader.read(model.gate):
+            if reader.read(model.gate(counts.left(u), counts.left(v))):
                 read_face([v, u], (corner_v, corner_u, corner_third))
             else:
                 open_edges.remove(u, v)
@@ -465,7 +620,39 @@ def snap_to_step(
 
 
 def _encode_positions(layout: _Layout, rows: list, extra: list, step: float) -> bytes:
-    writer = SymbolWriter(_POSITION_CONTEXTS)
+    """Return the step, then positions in whichever form is smallest.
+
+    The form byte's bit 0 uses fine numbers; bit 1 keys each axis on the earlier axes
+    of the same position as well as its own last size.
+    """
+    return _STEP.pack(step) + min(
+        (
+            bytes((fine | across << 1,))
+            + _encode_positions_with(layout, rows, extra, fine, across)
+            for fine in (0, 1)
+            for across in (0, 1)
+        ),
+        key=len,
+    )
+
+
+def _position_context(across: int, uses_history: bool, history, earlier, axis) -> int:
+    if across:
+        reach = max(earlier) if earlier else history[axis]
+        own = min(history[axis] // _ACROSS_HISTORY_STEP, _ACROSS_HISTORY_KINDS - 1)
+        return min(reach // 2, _ACROSS_KINDS - 1) * _ACROSS_HISTORY_KINDS + own
+    context = history[axis] // _POSITION_HISTORY_STEP if uses_history else 0
+    return min(context, _POSITION_CONTEXTS - 1)
+
+
+def _position_contexts(across: int) -> int:
+    return _ACROSS_KINDS * _ACROSS_HISTORY_KINDS if across else _POSITION_CONTEXTS
+
+
+def _encode_positions_with(
+    layout: _Layout, rows: list, extra: list, fine: int, across: int
+) -> bytes:
+    writer = SymbolWriter(_position_contexts(across), fine=bool(fine))
     previous = (0, 0, 0)
     history = [0, 0, 0]
     uses_history = layout.position_count >= _POSITION_CONTEXT_MIN_ROWS
@@ -477,21 +664,29 @@ def _encode_positions(layout: _Layout, rows: list, extra: list, step: float) -> 
         made += 1
         guess = _parallelogram(layout, first, at, face, rows) or previous
         row = rows[position]
+        earlier = []
         for axis in range(_AXES):
             difference = row[axis] - guess[axis]
-            context = history[axis] // _POSITION_HISTORY_STEP if uses_history else 0
-            writer.write_number(min(context, _POSITION_CONTEXTS - 1), difference)
+            context = _position_context(across, uses_history, history, earlier, axis)
+            writer.write_number(context, difference)
             history[axis] = _magnitude(difference)
+            earlier.append(history[axis])
         previous = row
     for row in extra:
         for axis in range(_AXES):
             writer.write_number(0, row[axis] - previous[axis])
         previous = row
-    return _STEP.pack(step) + writer.to_bytes()
+    return writer.to_bytes()
 
 
 def _read_positions(layout: _Layout, data: bytes, extra: int) -> tuple:
-    reader = SymbolReader(data[_STEP.size :], _POSITION_CONTEXTS)
+    if len(data) <= _STEP.size or data[_STEP.size] > 3:
+        raise FormatError("Packed positions name no known number form")
+    form = data[_STEP.size]
+    across = form >> 1
+    reader = SymbolReader(
+        data[_STEP.size + 1 :], _position_contexts(across), fine=bool(form & 1)
+    )
     rows = []
     previous = (0, 0, 0)
     history = [0, 0, 0]
@@ -501,11 +696,13 @@ def _read_positions(layout: _Layout, data: bytes, extra: int) -> tuple:
             continue
         guess = _parallelogram(layout, first, at, face, rows) or previous
         values = []
+        earlier = []
         for axis in range(_AXES):
-            context = history[axis] // _POSITION_HISTORY_STEP if uses_history else 0
-            difference = reader.read_number(min(context, _POSITION_CONTEXTS - 1))
+            context = _position_context(across, uses_history, history, earlier, axis)
+            difference = reader.read_number(context)
             values.append(guess[axis] + difference)
             history[axis] = _magnitude(difference)
+            earlier.append(history[axis])
         row = tuple(values)
         rows.append(row)
         previous = row
@@ -647,21 +844,30 @@ def _normal_keys(layout: _Layout, corners: list, rows: list, by_vertex: int) -> 
 
 
 def _encode_normals(layout: _Layout, corners: list, pairs: list, rows: list) -> bytes:
-    """Return the normals predicted both ways, whichever is smaller."""
+    """Return the normals each way, whichever is smaller.
+
+    The first byte's bit 0 predicts around vertices, bit 1 uses fine numbers.
+    """
     return min(
         (
-            bytes((by_vertex,))
+            bytes((by_vertex | fine << 1,))
             + _encode_normals_by(
-                layout.starts, *_normal_keys(layout, corners, rows, by_vertex), pairs
+                layout.starts,
+                *_normal_keys(layout, corners, rows, by_vertex),
+                pairs,
+                fine,
             )
             for by_vertex in (0, 1)
+            for fine in (0, 1)
         ),
         key=len,
     )
 
 
-def _encode_normals_by(starts: list, keys: list, rows: list, pairs: list) -> bytes:
-    writer = SymbolWriter(_NORMAL_CONTEXTS)
+def _encode_normals_by(
+    starts: list, keys: list, rows: list, pairs: list, fine: int
+) -> bytes:
+    writer = SymbolWriter(_NORMAL_CONTEXTS, fine=bool(fine))
     guesses = _vertex_normals(starts, keys, rows)
     history = [0, 0]
     seen_at = [[] for _ in rows]
@@ -683,10 +889,10 @@ def _encode_normals_by(starts: list, keys: list, rows: list, pairs: list) -> byt
 
 
 def _read_normals(layout: _Layout, data: bytes, corners: list, rows: list) -> list:
-    if not data or data[0] > 1:
+    if not data or data[0] > 3:
         raise FormatError("Packed normals name no known prediction")
-    keys, key_rows = _normal_keys(layout, corners, rows, data[0])
-    reader = SymbolReader(data[1:], _NORMAL_CONTEXTS)
+    keys, key_rows = _normal_keys(layout, corners, rows, data[0] & 1)
+    reader = SymbolReader(data[1:], _NORMAL_CONTEXTS, fine=bool(data[0] >> 1))
     guesses = _vertex_normals(layout.starts, keys, key_rows)
     history = [0, 0]
     seen_at = [[] for _ in key_rows]
@@ -765,7 +971,18 @@ def _uv_base(layout, rows, values, corner, first, at, face, last, side_of) -> tu
 
 
 def _encode_uvs(layout: _Layout, pairs: list, rows: list) -> bytes:
-    writer = SymbolWriter(_UV_CONTEXTS)
+    """Return the UVs with plain or fine numbers, whichever is smaller."""
+    return min(
+        (
+            bytes((fine,)) + _encode_uvs_with(layout, pairs, rows, fine)
+            for fine in (0, 1)
+        ),
+        key=len,
+    )
+
+
+def _encode_uvs_with(layout: _Layout, pairs: list, rows: list, fine: int) -> bytes:
+    writer = SymbolWriter(_UV_CONTEXTS, fine=bool(fine))
     values = [None] * len(layout.welded)
     history = [0, 0]
     last = (0, 0)
@@ -807,7 +1024,9 @@ def _encode_uvs(layout: _Layout, pairs: list, rows: list) -> bytes:
 
 
 def _read_uvs(layout: _Layout, data: bytes, rows: list) -> list:
-    reader = SymbolReader(data, _UV_CONTEXTS)
+    if not data or data[0] > 1:
+        raise FormatError("Packed UVs name no known number form")
+    reader = SymbolReader(data[1:], _UV_CONTEXTS, fine=bool(data[0]))
     values = [None] * len(layout.welded)
     history = [0, 0]
     last = (0, 0)

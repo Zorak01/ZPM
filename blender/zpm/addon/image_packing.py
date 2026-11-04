@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Embedded PNGs stored as lossless WebP when that is smaller and every pixel matches.
+"""Embedded images stored in their smallest exact encoding.
+
+A baseline JPEG is re-coded with Huffman tables made for its own data: see
+format/processing/jpeg_tables.py. A PNG is stored as lossless WebP when that is smaller
+and every pixel matches.
 
 Blender writes WebP losslessly at quality 100. The WebP is kept only when it decodes
 to exactly the pixels the PNG decodes to, so a texture looks the same to every reader
@@ -14,6 +18,8 @@ import tempfile
 from pathlib import Path
 
 import bpy
+
+from ..format.processing.jpeg_tables import optimize_tables
 
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _CHUNK_HEAD = struct.Struct(">I4s")
@@ -36,10 +42,11 @@ _PNG_SUFFIX = ".png"
 
 
 def smallest_encoding(path: str, payload: bytes) -> tuple:
-    """Return (path, payload) for an embedded image: a lossless WebP and its path when
-    smaller with the same pixels, else both unchanged."""
+    """Return (path, payload) for an embedded image: a JPEG with its own Huffman
+    tables, or a lossless WebP and its path, when smaller with the same pixels; else
+    both unchanged."""
     if not _is_plain_png(payload):
-        return path, payload
+        return path, optimize_tables(payload)
     with tempfile.TemporaryDirectory() as folder:
         source = Path(folder) / f"source{_PNG_SUFFIX}"
         target = Path(folder) / f"target{_WEBP_SUFFIX}"

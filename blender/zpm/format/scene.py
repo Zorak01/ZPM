@@ -193,8 +193,9 @@ class Sampler:
 class ImageTile:
     """One image file: a UDIM tile, or the only tile of a plain image.
 
-    payload holds the encoded file when embedded, or is empty: as found, or for an
-    8-bit PNG a lossless WebP with the same pixels when smaller. path is where the file
+    payload holds the encoded file when embedded, or is empty: as found, or with the
+    same pixels when smaller, a JPEG with its own Huffman tables or an 8-bit PNG as a
+    lossless WebP. path is where the file
     was, or empty; it ends in .webp when the payload is one.
     """
 

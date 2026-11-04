@@ -246,7 +246,7 @@ Tables hold fixed records of 4-byte fields, read in place. Links are indices, wi
 | 213 | `SAMPLERS` | 12 bytes per sampler: filter, wrap U, wrap V |
 | 214–216 | `IMAGE_NAMES`, `IMAGE_COLOR_SPACES`, `IMAGE_INFO` | 24 bytes per image: width, height, channels, flags, first tile, tile count |
 | 217, 218 | `IMAGE_TILES`, `IMAGE_PATHS` | 8 bytes per tile: UDIM number, payload; and its path |
-| 219, 220 | `IMAGE_PAYLOAD_STARTS`, `IMAGE_PAYLOADS` | UInt64 starts, then encoded image files, each distinct file once: as found, or an 8-bit sRGB PNG as a lossless WebP with the same pixels when smaller |
+| 219, 220 | `IMAGE_PAYLOAD_STARTS`, `IMAGE_PAYLOADS` | UInt64 starts, then encoded image files, each distinct file once: as found, a baseline JPEG re-coded with its own Huffman tables, or an 8-bit sRGB PNG as a lossless WebP, each with the same pixels and only when smaller |
 | 221, 222 | `LIGHT_NAMES`, `LIGHT_INFO` | 56 bytes per light: type, unit, color, power, flags, area shape, radius, spot angle, spot blend, sun angle, area size |
 | 223, 224 | `ARMATURE_NAMES`, `ARMATURE_BONE_STARTS` | Names and where each armature's bones start |
 | 225, 226 | `BONE_NAMES`, `BONE_INFO` | 48 bytes per bone: parent, flags (1 connected, 2 deform, 4 inherits rotation, scale inheritance << 8), head, tail, roll, envelope distance, head radius, tail radius |

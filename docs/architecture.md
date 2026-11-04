@@ -16,7 +16,7 @@ reader, and nothing depends on benchmarks.
 | `blender/zpm/format/codec/` | One module per kind of data, holding both directions: positions, corners, edges, surface, colors, weights |
 | `blender/zpm/format/codec/packed/` | The packed form saving writes: the walk, splits, positions, normals, UVs, tangents, weights, animation tracks and scene tables, one module each, and what normals and UVs share |
 | `blender/zpm/format/scene.py` | Scene data: objects, materials, images, lights, armatures, curves, lattices, cameras, animation, and the file as a whole |
-| `blender/zpm/format/processing/` | Whole-mesh changes and checks: snapping, including the packing grid, reordering, comparison, face facts |
+| `blender/zpm/format/processing/` | Whole-mesh changes and checks: snapping, including the packing grid, reordering, comparison, face facts; and JPEGs re-coded with their own Huffman tables |
 | `runtime/csharp/Zpm/` | Runtime reader: by index, no allocation |
 | `tools/zpm_map.py` | Prints a file's byte map |
 | `benchmarks/mesh-core/` | Frozen earlier codec, kept as the comparison |

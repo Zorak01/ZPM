@@ -2,6 +2,8 @@
 
 """Format tests run in ordinary Python, without bpy or Blender installed."""
 
+import importlib.util
+import io
 import math
 import random
 import struct
@@ -92,6 +94,7 @@ from zpm.format.container.layout import (
 from zpm.format.container.sections import Section, SectionReader, write_file
 from zpm.format.processing.animation import reduce_track
 from zpm.format.processing.faces import face_lists
+from zpm.format.processing.jpeg_tables import optimize_tables
 from zpm.format.processing.reordering import reorder_mesh
 from zpm.format.processing.snapping import snap_for_packing, snap_track
 
@@ -1389,6 +1392,59 @@ def sample_scene() -> Scene:
         ],
         {"author": "test", "tags": ["a", "b"], "inner": {"depth": 1}},
     )
+
+
+def _jpeg(mode: str, **options) -> bytes:
+    """Return a JPEG of a smooth pattern, written by Pillow with its default tables."""
+    from PIL import Image as PillowImage
+
+    side = 96
+    image = PillowImage.new(mode, (side, side))
+    image.putdata(
+        [
+            (x * 2, y * 2, (x + y) % 256) if mode == "RGB" else (x * y) % 256
+            for y in range(side)
+            for x in range(side)
+        ]
+    )
+    stream = io.BytesIO()
+    image.save(stream, "JPEG", quality=90, **options)
+    return stream.getvalue()
+
+
+def _pixels(data: bytes) -> bytes:
+    from PIL import Image as PillowImage
+
+    return PillowImage.open(io.BytesIO(data)).tobytes()
+
+
+@unittest.skipUnless(importlib.util.find_spec("PIL"), "Pillow decodes the JPEGs")
+class JpegTableTests(unittest.TestCase):
+    def test_baseline_jpegs_get_smaller_with_the_same_pixels(self):
+        for mode, options in (
+            ("RGB", {"subsampling": 2}),
+            ("RGB", {"subsampling": 0}),
+            ("L", {}),
+        ):
+            source = _jpeg(mode, **options)
+            recoded = optimize_tables(source)
+            self.assertLess(len(recoded), len(source), (mode, options))
+            self.assertEqual(_pixels(recoded), _pixels(source), (mode, options))
+            self.assertEqual(optimize_tables(recoded)[:2], b"\xff\xd8")
+
+    def test_what_cannot_be_recoded_comes_back_as_given(self):
+        progressive = _jpeg("RGB", progressive=True)
+        self.assertEqual(optimize_tables(progressive), progressive)
+        source = _jpeg("RGB")
+        self.assertEqual(
+            optimize_tables(source[: len(source) // 2]), source[: len(source) // 2]
+        )
+        self.assertEqual(optimize_tables(b"\x89PNG not a jpeg"), b"\x89PNG not a jpeg")
+        generator = random.Random(5)
+        for _ in range(60):
+            damaged = bytearray(source)
+            damaged[generator.randrange(len(damaged))] = generator.randrange(256)
+            optimize_tables(bytes(damaged))
 
 
 class PackedTableTests(unittest.TestCase):

@@ -457,8 +457,10 @@ and one mesh. A mesh is only shared when its vertex groups match too, because gr
 
 ### Images stored once, every pixel kept
 
-**Technique:** Embedded images are stored as encoded files, so a loader decodes them as it would on disk. JPEGs and
-other files stay exactly as found. An 8-bit PNG whose pixels read as sRGB is saved by Blender as lossless WebP, and
+**Technique:** Embedded images are stored as encoded files, so a loader decodes them as it would on disk. Many
+JPEGs use the standard's example Huffman tables; a single-scan baseline JPEG is re-coded with tables built from its
+own symbols, as the standard's Annex K.2 describes, and kept when smaller and when it reads back to the same symbols.
+It is still a plain JPEG with the same coefficients, so every decoder shows the same pixels. An 8-bit PNG whose pixels read as sRGB is saved by Blender as lossless WebP, and
 kept only when that is smaller and decodes to exactly the same pixels; its path then ends in `.webp`. A PNG with an
 ICC profile, or gamma or chromaticities no sRGB chunk overrides, or 16 bits a channel, stays as it is. Identical
 files, compared whole, are stored once. By default images are links, and **Embed Textures** is the one setting on
@@ -469,8 +471,13 @@ pixels. Avocado 8,090,084 to 4,608,216 bytes, against 8,110,040 for its glTF; Bo
 WaterBottle 8,836,128 to 4,643,852; Lantern 9,364,036 to 7,657,592; Duck 43,524 to 40,104. Each 2K PNG adds about
 1 to 3 seconds to saving.
 
-**Cost and limit:** a reader needs a WebP decoder, and the PNG's own bytes are not kept, only its pixels. JPEGs
-cannot shrink this way without losing their exact bytes.
+JPEGs: DamagedHelmet's four baseline JPEGs shrink by 1.9% to 37.6% each, its file from 3,321,460 to 3,188,624
+bytes, all five images with the same pixels; its fifth and CesiumMan's are progressive and stay as found. Re-coding
+takes about 6.5 seconds on its four 2K JPEGs.
+
+**Cost and limit:** a reader needs a WebP decoder, and a PNG's or JPEG's own bytes are not kept, only its pixels.
+Progressive JPEGs, and those with restart markers or arithmetic coding, stay as found. Modelling JPEG coefficients
+like Lepton would save about a fifth more, but readers would need a custom decoder and loading would slow.
 
 ### Materials any application can read
 

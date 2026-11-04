@@ -217,7 +217,7 @@ corner n and previous corner p, edges e1 = P(n) − P(c) and e2 = P(p) − P(c) 
 bit is 1 when s is −1. The direction (e1 dv2 − e2 dv1) s, less its part along the normal, is normalized (left 0 if
 its length is 0) and times the corner's angle: with h = √((1 − cos) / 2), cos from e1 and e2 clamped to [−1, 1]
 (an angle of 0 if either is 0 long), the angle is 2h (1 + h² (1/6 + h² · 3/40)). Corners with equal welded position,
-UV and stored normal add these up. Each corner's guess is that sum less its part along the corner's normal, as
+UV, stored normal and guessed sign add these up. Each corner's guess is that sum less its part along the corner's normal, as
 encode_normal stores it.
 
 **Weights.** Vertices in order, each a choice: 0 a new row, or one of the last 32 rows used, most recent from 1.
@@ -246,7 +246,7 @@ Tables hold fixed records of 4-byte fields, read in place. Links are indices, wi
 | 213 | `SAMPLERS` | 12 bytes per sampler: filter, wrap U, wrap V |
 | 214–216 | `IMAGE_NAMES`, `IMAGE_COLOR_SPACES`, `IMAGE_INFO` | 24 bytes per image: width, height, channels, flags, first tile, tile count |
 | 217, 218 | `IMAGE_TILES`, `IMAGE_PATHS` | 8 bytes per tile: UDIM number, payload; and its path |
-| 219, 220 | `IMAGE_PAYLOAD_STARTS`, `IMAGE_PAYLOADS` | UInt64 starts, then original encoded image bytes, each distinct file once |
+| 219, 220 | `IMAGE_PAYLOAD_STARTS`, `IMAGE_PAYLOADS` | UInt64 starts, then encoded image files, each distinct file once: as found, or an 8-bit sRGB PNG as a lossless WebP with the same pixels when smaller |
 | 221, 222 | `LIGHT_NAMES`, `LIGHT_INFO` | 56 bytes per light: type, unit, color, power, flags, area shape, radius, spot angle, spot blend, sun angle, area size |
 | 223, 224 | `ARMATURE_NAMES`, `ARMATURE_BONE_STARTS` | Names and where each armature's bones start |
 | 225, 226 | `BONE_NAMES`, `BONE_INFO` | 48 bytes per bone: parent, flags (1 connected, 2 deform, 4 inherits rotation, scale inheritance << 8), head, tail, roll, envelope distance, head radius, tail radius |

@@ -455,11 +455,22 @@ Largest difference: 0.0000018.
 **Technique:** Objects using one mesh point at it, each with its own placement, so 1,000 copies cost 1,000 records
 and one mesh. A mesh is only shared when its vertex groups match too, because groups live with the mesh.
 
-### Images stored once, untouched
+### Images stored once, every pixel kept
 
-**Technique:** Embedded images keep their original encoded bytes, so nothing is lost and a GPU loader can read them
-straight from the file. Identical files, compared whole, are stored once. By default images are links, and **Embed
-Textures** is the one setting on export.
+**Technique:** Embedded images are stored as encoded files, so a loader decodes them as it would on disk. JPEGs and
+other files stay exactly as found. An 8-bit PNG whose pixels read as sRGB is saved by Blender as lossless WebP, and
+kept only when that is smaller and decodes to exactly the same pixels; its path then ends in `.webp`. A PNG with an
+ICC profile, or gamma or chromaticities no sRGB chunk overrides, or 16 bits a channel, stays as it is. Identical
+files, compared whole, are stored once. By default images are links, and **Embed Textures** is the one setting on
+export.
+
+**Numbers:** glTF samples imported in Blender and saved with Embed Textures; every image came back with the same
+pixels. Avocado 8,090,084 to 4,608,216 bytes, against 8,110,040 for its glTF; BoomBox 10,439,256 to 5,859,560;
+WaterBottle 8,836,128 to 4,643,852; Lantern 9,364,036 to 7,657,592; Duck 43,524 to 40,104. Each 2K PNG adds about
+1 to 3 seconds to saving.
+
+**Cost and limit:** a reader needs a WebP decoder, and the PNG's own bytes are not kept, only its pixels. JPEGs
+cannot shrink this way without losing their exact bytes.
 
 ### Materials any application can read
 
@@ -515,17 +526,17 @@ error, not coding.
 
 **Technique:** Blender makes tangents with MikkTSpace from positions, UVs and normals, which the reader already
 has when tangents come. So the reader makes nearly the same tangents: each face corner gives the way its positions
-run as U rises, laid flat against the normal and weighted by the corner's angle, and corners with one position, UV
-and normal add theirs up. Only the difference to the stored tangent is written, and a tangent already seen at the
+run as U rises, laid flat against the normal and weighted by the corner's angle, and corners with one position, UV,
+normal and UV winding add theirs up, as MikkTSpace keeps mirrored UVs apart. Only the difference to the stored tangent is written, and a tangent already seen at the
 vertex costs a choice. The angle comes from a short arcsine series, using only square roots and sums, so every
 reader gets the same guess. A small mesh keeps its tangents in the direct sections when those are smaller.
 
 **Numbers:** glTF samples imported in Blender, tangent bytes before and after. CesiumMan 12,605 to 2,212,
-DamagedHelmet 52,174 to 9,136, Duck 11,496 to 3,464. Whole meshes: DamagedHelmet 151,216 to 108,140, CesiumMan
+DamagedHelmet 52,174 to 8,680, Duck 11,496 to 2,368. Whole meshes: DamagedHelmet 151,216 to 107,684, CesiumMan
 43,668 to 29,944 with weights. Every tangent comes back exactly as stored.
 
-**Can improve:** Duck has a tail of large differences that this guess does not explain. MikkTSpace's own rules for
-quads and degenerate UVs may close it.
+**Can improve:** about 60 of Duck's 12,636 corners still miss by more than 20 degrees; MikkTSpace's rules for
+degenerate UVs may close them.
 
 ### Skin weights as recent rows
 

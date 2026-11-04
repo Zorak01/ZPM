@@ -2,8 +2,10 @@
 
 """Run with blender --background --factory-startup --python this_file."""
 
+import struct
 import sys
 import tempfile
+import zlib
 from array import array
 from pathlib import Path
 
@@ -14,7 +16,7 @@ from bpy_extras import anim_utils
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "blender"))
 
 import zpm
-from zpm.addon import mesh_adapter
+from zpm.addon import image_packing, mesh_adapter
 from zpm.format import (
     FormatError,
     Material,
@@ -299,6 +301,53 @@ def check_whole_scene(directory):
     ).fcurves[0]
     assert "default_value" in tree_curve.data_path
     print("PASS: whole scene")
+
+
+def _image_pixels(image):
+    values = [0.0] * (image.size[0] * image.size[1] * image.channels)
+    image.pixels.foreach_get(values)
+    return values
+
+
+def check_png_textures_pack_as_webp(directory):
+    """An 8-bit PNG is stored as lossless WebP with the same pixels; one with an ICC
+    profile stays the PNG it was."""
+    side = 64
+    image = bpy.data.images.new("Gradient", side, side)
+    image.pixels.foreach_set(
+        [
+            channel
+            for at in range(side * side)
+            for channel in ((at % side) / side, (at // side) / side, 0.5, 1.0)
+        ]
+    )
+    image.pack()
+    png = bytes(image.packed_file.data)
+    material = bpy.data.materials.new("Painted")
+    material.use_nodes = True
+    shader = next(n for n in material.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+    texture = material.node_tree.nodes.new("ShaderNodeTexImage")
+    texture.image = image
+    material.node_tree.links.new(texture.outputs["Color"], shader.inputs["Base Color"])
+    bpy.ops.mesh.primitive_plane_add()
+    plane = bpy.context.active_object
+    plane.data.materials.append(material)
+    path = str(Path(directory) / "webp.zpm")
+    export_alone(plane, path)
+    bpy.ops.object.select_all(action="DESELECT")
+    plane.select_set(True)
+    assert bpy.ops.export_mesh.zpm(filepath=path, embed_textures=True) == {"FINISHED"}
+    stored = load(path).images[0].tiles[0].payload
+    assert stored[:4] == b"RIFF" and len(stored) < len(png), "A PNG must become WebP"
+    before = set(bpy.data.images.keys())
+    assert bpy.ops.import_mesh.zpm(filepath=path) == {"FINISHED"}
+    made = bpy.data.images[(set(bpy.data.images.keys()) - before).pop()]
+    assert _image_pixels(made) == _image_pixels(image), "WebP pixels must match"
+    chunk = b"iCCP" + b"Display\0\0" + zlib.compress(b"profile")
+    marked = png[:33] + struct.pack(">I", len(chunk) - 4) + chunk
+    marked += struct.pack(">I", zlib.crc32(chunk)) + png[33:]
+    assert image_packing.smallest_encoding("a.png", marked) == ("a.png", marked)
+    print("PASS: PNG textures pack as lossless WebP")
 
 
 def check_failed_import_leaves_nothing(directory):
@@ -747,6 +796,7 @@ def run():
         check_attributes_and_shape_keys(directory)
         check_holes_are_refused()
         check_whole_scene(directory)
+        check_png_textures_pack_as_webp(directory)
         check_nothing_is_lost(directory)
         check_points_hair_volumes_and_topology(directory)
         check_failed_import_leaves_nothing(directory)

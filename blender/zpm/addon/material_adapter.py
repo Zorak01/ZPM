@@ -17,6 +17,7 @@ from ..format.scene import (
     ROLE_ROUGHNESS,
 )
 from . import rna_values
+from .image_packing import smallest_encoding
 
 _PRINCIPLED = "BSDF_PRINCIPLED"
 _IMAGE_NODE = "TEX_IMAGE"
@@ -232,15 +233,18 @@ def _read_file(path: str) -> bytes:
 
 def _capture_tiles(image: bpy.types.Image, embed: bool) -> list:
     if image.source != "TILED":
-        payload = b""
-        if embed:
-            packed = image.packed_file
-            payload = bytes(packed.data) if packed else _read_file(image.filepath)
-        return [ImageTile(0, image.filepath, payload)]
+        if not embed:
+            return [ImageTile(0, image.filepath)]
+        packed = image.packed_file
+        payload = bytes(packed.data) if packed else _read_file(image.filepath)
+        return [ImageTile(0, *smallest_encoding(image.filepath, payload))]
     tiles = []
     for tile in image.tiles:
         path = image.filepath.replace(_UDIM_TOKEN, str(tile.number))
-        tiles.append(ImageTile(tile.number, path, _read_file(path) if embed else b""))
+        if not embed:
+            tiles.append(ImageTile(tile.number, path))
+            continue
+        tiles.append(ImageTile(tile.number, *smallest_encoding(path, _read_file(path))))
     return tiles
 
 

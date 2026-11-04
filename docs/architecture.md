@@ -8,7 +8,7 @@ reader, and nothing depends on benchmarks.
 | `blender/zpm/addon/operators.py` | File selection, user reports, scene linking and menus |
 | `blender/zpm/addon/mesh_adapter.py` | Converts between Blender meshes and `Mesh`, and holds Blender-only mesh rules |
 | `blender/zpm/addon/scene_adapter.py` | Converts a Blender scene to `Scene` and back: objects, hierarchy, collections |
-| `blender/zpm/addon/material_adapter.py`, `animation_adapter.py`, `point_data_adapter.py`, `rna_values.py` | Materials and images, animation, point clouds, hair and volumes, and open-ended property values |
+| `blender/zpm/addon/material_adapter.py`, `image_packing.py`, `animation_adapter.py`, `point_data_adapter.py`, `rna_values.py` | Materials and images, PNGs as lossless WebP, animation, point clouds, hair and volumes, and open-ended property values |
 | `blender/zpm/format/__init__.py` | The public API: `load`, `save`, `encode`, `decode`, `snap_as_saved`, `Mesh`, `Scene` |
 | `blender/zpm/format/mesh.py`, `errors.py`, `files.py` | The data model, the one error type, bounded reads and atomic writes |
 | `blender/zpm/format/container/` | The file's outer structure: layout constants, labelled sections, the byte map |

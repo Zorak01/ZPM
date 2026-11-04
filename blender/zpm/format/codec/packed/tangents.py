@@ -124,10 +124,7 @@ def _guesses(layout: Layout, rows: list, normals: list, uvs: list) -> list:
     starts = layout.starts
     count = len(welded)
     units = _unit_normals(layout, rows, normals)
-    keys = [
-        (welded[corner], uvs[corner], normals[corner] if normals else None)
-        for corner in range(count)
-    ]
+    keys = [None] * count
     totals = {}
     negative = [0] * count
     for face in range(len(starts) - 1):
@@ -141,6 +138,9 @@ def _guesses(layout: Layout, rows: list, normals: list, uvs: list) -> list:
                 rows, welded, uvs, units[corner], (corner, after, before)
             )
             negative[corner] = flipped
+            # As MikkTSpace does, corners whose UVs wind opposite ways stay apart.
+            normal = normals[corner] if normals else None
+            keys[corner] = (welded[corner], uvs[corner], normal, flipped)
             total = totals.setdefault(keys[corner], [0.0, 0.0, 0.0])
             for axis in range(3):
                 total[axis] += direction[axis]

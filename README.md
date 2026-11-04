@@ -68,7 +68,8 @@ Exports hold the selected objects, or the whole scene when none is selected, wit
 local coordinates; modifiers, constraints and drivers are not stored, apart from the armature link. Imports recreate
 them. Keep the source `.blend` for data outside what ZPM stores yet.
 
-The one setting is **Embed Textures**, which stores image files inside the `.zpm`. Everything else
+The one setting is **Embed Textures**, which stores image files inside the `.zpm`, PNGs as lossless WebP with the same
+pixels when that is smaller. Everything else
 the file picks by itself.
 
 ## Python API

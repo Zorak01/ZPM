@@ -11,7 +11,7 @@ import math
 from dataclasses import dataclass
 
 from ...errors import FormatError
-from ...storage.rans import SymbolReader
+from ...storage.rans import SymbolReader, smallest_written
 from .corner_values import (
     MAX_SEEN_CONTEXT,
     PAIR_KINDS,
@@ -20,8 +20,10 @@ from .corner_values import (
     NumberStep,
     SeenLookup,
     SymbolStep,
+    estimated_bytes,
     lookup_contexts,
     pair_context,
+    step_counts,
     write_steps,
 )
 from .layout import HISTORY_MAX, Layout, magnitude
@@ -68,18 +70,19 @@ class UvForm:
 def encode_uvs(layout: Layout, corners: list, pairs: list, rows: list) -> bytes:
     """Return one UV layer in whichever form is smallest.
 
-    Every number form and lookup is tried, each lookup worked out once; pairing is
-    tried only with the form that won, which keeps saving time down.
+    Every number form and lookup is tried, each lookup worked out once, and only
+    forms whose estimated size could win are written; pairing is tried only with the
+    form that won, which keeps saving time down.
     """
     steps = {lookup: _steps(layout, corners, pairs, rows, lookup) for lookup in Lookup}
-    best = min(
-        (
-            _written(steps, UvForm(fine, lookup))
-            for fine in (False, True)
-            for lookup in Lookup
-        ),
-        key=len,
-    )
+    counts = {lookup: step_counts(recorded) for lookup, recorded in steps.items()}
+
+    def estimate(form: UvForm) -> float:
+        recorded = counts[form.lookup]
+        return estimated_bytes(recorded, form.contexts(), form.fine, form.paired)
+
+    forms = [UvForm(fine, lookup) for fine in (False, True) for lookup in Lookup]
+    best = smallest_written(forms, estimate, lambda form: _written(steps, form))
     won = UvForm.from_byte(best[0])
     paired = UvForm(won.fine, won.lookup, paired=True)
     return min(best, _written(steps, paired), key=len)

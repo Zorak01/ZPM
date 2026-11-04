@@ -22,6 +22,7 @@ Counts and gaps are order-0 codes. An order-k code of v is as many clear bits as
 v + 2^k has bits past k + 1, a set bit, then its bits below the top one, low first.
 """
 
+import math
 import struct
 
 from ..errors import FormatError
@@ -38,6 +39,11 @@ _MAX_SYMBOL = 255
 _CHOICE_ESCAPE = 200
 _MAX_K = 15
 _K_BITS = 4
+# A stream's state and its two counts, which an estimate does not work out exactly.
+_HEADER_BYTES = 8
+# How far above the best estimate a form may be and still be written to compare: an
+# estimate misses a stream's real size by a few bytes of rounding at most.
+_ESTIMATE_MARGIN_BYTES = 32
 
 
 def _varint(value: int) -> bytes:
@@ -167,6 +173,76 @@ def _read_table(bits: _BitReader) -> list | None:
     return slots
 
 
+def _number_symbol(value: int, fine: int) -> tuple:
+    """Return (the symbol, how many raw bits follow, the zigzag value holding them)."""
+    stored = _to_zigzag(value)
+    length = stored.bit_length()
+    if fine == 2 and length > 2:
+        return 4 * length - 8 + ((stored >> (length - 3)) & 3), length - 3, stored
+    if fine and length > 1:
+        return 2 * length - 2 + ((stored >> (length - 2)) & 1), length - 2, stored
+    return length, max(length - 1, 0), stored
+
+
+class SymbolCounter:
+    """Counts what a SymbolWriter would write, to estimate a stream's size quickly.
+
+    Each method takes how many times the same thing is written. The estimate counts
+    tables exactly and symbols at their ideal cost under the stored frequencies.
+    """
+
+    def __init__(self, context_count: int, *, fine: int = 0):
+        self._fine = fine
+        self._counts = [{} for _ in range(context_count)]
+        self._raw_bits = 0
+
+    def add(self, context: int, symbol: int, times: int = 1) -> None:
+        """Count a symbol."""
+        counts = self._counts[context]
+        counts[symbol] = counts.get(symbol, 0) + times
+
+    def add_choice(self, context: int, choice: int, times: int = 1) -> None:
+        """Count a choice, as write_choice writes it."""
+        if choice < _CHOICE_ESCAPE:
+            self.add(context, choice, times)
+            return
+        self.add(context, _CHOICE_ESCAPE, times)
+        self.add_number(context, choice - _CHOICE_ESCAPE, times)
+
+    def add_number(self, context: int, value: int, times: int = 1) -> None:
+        """Count a number, as write_number writes it."""
+        symbol, raw_count, _ = _number_symbol(value, self._fine)
+        self.add(context, symbol, times)
+        self._raw_bits += raw_count * times
+
+    def estimated_bytes(self) -> float:
+        """Return about how many bytes the stream would take."""
+        table_bits = _BitWriter()
+        coded_bits = 0.0
+        for counts in self._counts:
+            table = _frequencies(counts) if counts else {}
+            _write_table(table_bits, table)
+            for symbol, count in counts.items():
+                coded_bits += count * math.log2(_TOTAL / table[symbol])
+        table_bytes = len(table_bits.to_bytes())
+        return _HEADER_BYTES + table_bytes + (coded_bits + self._raw_bits) / 8
+
+
+def smallest_written(forms: list, estimate, write) -> bytes:
+    """Return the shortest write(form) of the forms, in order, writing only those whose
+    estimate(form) is close enough to the best to win; the first wins a tie."""
+    estimates = [estimate(form) for form in forms]
+    best = min(estimates)
+    return min(
+        (
+            write(form)
+            for form, guess in zip(forms, estimates, strict=True)
+            if guess <= best + _ESTIMATE_MARGIN_BYTES
+        ),
+        key=len,
+    )
+
+
 def _to_zigzag(value: int) -> int:
     return value * 2 if value >= 0 else -value * 2 - 1
 
@@ -221,20 +297,10 @@ class SymbolWriter:
 
     def write_number(self, context: int, value: int) -> None:
         """Add a signed number: its length as a symbol, then its low bits raw."""
-        stored = _to_zigzag(value)
-        length = stored.bit_length()
-        if self._fine == 2 and length > 2:
-            self.write(context, 4 * length - 8 + ((stored >> (length - 3)) & 3))
-            self._write_raw(stored, length - 3)
-            return
-        if self._fine and length > 1:
-            second = (stored >> (length - 2)) & 1
-            self.write(context, 2 * length - 2 + second)
-            self._write_raw(stored, length - 2)
-            return
-        self.write(context, length)
-        if length > 1:
-            self._write_raw(stored, length - 1)
+        symbol, raw_count, stored = _number_symbol(value, self._fine)
+        self.write(context, symbol)
+        if raw_count:
+            self._write_raw(stored, raw_count)
 
     def _write_raw(self, value: int, count: int) -> None:
         self._pending |= (value & ((1 << count) - 1)) << self._pending_bits

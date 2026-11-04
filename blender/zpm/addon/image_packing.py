@@ -18,6 +18,7 @@ import tempfile
 from pathlib import Path
 
 import bpy
+import numpy
 
 from ..format.processing.jpeg_tables import optimize_tables
 
@@ -59,7 +60,7 @@ def smallest_encoding(path: str, payload: bytes) -> tuple:
             pixels = _pixels(original)
             _save_webp(original, pixels, target)
             encoded = bpy.data.images.load(str(target))
-            same = _pixels(encoded) == pixels
+            same = numpy.array_equal(_pixels(encoded), pixels)
             webp = target.read_bytes()
         finally:
             bpy.data.images.remove(original)
@@ -89,13 +90,14 @@ def _is_plain_png(payload: bytes) -> bool:
     return False
 
 
-def _pixels(image: bpy.types.Image) -> list:
-    values = [0.0] * (image.size[0] * image.size[1] * image.channels)
+def _pixels(image: bpy.types.Image) -> numpy.ndarray:
+    """Return an image's pixels as Blender holds them, in one Float32 array."""
+    values = numpy.empty(image.size[0] * image.size[1] * image.channels, numpy.float32)
     image.pixels.foreach_get(values)
     return values
 
 
-def _save_webp(original: bpy.types.Image, pixels: list, target: Path) -> None:
+def _save_webp(original: bpy.types.Image, pixels: numpy.ndarray, target: Path) -> None:
     """Write the pixels as lossless WebP, with no colour management on the way."""
     width, height = original.size
     copy = bpy.data.images.new("ZPM WebP", width, height, alpha=True)

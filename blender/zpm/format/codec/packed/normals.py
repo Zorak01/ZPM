@@ -9,7 +9,7 @@ on smooth meshes or a vertex on meshes with hard edges, or from the key's last v
 from dataclasses import dataclass
 
 from ...errors import FormatError
-from ...storage.rans import SymbolReader
+from ...storage.rans import SymbolReader, smallest_written
 from ..quantize import encode_normal
 from .corner_values import (
     MAX_SEEN_CONTEXT,
@@ -18,8 +18,10 @@ from .corner_values import (
     Lookup,
     NumberStep,
     SeenLookup,
+    estimated_bytes,
     lookup_contexts,
     pair_context,
+    step_counts,
     write_steps,
 )
 from .layout import HISTORY_MAX, Layout, magnitude
@@ -70,23 +72,33 @@ def encode_normals(layout: Layout, corners: list, pairs: list, rows: list) -> by
     """Return the normals in whichever form is smallest.
 
     Every prediction, number form and lookup is tried, each prediction and lookup
-    worked out once; pairing is tried only with the form that won, which keeps saving
-    time down.
+    worked out once, and only forms whose estimated size could win are written;
+    pairing is tried only with the form that won, which keeps saving time down.
     """
+    predictions = {
+        by_vertex: _predictions(layout, corners, rows, by_vertex)
+        for by_vertex in (False, True)
+    }
     steps = {
-        (by_vertex, lookup): _steps(layout, corners, pairs, rows, by_vertex, lookup)
+        (by_vertex, lookup): _steps(
+            layout, corners, pairs, predictions[by_vertex], lookup
+        )
         for by_vertex in (False, True)
         for lookup in Lookup
     }
-    best = min(
-        (
-            _written(steps, NormalForm(by_vertex, fine, lookup))
-            for by_vertex in (False, True)
-            for fine in (False, True)
-            for lookup in Lookup
-        ),
-        key=len,
-    )
+    counts = {key: step_counts(recorded) for key, recorded in steps.items()}
+
+    def estimate(form: NormalForm) -> float:
+        recorded = counts[form.by_vertex, form.lookup]
+        return estimated_bytes(recorded, form.contexts(), form.fine, form.paired)
+
+    forms = [
+        NormalForm(by_vertex, fine, lookup)
+        for by_vertex in (False, True)
+        for fine in (False, True)
+        for lookup in Lookup
+    ]
+    best = smallest_written(forms, estimate, lambda form: _written(steps, form))
     won = NormalForm.from_byte(best[0])
     paired = NormalForm(won.by_vertex, won.fine, won.lookup, paired=True)
     return min(best, _written(steps, paired), key=len)
@@ -98,8 +110,7 @@ def read_normals(layout: Layout, data: bytes, corners: list, rows: list) -> list
         raise FormatError("Packed normals are truncated")
     form = NormalForm.from_byte(data[0])
     reader = SymbolReader(data[1:], form.contexts(), fine=form.fine)
-    keys, key_rows = _keys(layout, corners, rows, form.by_vertex)
-    guesses = _vertex_normals(layout.starts, keys, key_rows)
+    keys, guesses = _predictions(layout, corners, rows, form.by_vertex)
     history = [0, 0]
     seen_normals = SeenLookup(layout, corners, form.lookup, _CONTEXTS)
     pairs = []
@@ -131,10 +142,15 @@ def _written(steps: dict, form: NormalForm) -> bytes:
     return bytes((form.to_byte(),)) + data
 
 
-def _steps(layout, corners, pairs, rows, by_vertex: bool, lookup: Lookup) -> list:
-    """Return what writing the normals takes, predicted one way, for any number form."""
+def _predictions(layout: Layout, corners: list, rows: list, by_vertex: bool) -> tuple:
+    """Return (each corner's key, each key's predicted 12-bit normal)."""
     keys, key_rows = _keys(layout, corners, rows, by_vertex)
-    guesses = _vertex_normals(layout.starts, keys, key_rows)
+    return keys, _vertex_normals(layout.starts, keys, key_rows)
+
+
+def _steps(layout, corners, pairs, predictions: tuple, lookup: Lookup) -> list:
+    """Return what writing the normals takes, predicted one way, for any number form."""
+    keys, guesses = predictions
     history = [0, 0]
     seen_normals = SeenLookup(layout, corners, lookup, _CONTEXTS)
     steps = []

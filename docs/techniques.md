@@ -473,7 +473,7 @@ WaterBottle 8,836,128 to 4,643,852; Lantern 9,364,036 to 7,657,592; Duck 43,524 
 
 JPEGs: DamagedHelmet's four baseline JPEGs shrink by 1.9% to 37.6% each, its file from 3,321,460 to 3,188,624
 bytes, all five images with the same pixels; its fifth and CesiumMan's are progressive and stay as found. Re-coding
-takes about 6.5 seconds on its four 2K JPEGs.
+takes about 3.6 seconds on its four 2K JPEGs, each symbol packed in one integer and read with a 16-bit lookup.
 
 **Cost and limit:** a reader needs a WebP decoder, and a PNG's or JPEG's own bytes are not kept, only its pixels.
 Progressive JPEGs, and those with restart markers or arithmetic coding, stay as found. Modelling JPEG coefficients
@@ -714,6 +714,23 @@ own operators in Blender 5.2, 2026-11-04:
 Each stream tries several forms, so the encoder predicts once per prediction and lookup and writes that record in
 each number form, rather than predicting again: that halved `DamagedHelmet`'s export, from 14.7 s, with identical
 files. Most of what remains is the walk, reordering and the rANS writer, each in Python.
+
+Later the same day, with tangents, weights, animation and tables packed too, each form's size is first estimated from
+counts of its distinct steps: tables exactly, symbols at their ideal cost. Only forms within 32 bytes of the best
+estimate are written, and the smallest of those kept, so files stay byte for byte the same, checked on all 24
+benchmark meshes. Normals also predict once per keying instead of once per form. Measured the same way, 2026-11-04,
+evening:
+
+| Mesh | Faces | Export | Import |
+| --- | ---: | ---: | ---: |
+| samurai | 2,186 | 0.6 s | 0.2 s |
+| DamagedHelmet | 15,452 | 7.9 s | 2.8 s |
+| stanford-bunny | 69,451 | 16.3 s | 3.7 s |
+| xyzrgb_dragon | 249,881 | 71.7 s | 12.9 s |
+
+Packing alone takes 22% less CPU time on `DamagedHelmet`'s scene than before this change. Whole glTF scenes with
+embedded textures gained more, from faster JPEG re-coding and pixel checks in numpy: `DamagedHelmet` from 21.0 s to
+8.4 s, `BoomBox` from 16.1 s to 12.1 s, each with the same file.
 
 ## The file itself
 

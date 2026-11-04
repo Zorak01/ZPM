@@ -6,10 +6,11 @@ Both are a pair of integers per corner. A corner first looks for its value among
 those already seen; only a new value is predicted and its residuals written.
 """
 
+from collections import Counter
 from enum import IntEnum
 from typing import NamedTuple
 
-from ...storage.rans import SymbolWriter
+from ...storage.rans import SymbolCounter, SymbolWriter
 from .layout import Layout
 
 # A lookup's choice context counts the values seen, up to this.
@@ -43,6 +44,9 @@ class ChoiceStep(NamedTuple):
     def write(self, writer: SymbolWriter, paired: bool) -> None:
         writer.write_choice(self.context, self.choice)
 
+    def count(self, counter: SymbolCounter, paired: bool, times: int) -> None:
+        counter.add_choice(self.context, self.choice, times)
+
 
 class SymbolStep(NamedTuple):
     """A plain symbol, as recorded once for every number form."""
@@ -52,6 +56,9 @@ class SymbolStep(NamedTuple):
 
     def write(self, writer: SymbolWriter, paired: bool) -> None:
         writer.write(self.context, self.symbol)
+
+    def count(self, counter: SymbolCounter, paired: bool, times: int) -> None:
+        counter.add(self.context, self.symbol, times)
 
 
 class NumberStep(NamedTuple):
@@ -64,6 +71,9 @@ class NumberStep(NamedTuple):
     def write(self, writer: SymbolWriter, paired: bool) -> None:
         writer.write_number(self.paired if paired else self.plain, self.value)
 
+    def count(self, counter: SymbolCounter, paired: bool, times: int) -> None:
+        counter.add_number(self.paired if paired else self.plain, self.value, times)
+
 
 def write_steps(steps: list, contexts: int, fine: bool, paired: bool) -> bytes:
     """Return a stream holding recorded steps, in one number form."""
@@ -71,6 +81,19 @@ def write_steps(steps: list, contexts: int, fine: bool, paired: bool) -> bytes:
     for step in steps:
         step.write(writer, paired)
     return writer.to_bytes()
+
+
+def step_counts(steps: list) -> Counter:
+    """Return how many times each distinct step occurs, for estimating forms."""
+    return Counter(steps)
+
+
+def estimated_bytes(counts: Counter, contexts: int, fine: bool, paired: bool) -> float:
+    """Return about how many bytes write_steps would return for these steps."""
+    counter = SymbolCounter(contexts, fine=fine)
+    for step, times in counts.items():
+        step.count(counter, paired, times)
+    return counter.estimated_bytes()
 
 
 def pair_context(first_context: int, part: int, history: list, plain: int) -> int:

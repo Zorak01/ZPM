@@ -8,13 +8,19 @@ prediction from where the position first appears in its face.
 
 import math
 import struct
+from collections import Counter
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import NamedTuple
 
 from ...container.layout import AXIS_COUNT
 from ...errors import FormatError
-from ...storage.rans import SymbolReader, SymbolWriter
+from ...storage.rans import (
+    SymbolCounter,
+    SymbolReader,
+    SymbolWriter,
+    smallest_written,
+)
 from .layout import Layout, magnitude
 
 STEP = struct.Struct("<f")
@@ -103,18 +109,28 @@ def grid_rows(positions, exponent: int, step: float) -> list:
 def encode_positions(layout: Layout, rows: list, extras: list, step: float) -> bytes:
     """Return the step, then positions in whichever form is smallest.
 
-    Every fine level and keying is tried on one set of predictions; shrinking is tried
-    only with the form that won, which keeps saving time down.
+    Every fine level and keying is tried on one set of predictions, and only forms
+    whose estimated size could win are written; shrinking is tried only with the form
+    that won, which keeps saving time down.
     """
     uses_history = layout.position_count >= _HISTORY_MIN_ROWS
     plain = _residuals(layout, rows, shrink=False)
-    best = min(
-        (
-            _written(plain, extras, PositionForm(fine, keying), uses_history)
-            for fine in range(_FINE_LEVELS)
-            for keying in Keying
-        ),
-        key=len,
+    counts = {
+        keying: _context_counts(plain, extras, keying, uses_history)
+        for keying in Keying
+    }
+
+    def estimate(form: PositionForm) -> float:
+        counter = SymbolCounter(form.contexts(), fine=form.fine)
+        for (context, value), times in counts[form.keying].items():
+            counter.add_number(context, value, times)
+        return counter.estimated_bytes()
+
+    forms = [
+        PositionForm(fine, keying) for fine in range(_FINE_LEVELS) for keying in Keying
+    ]
+    best = smallest_written(
+        forms, estimate, lambda form: _written(plain, extras, form, uses_history)
     )
     won = PositionForm.from_byte(best[0])
     shrunk = PositionForm(won.fine, won.keying, shrink=True)
@@ -209,6 +225,27 @@ def _residuals(layout: Layout, rows: list, shrink: bool) -> _Residuals:
             reach.append(history[axis])
         predictor.previous = row
     return _Residuals(values, predictor.previous)
+
+
+def _context_counts(
+    residuals: _Residuals, extras: list, keying: Keying, uses_history: bool
+) -> Counter:
+    """Return how many times each (context, residual) occurs under one keying."""
+    counts = Counter(
+        (
+            _context(
+                keying, uses_history, residual.own, residual.widest, residual.facing
+            ),
+            residual.value,
+        )
+        for residual in residuals.values
+    )
+    previous = residuals.last
+    for row in extras:
+        for axis in range(AXIS_COUNT):
+            counts[0, row[axis] - previous[axis]] += 1
+        previous = row
+    return counts
 
 
 def _written(

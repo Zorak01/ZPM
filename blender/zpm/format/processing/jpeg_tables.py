@@ -6,7 +6,7 @@ Many JPEGs use the example tables from the standard. Re-coding the same symbols 
 tables built from their counts, as the standard's Annex K.2 describes, gives a
 smaller JPEG with exactly the same coefficients, so every decoder shows the same
 pixels. Only a single-scan baseline JPEG with no restart markers is re-coded; anything
-else, or anything that does not read back to the same symbols, is returned as given.
+else, or anything that does not read cleanly, is returned as given.
 """
 
 import struct
@@ -38,18 +38,10 @@ _PEEK_BYTES = 3
 _WINDOW_MASK = (1 << 16) - 1
 
 
-class _Symbols(NamedTuple):
-    """Every coded symbol in order: its table as class * 16 + id, its value, and the
-    raw bits after it, in flat arrays so a large image stays small in memory."""
-
-    tables: array
-    values: array
-    extra_counts: array
-    extras: array
-
-    @classmethod
-    def empty(cls) -> "_Symbols":
-        return cls(array("B"), array("B"), array("B"), array("I"))
+# Each symbol is one integer: its table number, value, raw bit count and raw bits.
+_KEY_SHIFT = 24
+_SIZE_SHIFT = 16
+_KEYS = 32 << _BYTE_BITS
 
 
 class _Jpeg(NamedTuple):
@@ -64,24 +56,26 @@ class _Jpeg(NamedTuple):
 
 def optimize_tables(data: bytes) -> bytes:
     """Return the JPEG re-coded with its own optimal Huffman tables when that is
-    smaller and reads back to the same symbols, else data unchanged."""
+    smaller, else data unchanged."""
     try:
         jpeg = _parse(data)
         if jpeg is None:
             return data
-        symbols, end = _decode(data, jpeg)
-        counts = _all_counts(symbols)
-        tables = {
-            key: _table_for(counts[_table_number(key)])
-            for key in jpeg.tables
-            if _table_number(key) in counts
-        }
+        symbols, counts, end = _decode(data, jpeg)
+        tables = {}
+        for key in jpeg.tables:
+            first = _table_number(key) << _BYTE_BITS
+            used = {
+                value: counts[first + value]
+                for value in range(_SYMBOLS)
+                if counts[first + value]
+            }
+            if used:
+                tables[key] = _checked(_table_for(used))
         recoded = _write(data, jpeg, tables, symbols, end)
-        again = _parse(recoded)
-        same = again is not None and _decode(recoded, again)[0] == symbols
     except (IndexError, KeyError, ValueError, struct.error):
         return data
-    return recoded if same and len(recoded) < len(data) else data
+    return recoded if len(recoded) < len(data) else data
 
 
 def _parse(data: bytes) -> _Jpeg | None:
@@ -183,46 +177,51 @@ def _decode(data: bytes, jpeg: _Jpeg) -> tuple:
         dc = _table_number((_DC_CLASS, selectors >> 4))
         ac = _table_number((_AC_CLASS, selectors & 15))
         units += [(dc, ac)] * ((factors >> 4) * (factors & 15))
-    symbols = _Symbols.empty()
-    adds = tuple(column.append for column in symbols)
+    symbols = array("Q")
+    counts = [0] * _KEYS
     position = 0
     for _ in range(across * down):
         for dc, ac in units:
-            position = _decode_block(stream, position, lookups, (dc, ac), adds)
+            position = _decode_block(
+                stream, position, lookups, (dc, ac), symbols, counts
+            )
     if position > limit:
         raise ValueError("The scan ends before its blocks do")
-    return symbols, end
+    return symbols, counts, end
 
 
-def _decode_block(stream, position, lookups, tables, adds) -> int:
+def _decode_block(stream, position, lookups, tables, symbols, counts) -> int:
     """Read one block's symbols from a bit position; return the position after.
 
     Runs once per block, so the 16-bit reads are written out here rather than called.
+    A symbol's raw bits come from the same 16-bit window when they fit in it.
     """
-    add_table, add_value, add_size, add_extra = adds
+    add = symbols.append
     place = 0
     for table in tables:
         lookup = lookups[table]
+        key_base = table << _BYTE_BITS
         while place < _COEFFICIENTS:
             at = position >> 3
             window = stream[at] << 16 | stream[at + 1] << 8 | stream[at + 2]
-            entry = lookup[window >> (_BYTE_BITS - (position & 7)) & _WINDOW_MASK]
+            window = window >> (_BYTE_BITS - (position & 7)) & _WINDOW_MASK
+            entry = lookup[window]
             if not entry:
                 raise ValueError("A code no table holds")
-            position += entry >> _BYTE_BITS
+            length = entry >> _BYTE_BITS
             value = entry & _ONE_BITS
             size = value if not place else value & 15
-            extra = 0
-            if size:
-                at = position >> 3
-                window = stream[at] << 16 | stream[at + 1] << 8 | stream[at + 2]
-                window = window >> (_BYTE_BITS - (position & 7)) & _WINDOW_MASK
-                extra = window >> (_LONGEST_CODE - size)
-                position += size
-            add_table(table)
-            add_value(value)
-            add_size(size)
-            add_extra(extra)
+            if length + size <= _LONGEST_CODE:
+                extra = window >> (_LONGEST_CODE - length - size) & ((1 << size) - 1)
+            else:
+                at = (position + length) >> 3
+                later = stream[at] << 16 | stream[at + 1] << 8 | stream[at + 2]
+                later = later >> (_BYTE_BITS - ((position + length) & 7))
+                extra = (later & _WINDOW_MASK) >> (_LONGEST_CODE - size)
+            position += length + size
+            key = key_base | value
+            counts[key] += 1
+            add(key << _KEY_SHIFT | size << _SIZE_SHIFT | extra)
             if not place:
                 place = 1
                 break
@@ -236,15 +235,6 @@ def _decode_block(stream, position, lookups, tables, adds) -> int:
 
 def _table_number(key: tuple) -> int:
     return key[0] << 4 | key[1]
-
-
-def _all_counts(symbols: _Symbols) -> dict:
-    """Return each table's count of each value."""
-    counts = {}
-    for table, value in zip(symbols.tables, symbols.values, strict=True):
-        found = counts.setdefault(table, {})
-        found[value] = found.get(value, 0) + 1
-    return counts
 
 
 def _table_for(counts: dict) -> dict:
@@ -277,6 +267,19 @@ def _table_for(counts: dict) -> dict:
             if start == first:
                 others[at] = second
     return _assign_codes(_limited(sizes), counts)
+
+
+def _checked(codes: dict) -> dict:
+    """Return the codes if they are a valid JPEG table: none longer than 16 bits, no
+    two sharing a start, and none all ones. Raises ValueError otherwise."""
+    room = 1 << _LONGEST_CODE
+    used = sum(1 << (_LONGEST_CODE - length) for length, _ in codes.values())
+    starts = {code << (_LONGEST_CODE - length) for length, code in codes.values()}
+    too_long = any(length > _LONGEST_CODE for length, _ in codes.values())
+    all_ones = any(code == (1 << length) - 1 for length, code in codes.values())
+    if too_long or used >= room or len(starts) != len(codes) or all_ones:
+        raise ValueError("A Huffman table came out invalid")
+    return codes
 
 
 def _limited(sizes: list) -> list:
@@ -328,21 +331,21 @@ def _table_segment(tables: dict) -> bytes:
     )
 
 
-def _write(
-    data: bytes, jpeg: _Jpeg, tables: dict, symbols: _Symbols, end: int
-) -> bytes:
-    codes = {}
+def _write(data: bytes, jpeg: _Jpeg, tables: dict, symbols: array, end: int) -> bytes:
+    codes = [(0, 0)] * _KEYS
     for key, table in tables.items():
-        row = [(0, 0)] * _SYMBOLS
+        first = _table_number(key) << _BYTE_BITS
         for value, length_and_code in table.items():
-            row[value] = length_and_code
-        codes[_table_number(key)] = row
+            codes[first + value] = length_and_code
     out = bytearray()
     buffer = 0
     count = 0
-    for table, value, size, extra in zip(*symbols, strict=True):
-        length, code = codes[table][value]
-        buffer = buffer << (length + size) | code << size | extra
+    size_mask = (1 << (_KEY_SHIFT - _SIZE_SHIFT)) - 1
+    extra_mask = (1 << _SIZE_SHIFT) - 1
+    for symbol in symbols:
+        length, code = codes[symbol >> _KEY_SHIFT]
+        size = symbol >> _SIZE_SHIFT & size_mask
+        buffer = buffer << (length + size) | code << size | symbol & extra_mask
         count += length + size
         while count >= _BYTE_BITS:
             count -= _BYTE_BITS

@@ -12,7 +12,7 @@ vertex, or writes whether its sign is the guessed one and two residuals.
 import math
 
 from ...errors import FormatError
-from ...storage.rans import SymbolReader
+from ...storage.rans import SymbolReader, smallest_written
 from ..quantize import decode_normal, encode_normal
 from .corner_values import (
     MAX_SEEN_CONTEXT,
@@ -21,6 +21,8 @@ from .corner_values import (
     NumberStep,
     SeenLookup,
     SymbolStep,
+    estimated_bytes,
+    step_counts,
     write_steps,
 )
 from .layout import HISTORY_MAX, Layout, magnitude
@@ -69,12 +71,11 @@ def encode_tangents(
             steps.append(NumberStep(context, context, difference))
             history[part] = magnitude(difference)
         seen_tangents.record(corner, pair)
-    return min(
-        (
-            bytes((fine,)) + write_steps(steps, _CONTEXTS, fine, paired=False)
-            for fine in range(_FINE_LEVELS)
-        ),
-        key=len,
+    counts = step_counts(steps)
+    return smallest_written(
+        list(range(_FINE_LEVELS)),
+        lambda fine: estimated_bytes(counts, _CONTEXTS, fine, paired=False),
+        lambda fine: bytes((fine,)) + write_steps(steps, _CONTEXTS, fine, paired=False),
     )
 
 

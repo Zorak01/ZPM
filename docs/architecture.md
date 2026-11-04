@@ -14,7 +14,7 @@ reader, and nothing depends on benchmarks.
 | `blender/zpm/format/container/` | The file's outer structure: layout constants, labelled sections, the byte map |
 | `blender/zpm/format/storage/` | Storage types readable by index: columns, rank masks, select bits, back references, corner streams, name tables |
 | `blender/zpm/format/codec/` | One module per kind of data, holding both directions: positions, corners, edges, surface, colors, weights |
-| `blender/zpm/format/codec/packed/` | The packed form saving writes: the walk, splits, positions, normals and UVs, one module each, and what normals and UVs share |
+| `blender/zpm/format/codec/packed/` | The packed form saving writes: the walk, splits, positions, normals, UVs and animation tracks, one module each, and what normals and UVs share |
 | `blender/zpm/format/scene.py` | Scene data: objects, materials, images, lights, armatures, curves, lattices, cameras, animation, and the file as a whole |
 | `blender/zpm/format/processing/` | Whole-mesh changes and checks: snapping, including the packing grid, reordering, comparison, face facts |
 | `runtime/csharp/Zpm/` | Runtime reader: by index, no allocation |

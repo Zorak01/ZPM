@@ -28,7 +28,9 @@ from ..container.layout import (
 )
 from ..container.sections import Section, SectionReader, column_section
 from ..errors import FormatError
+from ..processing.snapping import snap_track
 from ..scene import Clip, Scene, Track
+from .packed.animation import encode_tracks, read_tracks
 from .scene_tables import (
     checked_enum,
     float_column,
@@ -77,14 +79,29 @@ def _pack_mode(track: Track, key: int) -> int:
     )
 
 
-def encode_animation(scene: Scene, strings: StringTable) -> list:
-    """Return every clip and track, with identical key times stored once."""
+def encode_animation(
+    scene: Scene, strings: StringTable, *, packed: bool = False
+) -> list:
+    """Return every clip and track, with identical key times stored once.
+
+    Packed, the tracks are one stream read once, and float values snap to their grid:
+    see snap_track. Otherwise every key reads by index.
+    """
     if not scene.clips:
         return []
-    time_sets = {}
-    values, modes, handles = [], [], []
+    sections = _clip_sections(scene)
+    tracks = [track for clip in scene.clips for track in clip.tracks]
+    if not tracks:
+        return sections
+    if packed:
+        snapped = [snap_track(track) for track in tracks]
+        data = encode_tracks(snapped, scene, strings)
+        return [*sections, Section(SectionKind.PACKED_TRACKS, data)]
+    return sections + _track_sections(tracks, strings)
+
+
+def _clip_sections(scene: Scene) -> list:
     clip_records = bytearray()
-    track_records = bytearray()
     first_track = 0
     for clip in scene.clips:
         clip_records += CLIP_INFO.pack(
@@ -95,45 +112,50 @@ def encode_animation(scene: Scene, strings: StringTable) -> list:
             clip.end,
         )
         first_track += len(clip.tracks)
-        for track in clip.tracks:
-            first_mode = len(modes) if track.key_modes else NO_INDEX
-            first_handle = len(handles) if track.handles else NO_INDEX
-            first_value = len(values)
-            values += [int(is_changed) for is_changed in track.changed]
-            values += [_stored_value(track, v, strings) for v in track.values]
-            if track.key_modes:
-                modes += [_pack_mode(track, key) for key in range(len(track.times))]
-            handles += track.handles
-            time_set = time_sets.setdefault(tuple(track.times), len(time_sets))
-            track_records += TRACK_INFO.pack(
-                track.owner_kind,
-                track.owner,
-                strings.add(track.path),
-                track.array_index,
-                track.value_type,
-                track.target_kind,
-                track.components,
-                track.flags | (TrackFlags.SPARSE if track.changed else 0),
-                time_set,
-                len(track.times),
-                first_value,
-                first_mode,
-                first_handle,
-            )
+    return [
+        *names_section(SectionKind.CLIP_NAMES, [clip.name for clip in scene.clips]),
+        Section(SectionKind.CLIP_INFO, bytes(clip_records)),
+    ]
+
+
+def _track_sections(tracks: list, strings: StringTable) -> list:
+    time_sets = {}
+    values, modes, handles = [], [], []
+    track_records = bytearray()
+    for track in tracks:
+        first_mode = len(modes) if track.key_modes else NO_INDEX
+        first_handle = len(handles) if track.handles else NO_INDEX
+        first_value = len(values)
+        values += [int(is_changed) for is_changed in track.changed]
+        values += [_stored_value(track, v, strings) for v in track.values]
+        if track.key_modes:
+            modes += [_pack_mode(track, key) for key in range(len(track.times))]
+        handles += track.handles
+        time_set = time_sets.setdefault(tuple(track.times), len(time_sets))
+        track_records += TRACK_INFO.pack(
+            track.owner_kind,
+            track.owner,
+            strings.add(track.path),
+            track.array_index,
+            track.value_type,
+            track.target_kind,
+            track.components,
+            track.flags | (TrackFlags.SPARSE if track.changed else 0),
+            time_set,
+            len(track.times),
+            first_value,
+            first_mode,
+            first_handle,
+        )
     starts = [0]
     for times in time_sets:
         starts.append(starts[-1] + len(times))
     sections = [
-        *names_section(SectionKind.CLIP_NAMES, [clip.name for clip in scene.clips]),
-        Section(SectionKind.CLIP_INFO, bytes(clip_records)),
+        Section(SectionKind.TRACK_INFO, bytes(track_records)),
+        *indices_section(SectionKind.TIME_STARTS, starts),
+        float_column(SectionKind.TIMES, [t for times in time_sets for t in times]),
+        column_section(SectionKind.KEY_VALUES, values),
     ]
-    if track_records:
-        sections += [
-            Section(SectionKind.TRACK_INFO, bytes(track_records)),
-            *indices_section(SectionKind.TIME_STARTS, starts),
-            float_column(SectionKind.TIMES, [t for times in time_sets for t in times]),
-            column_section(SectionKind.KEY_VALUES, values),
-        ]
     if modes:
         sections.append(column_section(SectionKind.KEY_MODES, modes))
     if handles:
@@ -229,21 +251,35 @@ def _read_track(values: tuple, columns: _KeyColumns, strings: list) -> Track:
     return track
 
 
-def read_animation(sections: SectionReader, strings: list) -> list:
+def read_animation(sections: SectionReader, strings: list, scene: Scene) -> list:
+    """Return every clip. scene supplies the objects and armatures packed bone paths
+    name. Raises FormatError for anything malformed."""
     names = read_name_list(sections, SectionKind.CLIP_NAMES)
     if not names:
         return []
     infos = read_records(sections, SectionKind.CLIP_INFO, CLIP_INFO, len(names))
-    kind = SectionKind.TRACK_INFO
-    track_count = (
-        len(sections.raw(kind)) // TRACK_INFO.size if sections.has(kind) else 0
-    )
-    records = read_records(sections, kind, TRACK_INFO, track_count)
-    columns = _KeyColumns(sections)
-    tracks = [_read_track(values, columns, strings) for values in records]
+    if sections.has(SectionKind.PACKED_TRACKS):
+        count = sum(info[1] for info in infos)
+        data = sections.raw(SectionKind.PACKED_TRACKS)
+        try:
+            tracks = read_tracks(data, count, scene, strings)
+        except (IndexError, ValueError, OverflowError) as error:
+            raise FormatError("Packed animation is malformed") from error
+    else:
+        tracks = _read_tracks(sections, strings)
     clips = []
     for name, (first, count, rate, start, end) in zip(names, infos, strict=True):
         if first + count > len(tracks):
             raise FormatError(f"Clip {name} has missing tracks")
         clips.append(Clip(name, rate, start, end, tracks[first : first + count]))
     return clips
+
+
+def _read_tracks(sections: SectionReader, strings: list) -> list:
+    kind = SectionKind.TRACK_INFO
+    track_count = (
+        len(sections.raw(kind)) // TRACK_INFO.size if sections.has(kind) else 0
+    )
+    records = read_records(sections, kind, TRACK_INFO, track_count)
+    columns = _KeyColumns(sections)
+    return [_read_track(values, columns, strings) for values in records]

@@ -121,6 +121,7 @@ def encode_scene(scene: Scene, *, packed: bool = False) -> bytes:
 
     Meshes encode as encode describes, or as pack describes when packed. A mesh with
     vertices named by number stays as encode leaves it, since packing renumbers them.
+    Packed, animation is one stream too, its float values on their grids.
     """
     scene.validate()
     deduplicated = _without_repeated_meshes(scene)
@@ -142,7 +143,7 @@ def encode_scene(scene: Scene, *, packed: bool = False) -> bytes:
         *names_section(SectionKind.CAMERA_NAMES, [c.name for c in scene.cameras]),
         *encode_curves_and_lattices(deduplicated),
         *encode_extensions(scene.extensions),
-        *encode_animation(deduplicated, strings),
+        *encode_animation(deduplicated, strings, packed=packed),
         *encode_values(deduplicated, strings),
     ]
     sections += strings.section()
@@ -190,9 +191,10 @@ def decode_scene(data: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Scene:
         read_curves(sections),
         read_lattices(sections),
         [Camera(name) for name in read_name_list(sections, SectionKind.CAMERA_NAMES)],
-        read_animation(sections, strings),
+        [],
         read_extensions(sections),
     )
+    scene.clips = read_animation(sections, strings, scene)
     read_values(sections, scene, strings)
     scene.validate()
     return scene

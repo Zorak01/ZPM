@@ -244,9 +244,29 @@ Tables hold fixed records of 4-byte fields, read in place. Links are indices, wi
 | 263 | `TRACK_INFO` | 52 bytes per track: owner kind, owner, path string, array index, value type, target kind, components, flags, time set, key count, first value, first mode, first handle |
 | 264, 265 | `TIME_STARTS`, `TIMES` | Distinct lists of key times |
 | 266–268 | `KEY_VALUES`, `KEY_MODES`, `KEY_HANDLES` | Key columns. Modes hold mode, left handle type << 8, right handle type << 16 |
+| 284 | `PACKED_TRACKS` | Every track of every clip as one rANS stream, in place of sections 263–268. See below |
 | 272–274 | `OBJECT_ORDER`, `OBJECT_CHILD_STARTS`, `OBJECT_CHILDREN` | Objects with parents before children, and each object's children. Absent when nothing has a parent |
 | 275–277 | `BONE_ORDER`, `BONE_CHILD_STARTS`, `BONE_CHILDREN` | The same for bones, by index across all armatures |
 | 269–271 | `EXTENSION_NAMES`, `EXTENSION_INFO`, `EXTENSION_PAYLOADS` | Name, then version, flags (1 = required), start, length, then the bytes |
+
+**Packed tracks.** Saved files hold `PACKED_TRACKS`: the tracks in clip order, as many as `CLIP_INFO` counts, in one
+stream like the packed mesh streams, each field with its own context. Per track: owner kind as a symbol; owner as a
+number added to the last track's; a path symbol, 0 for a choice indexing `VALUE_STRINGS`, or 1 for a bone, a number
+added to the last bone index, and a property symbol (0 `location`, 1 `rotation_quaternion`, 2 `rotation_euler`,
+3 `rotation_axis_angle`, 4 `scale`), making `pose.bones["name"].property` from the owner's armature; array index,
+then value type and target kind as symbols, then components and flags as choices (4 sparse). Then a time list, a
+number added to the last one's index; the next new index reads the list: size as a choice, a form symbol, then each
+time. Form 0 holds a frame, a number added to the last, and the time's ordered bits less the ordered bits of that
+frame as Float32; form 1 holds ordered bits added to the last. Then a symbol each for modes and handles, a changed
+symbol per key and component when sparse, and the values. Strings are choices; integers, booleans and references
+are numbers added to the last. Floats start with a choice: 0 for ordered bits added to the last, or else the grid
+2^(choice − 150), and grid integers, the first, then each added to the last, each value Float32(integer × grid).
+Modes are three symbols per key, mode and left and right handle types. Handles are four ordered bits per key, left
+time, left value, right time, right value, each added to the ordered bits of its key's time or first value.
+
+On saving, each float track whose values are finite and not all equal moves to a grid: the power of two above
+1 / 2^18 of its range and at most 1 / 2^17, or one twice or half that if every value is already on it. No value moves
+more than 1 / 2^18 of its track's range, beyond Float32's own rounding. Times, modes and handles stay exact.
 
 Section kinds from `0x8000` up are optional: a reader skips any it does not know. A required extension a reader
 does not know makes it refuse the file.

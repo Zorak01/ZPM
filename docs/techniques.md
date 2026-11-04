@@ -495,7 +495,19 @@ validated, including resources that vary over time.
 Keys on a straight line between their neighbours are dropped on export, when a track is all linear. No value moves
 more than 1 / 100,000 of the track's own range.
 
-**Can improve:** exact bits are expensive. A tiny quantization grid like positions use would shrink values a lot.
+Saved files pack every track into one stream. Each float track snaps to a power-of-two grid near 1 / 2^17 of its
+range, so no value moves more than 1 / 2^18 of that range, and its values are grid steps from the key before. Key
+times are frame numbers plus a correction in Float32 steps, so they stay exact. Bone paths are a bone index and one
+of five properties, not a string per track.
+
+**Numbers:** glTF samples imported in Blender and saved, animation bytes before and after packing. CesiumMan, 190
+tracks and 8,580 keys: 54,982 to 20,648 (2.66x smaller), its file 278,468 to 226,516. RiggedFigure, 190 tracks and
+232 keys: 13,329 to 1,168 (11.4x), its file 22,660 to 8,928. Back in Blender every curve returns, worst value error
+3.77e-6 of its range. CesiumMan's values take 16.2 bits a key: they are sampled with noise, and predicting from
+two keys before was larger, not smaller.
+
+**Can improve:** values are near their floor at this grid. Fewer bits needs a coarser grid, which is a choice about
+error, not coding.
 
 ### Curves and lattices in exact columns
 

@@ -26,10 +26,12 @@ from ..container.layout import (
     MAX_GRID_VALUE,
     NO_GRID,
     WEIGHT_TOTAL,
+    TrackValue,
     float_bits,
     float_from_bits,
 )
 from ..mesh import ColorLayer, Mesh
+from ..scene import Track
 from .faces import corner_normals_from_faces, face_lists, has_face_normals
 
 GRID_BITS = 20
@@ -38,6 +40,8 @@ _PACKING_STEP_BITS = 12
 # Grid integers stay this far inside Float32's precision, so a position read back
 # always rounds to the same integer again.
 _PACKING_HEADROOM_BITS = 21
+# A packed float track's grid step is at most its range over 2^17.
+_TRACK_GRID_BITS = 17
 _FACE_NORMAL_MIN_COSINE = math.cos(math.radians(0.1))
 _TANGENT_WIDTH = 4
 _WEIGHT_SUM_TOLERANCE = 1e-3
@@ -319,7 +323,8 @@ def packing_step(positions, exponent: int) -> float:
 def _on_step(positions, step: float) -> bool:
     if step <= 0:
         return False
-    return array("f", [round(value / step) * step for value in positions]) == positions
+    snapped = array("f", [round(value / step) * step for value in positions])
+    return snapped == array("f", positions)
 
 
 def _snap_to_step(mesh: Mesh, source, step: float, exponent: int, from_faces: bool):
@@ -366,3 +371,40 @@ def _target_on_step(old, new, target, exponent: int) -> array:
             delta = round(target.positions[slot] / unit) - round(old[slot] / unit)
             moved[slot] = math.ldexp(round(new[slot] / unit) + delta, exponent)
     return moved
+
+
+def snap_track(track: Track) -> Track:
+    """Return a float track with its values on its grid, as the packed form stores them.
+
+    The step is the largest power of two at most the track's range over 2^17, so no
+    value moves more than 1 / 2^18 of the range: under the 1 / 100,000 of the range that
+    dropping straight-line keys already allows. Values already on a neighbouring step
+    keep it, so snapping again changes nothing. Other tracks, constant ones and ones
+    holding a non-finite value come back unchanged.
+    """
+    step = track_step(track)
+    if not step:
+        return track
+    values = array("f", [round(value / step) * step for value in track.values])
+    return replace(track, values=list(values))
+
+
+def track_step(track: Track) -> float:
+    """Return the grid step a float track's values snap to, or 0 for exact values."""
+    values = track.values
+    if track.value_type != TrackValue.FLOAT or not values:
+        return 0.0
+    if not all(math.isfinite(value) for value in values):
+        return 0.0
+    extent = max(values) - min(values)
+    if extent <= 0:
+        return 0.0
+    step = math.ldexp(1.0, math.frexp(extent)[1] - 1 - _TRACK_GRID_BITS)
+    return next(
+        (
+            candidate
+            for candidate in (step, step * 2, step / 2)
+            if _on_step(values, candidate)
+        ),
+        step,
+    )

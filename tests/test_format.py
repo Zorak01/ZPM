@@ -90,7 +90,7 @@ from zpm.format.container.sections import Section, SectionReader, write_file
 from zpm.format.processing.animation import reduce_track
 from zpm.format.processing.faces import face_lists
 from zpm.format.processing.reordering import reorder_mesh
-from zpm.format.processing.snapping import snap_for_packing
+from zpm.format.processing.snapping import snap_for_packing, snap_track
 
 
 def triangle() -> Mesh:
@@ -1352,6 +1352,59 @@ def sample_scene() -> Scene:
         ],
         {"author": "test", "tags": ["a", "b"], "inner": {"depth": 1}},
     )
+
+
+class PackedAnimationTests(unittest.TestCase):
+    def test_a_scene_packs_its_animation(self):
+        scene = sample_scene()
+        data = encode_scene(scene, packed=True)
+        self.assertIn("PACKED_TRACKS", {region.name for region in map_file(data)})
+        stored = decode_scene(data)
+        expected = [snap_track(track) for clip in scene.clips for track in clip.tracks]
+        self.assertEqual([t for clip in stored.clips for t in clip.tracks], expected)
+        self.assertEqual(encode_scene(stored, packed=True), data)
+
+    def test_bone_paths_come_back_exactly(self):
+        scene = sample_scene()
+        scene.objects.append(SceneObject("Rig", ObjectType.ARMATURE, 0))
+        rig = len(scene.objects) - 1
+        paths = [
+            'pose.bones["Spine"].rotation_quaternion',
+            'pose.bones["Hip"].location',
+            'pose.bones["Missing"].scale',
+            'pose.bones["Hip"].custom',
+        ]
+        scene.clips[0].tracks += [
+            Track(ResourceKind.OBJECT, rig, path, [1.0, 2.0], [0.0, 0.25])
+            for path in paths
+        ]
+        stored = decode_scene(encode_scene(scene, packed=True))
+        self.assertEqual([track.path for track in stored.clips[0].tracks][-4:], paths)
+
+    def test_the_track_grid_moves_values_little_and_holds(self):
+        values = [math.sin(at / 7) * 3 + 10 for at in range(200)]
+        track = Track(
+            ResourceKind.OBJECT, 0, "x", [float(at) for at in range(200)], values
+        )
+        snapped = snap_track(track)
+        extent = max(values) - min(values)
+        largest = max(abs(a - b) for a, b in zip(values, snapped.values, strict=True))
+        self.assertLessEqual(largest, extent / 2**18 + 2e-6)
+        self.assertEqual(snap_track(snapped), snapped)
+
+    def test_damaged_packed_animation_is_refused_or_read_safely(self):
+        source = bytearray(encode_scene(sample_scene(), packed=True))
+        region = next(r for r in map_file(bytes(source)) if r.name == "PACKED_TRACKS")
+        generator = random.Random(11)
+        for _ in range(400):
+            data = bytearray(source)
+            for _ in range(generator.randint(1, 3)):
+                at = region.offset + generator.randrange(region.length)
+                data[at] = generator.randrange(256)
+            try:
+                decode_scene(bytes(data))
+            except FormatError:
+                pass
 
 
 class PackedTests(unittest.TestCase):

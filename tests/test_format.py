@@ -55,7 +55,7 @@ from zpm.format import (
     save,
     snap_mesh,
 )
-from zpm.format.codec.mesh_codec import pack, snap_for_packing
+from zpm.format.codec.mesh_codec import pack
 from zpm.format.codec.quantize import decode_normal, encode_normal
 from zpm.format.codec.scene_tables import read_indices
 from zpm.format.container.layout import (
@@ -90,6 +90,7 @@ from zpm.format.container.sections import Section, SectionReader, write_file
 from zpm.format.processing.animation import reduce_track
 from zpm.format.processing.faces import face_lists
 from zpm.format.processing.reordering import reorder_mesh
+from zpm.format.processing.snapping import snap_for_packing
 
 
 def triangle() -> Mesh:
@@ -1359,7 +1360,7 @@ class PackedTests(unittest.TestCase):
         names = {region.name for region in map_file(data)}
         self.assertIn("PACKED_CONNECTIVITY", names)
         again = decode(data)
-        self.assertTrue(same_geometry(snap_for_packing(mesh)[0], again))
+        self.assertTrue(same_geometry(snap_for_packing(mesh).mesh, again))
         self.assertEqual(pack(again), data)
         return again
 
@@ -1440,7 +1441,7 @@ class PackedTests(unittest.TestCase):
 
     def test_positions_move_no_more_than_the_grid_allows(self):
         mesh = real_fixture()
-        moved = snap_for_packing(mesh)[0].positions
+        moved = snap_for_packing(mesh).mesh.positions
         extent = max(
             max(mesh.positions[axis::3]) - min(mesh.positions[axis::3])
             for axis in range(3)
@@ -1462,7 +1463,7 @@ class PackedTests(unittest.TestCase):
         # A vertex parent names the first mesh's vertices, so it keeps the direct form.
         named, grid = scene.meshes
         self.assertTrue(same_geometry(snap_mesh(named), stored.meshes[0]))
-        self.assertTrue(same_geometry(snap_for_packing(grid)[0], stored.meshes[1]))
+        self.assertTrue(same_geometry(snap_for_packing(grid).mesh, stored.meshes[1]))
 
     def test_damaged_packed_files_are_refused_or_read_safely(self):
         source = bytearray(pack(surface_mesh()))

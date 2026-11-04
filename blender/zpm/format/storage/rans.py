@@ -34,6 +34,8 @@ _WORD_BITS = 16
 _WORD_MASK = (1 << _WORD_BITS) - 1
 _STATE = struct.Struct("<I")
 _MAX_SYMBOL = 255
+# A choice at or past this is the escape symbol, then the rest as a number.
+_CHOICE_ESCAPE = 200
 _MAX_K = 15
 _K_BITS = 4
 
@@ -186,7 +188,11 @@ def _frequencies(counts: dict) -> dict:
 
 
 class SymbolWriter:
-    """Collects symbols and numbers, each under a context from 0 to context_count."""
+    """Collects symbols and numbers, each under a context from 0 to context_count.
+
+    fine is the stream's fine level, 0 to 2: how many bits below a number's top bit go
+    into its symbol. to_bytes builds the tables and the stream in one pass.
+    """
 
     def __init__(self, context_count: int, *, fine: int = 0):
         self._fine = fine
@@ -197,13 +203,24 @@ class SymbolWriter:
         self._pending_bits = 0
 
     def write(self, context: int, symbol: int) -> None:
+        """Add one symbol from 0 to 255. Raises FormatError out of range."""
         if not 0 <= symbol <= _MAX_SYMBOL:
             raise FormatError("A symbol is out of range")
         counts = self._counts[context]
         counts[symbol] = counts.get(symbol, 0) + 1
         self._symbols.append((context, symbol))
 
+    def write_choice(self, context: int, choice: int) -> None:
+        """Add a whole number that is usually small: one symbol, or an escape and the
+        rest as a number."""
+        if choice < _CHOICE_ESCAPE:
+            self.write(context, choice)
+        else:
+            self.write(context, _CHOICE_ESCAPE)
+            self.write_number(context, choice - _CHOICE_ESCAPE)
+
     def write_number(self, context: int, value: int) -> None:
+        """Add a signed number: its length as a symbol, then its low bits raw."""
         stored = _to_zigzag(value)
         length = stored.bit_length()
         if self._fine == 2 and length > 2:
@@ -290,6 +307,7 @@ class SymbolReader:
         self._pending_bits = 0
 
     def read(self, context: int) -> int:
+        """Return the next symbol. Raises FormatError if the stream runs out."""
         slots = self._slots[context]
         if slots is None:
             raise FormatError("A packed stream uses an empty table")
@@ -304,7 +322,15 @@ class SymbolReader:
         self._state = state
         return symbol
 
+    def read_choice(self, context: int) -> int:
+        """Return the next whole number written with write_choice."""
+        choice = self.read(context)
+        if choice == _CHOICE_ESCAPE:
+            return _CHOICE_ESCAPE + self.read_number(context)
+        return choice
+
     def read_number(self, context: int) -> int:
+        """Return the next signed number written with write_number."""
         symbol = self.read(context)
         if symbol <= 1:
             return _from_zigzag(symbol)

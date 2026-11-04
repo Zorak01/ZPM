@@ -621,8 +621,20 @@ bit, proved by checksum on every mesh.
 
 ### What it costs
 
-A reader must decode before reading anything, so packed files lose the direct form's reads in place. Saving takes
-up to 17 s for one mesh in Python. The C# reader reads only the direct form.
+A reader must decode before reading anything, so packed files lose the direct form's reads in place. The C# reader
+reads only the direct form. Encoding and decoding are pure Python, and Blender feels it. Measured through the add-on's
+own operators in Blender 5.2, 2026-11-04:
+
+| Mesh | Faces | Export | Import |
+| --- | ---: | ---: | ---: |
+| samurai | 2,186 | 0.7 s | 0.2 s |
+| DamagedHelmet | 15,452 | 7.5 s | 3.3 s |
+| stanford-bunny | 69,451 | 16.5 s | 2.4 s |
+| xyzrgb_dragon | 249,881 | 72.4 s | 17.4 s |
+
+Each stream tries several forms, so the encoder predicts once per prediction and lookup and writes that record in
+each number form, rather than predicting again: that halved `DamagedHelmet`'s export, from 14.7 s, with identical
+files. Most of what remains is the walk, reordering and the rANS writer, each in Python.
 
 ## The file itself
 

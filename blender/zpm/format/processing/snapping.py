@@ -5,6 +5,7 @@
 import math
 from array import array
 from dataclasses import replace
+from typing import NamedTuple
 
 from ..codec.quantize import (
     decode_color_channel,
@@ -32,6 +33,11 @@ from ..mesh import ColorLayer, Mesh
 from .faces import corner_normals_from_faces, face_lists, has_face_normals
 
 GRID_BITS = 20
+# The packing grid's step keeps this many significant bits, so saving again finds it.
+_PACKING_STEP_BITS = 12
+# Grid integers stay this far inside Float32's precision, so a position read back
+# always rounds to the same integer again.
+_PACKING_HEADROOM_BITS = 21
 _FACE_NORMAL_MIN_COSINE = math.cos(math.radians(0.1))
 _TANGENT_WIDTH = 4
 _WEIGHT_SUM_TOLERANCE = 1e-3
@@ -255,3 +261,108 @@ def snap_mesh(mesh: Mesh) -> Mesh:
             snapped.positions, face_lists(snapped)
         )
     return snapped
+
+
+class PackingGrid(NamedTuple):
+    """A mesh as the packed form stores it, and the grid its positions sit on."""
+
+    mesh: Mesh
+    # The grid step, or 0 for the power-of-two grid of 2^exponent.
+    step: float
+    exponent: int
+    # Whether readers calculate normals from faces, so none are stored.
+    normals_from_faces: bool
+
+
+def snap_for_packing(mesh: Mesh) -> PackingGrid:
+    """Return the mesh as the packed form stores it.
+
+    As snap_mesh, then positions on the packing grid when it is coarser: see
+    packing_step. Shape targets keep their moves in steps of 2^exponent.
+    """
+    snapped = snap_mesh(mesh)
+    from_faces = normals_match_faces(snapped)
+    exponent = grid_exponent(snapped)
+    step = packing_step(mesh.positions, exponent)
+    snapped = _snap_to_step(snapped, mesh.positions, step, exponent, from_faces)
+    return PackingGrid(snapped, step, exponent, from_faces)
+
+
+def packing_step(positions, exponent: int) -> float:
+    """Return the grid step packed positions use, or 0 for the power-of-two grid.
+
+    The step is the model's largest size over 2^20, as Draco's 20-bit grid, rounded
+    down to 12 significant bits, so no point moves more than 1 / 2^21 of that size: the
+    same bound as the power-of-two grid, which can be up to twice as fine. Positions
+    already exactly on a neighbouring step keep it, so saving again changes nothing.
+    Kept only when coarser than the power-of-two grid and when positions read back
+    from Float32 land on the same integers. Scans the positions up to four times.
+    """
+    if exponent == NO_GRID or not positions:
+        return 0.0
+    extent = max(
+        max(positions[axis::AXIS_COUNT]) - min(positions[axis::AXIS_COUNT])
+        for axis in range(AXIS_COUNT)
+    )
+    if extent <= 0:
+        return 0.0
+    scale = math.frexp(math.ldexp(extent, -GRID_BITS))[1] - _PACKING_STEP_BITS
+    whole = math.floor(math.ldexp(extent, -GRID_BITS - scale))
+    steps = [math.ldexp(value, scale) for value in (whole, whole - 1, whole + 1)]
+    step = next((step for step in steps if _on_step(positions, step)), steps[0])
+    largest = max(abs(value) for value in positions)
+    if step <= math.ldexp(1.0, exponent):
+        return 0.0
+    return 0.0 if largest > math.ldexp(step, _PACKING_HEADROOM_BITS) else step
+
+
+def _on_step(positions, step: float) -> bool:
+    if step <= 0:
+        return False
+    return array("f", [round(value / step) * step for value in positions]) == positions
+
+
+def _snap_to_step(mesh: Mesh, source, step: float, exponent: int, from_faces: bool):
+    """Return the mesh with positions on the packing grid, as a reader gets them back.
+
+    Positions round from source, the positions before any snapping, so each moves at
+    most half a step. Shape targets keep their moves in steps of 2^exponent, as their
+    sections store them.
+    """
+    if not step:
+        return mesh
+    new = array("f", [round(value / step) * step for value in source])
+    targets = [
+        replace(
+            target, positions=_target_on_step(mesh.positions, new, target, exponent)
+        )
+        for target in mesh.shape_targets
+    ]
+    snapped = replace(mesh, positions=new, shape_targets=targets)
+    if from_faces:
+        snapped.corner_normals = corner_normals_from_faces(new, face_lists(snapped))
+    return snapped
+
+
+def _target_on_step(old, new, target, exponent: int) -> array:
+    """Return a shape target's positions over a base moved from old to new.
+
+    A vertex the target changes comes back from the base's power-of-two grid point,
+    as its section stores it; the rest follow the base.
+    """
+    unit = math.ldexp(1.0, exponent)
+    moved = array("f", new)
+    offsets = [
+        buffer for buffer in (target.normal_offsets, target.tangent_offsets) if buffer
+    ]
+    for vertex in range(len(new) // AXIS_COUNT):
+        slots = range(vertex * AXIS_COUNT, vertex * AXIS_COUNT + AXIS_COUNT)
+        changed = any(target.positions[slot] != old[slot] for slot in slots)
+        if not changed and not any(
+            buffer[slot] for buffer in offsets for slot in slots
+        ):
+            continue
+        for slot in slots:
+            delta = round(target.positions[slot] / unit) - round(old[slot] / unit)
+            moved[slot] = math.ldexp(round(new[slot] / unit) + delta, exponent)
+    return moved

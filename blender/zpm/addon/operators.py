@@ -18,7 +18,7 @@ class IMPORT_MESH_OT_zpm(bpy.types.Operator, ImportHelper):
     """Import objects, meshes, materials, lights and armatures"""
 
     bl_idname = "import_mesh.zpm"
-    bl_label = "Import ZPM Mesh"
+    bl_label = "Import ZPM"
     bl_options = {"UNDO"}
 
     filename_ext = ".zpm"
@@ -46,7 +46,7 @@ class EXPORT_MESH_OT_zpm(bpy.types.Operator, ExportHelper):
     """Export the selected objects, or the whole scene when none is selected"""
 
     bl_idname = "export_mesh.zpm"
-    bl_label = "Export ZPM Mesh"
+    bl_label = "Export ZPM"
 
     filename_ext = ".zpm"
     filter_glob: StringProperty(default="*.zpm", options={"HIDDEN"})

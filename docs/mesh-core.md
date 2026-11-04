@@ -133,7 +133,7 @@ its lowest four, a set bit, then its bits below the top one. Thirteen clear bits
 ### Packed sections
 
 A packed mesh holds these in place of the direct position, corner, edge, normal and UV sections. Everything else
-it holds, from tangents to blendshapes, uses the sections above. `codec/packed.py` is the reference.
+it holds, from tangents to blendshapes, uses the sections above. `codec/packed/` is the reference.
 
 | Kind | Name | Holds |
 | ---: | --- | --- |

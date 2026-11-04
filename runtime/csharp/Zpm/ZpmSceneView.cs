@@ -527,7 +527,8 @@ public unsafe struct ZpmSceneView
         for (uint i = 0; i < _textureSlots.count; i++)
         {
             ref readonly ZpmTextureSlot slot = ref _textureSlots[i];
-            if (slot.image >= _images.count || slot.sampler >= _samplers.count)
+            if (slot.image >= _images.count || slot.sampler >= _samplers.count
+                || slot.channel > ZpmTextureChannel.Alpha)
                 return false;
         }
         for (uint i = 0; i < _samplers.count; i++)

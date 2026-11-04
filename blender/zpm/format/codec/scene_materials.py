@@ -17,6 +17,7 @@ from ..container.layout import (
     SamplerFilter,
     SamplerWrap,
     SectionKind,
+    TextureChannel,
 )
 from ..container.sections import Section, SectionReader
 from ..errors import FormatError
@@ -49,6 +50,7 @@ def _encode_material_tables(materials: list) -> list:
             slots += TEXTURE_SLOT.pack(
                 slot.image,
                 slot.sampler,
+                slot.channel,
                 *slot.offset,
                 slot.rotation,
                 *slot.scale,
@@ -145,8 +147,9 @@ def _read_slots(sections: SectionReader) -> list:
             (ox, oy),
             rotation,
             (sx, sy),
+            checked_enum(TextureChannel, channel),
         )
-        for role, uv_name, (image, sampler, ox, oy, rotation, sx, sy) in zip(
+        for role, uv_name, (image, sampler, channel, ox, oy, rotation, sx, sy) in zip(
             roles, uv_names, records, strict=True
         )
     ]

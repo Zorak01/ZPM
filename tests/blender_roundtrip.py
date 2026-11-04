@@ -27,6 +27,7 @@ from zpm.format import (
     save,
     snap_as_saved,
 )
+from zpm.format.container.layout import TextureChannel
 
 
 def export_alone(obj, path):
@@ -348,6 +349,63 @@ def check_png_textures_pack_as_webp(directory):
     marked += struct.pack(">I", zlib.crc32(chunk)) + png[33:]
     assert image_packing.smallest_encoding("a.png", marked) == ("a.png", marked)
     print("PASS: PNG textures pack as lossless WebP")
+
+
+def _gltf_output_group():
+    """Return the group Blender's glTF add-on makes for inputs Principled lacks."""
+    group = bpy.data.node_groups.new("glTF Material Output", "ShaderNodeTree")
+    group.interface.new_socket(
+        "Occlusion", in_out="INPUT", socket_type="NodeSocketFloat"
+    )
+    group.nodes.new("NodeGroupInput")
+    return group
+
+
+def _fed_by(socket):
+    """Return (node type, output name) of what feeds a socket."""
+    link = socket.links[0]
+    return link.from_node.type, link.from_socket.name
+
+
+def check_packed_channels_and_occlusion(directory):
+    """One image packing occlusion, roughness and metallic in red, green and blue keeps
+    each channel, and occlusion comes back in the glTF output group."""
+    image = bpy.data.images.new("Packed", 4, 4)
+    image.pack()
+    material = bpy.data.materials.new("Packed")
+    material.use_nodes = True
+    nodes, links = material.node_tree.nodes, material.node_tree.links
+    shader = next(n for n in nodes if n.type == "BSDF_PRINCIPLED")
+    texture = nodes.new("ShaderNodeTexImage")
+    texture.image = image
+    splitter = nodes.new("ShaderNodeSeparateColor")
+    links.new(texture.outputs["Color"], splitter.inputs[0])
+    links.new(splitter.outputs["Blue"], shader.inputs["Metallic"])
+    links.new(splitter.outputs["Green"], shader.inputs["Roughness"])
+    output = nodes.new("ShaderNodeGroup")
+    output.node_tree = _gltf_output_group()
+    links.new(splitter.outputs["Red"], output.inputs["Occlusion"])
+    bpy.ops.mesh.primitive_plane_add()
+    plane = bpy.context.active_object
+    plane.data.materials.append(material)
+    path = str(Path(directory) / "channels.zpm")
+    export_alone(plane, path)
+    slots = {slot.role: slot.channel for slot in load(path).materials[0].slots}
+    assert slots == {
+        "metallic": TextureChannel.BLUE,
+        "roughness": TextureChannel.GREEN,
+        "occlusion": TextureChannel.RED,
+    }, slots
+    before = set(bpy.data.materials.keys())
+    assert bpy.ops.import_mesh.zpm(filepath=path) == {"FINISHED"}
+    made = bpy.data.materials[(set(bpy.data.materials.keys()) - before).pop()]
+    shader = next(n for n in made.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+    assert _fed_by(shader.inputs["Metallic"]) == ("SEPARATE_COLOR", "Blue")
+    assert _fed_by(shader.inputs["Roughness"]) == ("SEPARATE_COLOR", "Green")
+    group = next(n for n in made.node_tree.nodes if n.type == "GROUP")
+    assert group.node_tree.name.startswith("glTF Material Output")
+    assert _fed_by(group.inputs["Occlusion"]) == ("SEPARATE_COLOR", "Red")
+    print("PASS: packed channels and occlusion")
 
 
 def check_failed_import_leaves_nothing(directory):
@@ -797,6 +855,7 @@ def run():
         check_holes_are_refused()
         check_whole_scene(directory)
         check_png_textures_pack_as_webp(directory)
+        check_packed_channels_and_occlusion(directory)
         check_nothing_is_lost(directory)
         check_points_hair_volumes_and_topology(directory)
         check_failed_import_leaves_nothing(directory)

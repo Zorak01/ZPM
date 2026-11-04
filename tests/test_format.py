@@ -84,6 +84,7 @@ from zpm.format.container.layout import (
     SkinFlags,
     SplineFlags,
     SplineType,
+    TextureChannel,
     TrackFlags,
     TrackValue,
     align,
@@ -1145,6 +1146,7 @@ def sample_scene() -> Scene:
                     TextureSlot(
                         "clearcoat normal", 1, 1, "", (0.5, 0.25), 0.5, (2.0, 4.0)
                     ),
+                    TextureSlot("occlusion", 1, 0, channel=TextureChannel.RED),
                 ],
             ),
             Material(

@@ -477,7 +477,10 @@ cannot shrink this way without losing their exact bytes.
 **Problem:** A format shaped like one application's material system is useless to the others.
 
 **Technique:** A material has the fields renderers share, plus a model name, named parameters, and texture slots
-whose role is a name, not a fixed list. A reader uses what it understands and can skip the rest. Blender's other
+whose role is a name, not a fixed list. A slot also says which channel it reads, so one image packing occlusion,
+roughness and metallic in red, green and blue comes back wired the same way. A reader uses what it understands and
+can skip the rest. Blender has no occlusion input, so it travels through the group Blender's glTF add-on keeps for
+it, and that add-on exports it again. Blender's other
 Principled inputs go in as parameters, stored only when they differ from the default. A node graph those fields
 can't describe also goes into an optional extension, so Blender can rebuild it exactly while others ignore it.
 

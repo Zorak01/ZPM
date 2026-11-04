@@ -242,7 +242,7 @@ Tables hold fixed records of 4-byte fields, read in place. Links are indices, wi
 | 204 | `POSE_CHANNELS` | 48 bytes per channel: bone, location, rotation, scale, rotation mode |
 | 205–208 | `COLLECTION_*` | Names, parents, member starts, members |
 | 209, 210 | `MATERIAL_NAMES`, `MATERIAL_INFO` | 64 bytes per material: base color, metallic, roughness, emission, strength, normal scale, alpha cutoff, alpha mode, flags, first slot, slot count |
-| 211, 212 | `TEXTURE_SLOTS`, `TEXTURE_UV_NAMES` | 28 bytes per slot: image, sampler, offset, rotation, scale; and its UV layer name |
+| 211, 212 | `TEXTURE_SLOTS`, `TEXTURE_UV_NAMES` | 32 bytes per slot: image, sampler, channel (0 the color, 1 red, 2 green, 3 blue, 4 alpha), offset, rotation, scale; and its UV layer name |
 | 213 | `SAMPLERS` | 12 bytes per sampler: filter, wrap U, wrap V |
 | 214–216 | `IMAGE_NAMES`, `IMAGE_COLOR_SPACES`, `IMAGE_INFO` | 24 bytes per image: width, height, channels, flags, first tile, tile count |
 | 217, 218 | `IMAGE_TILES`, `IMAGE_PATHS` | 8 bytes per tile: UDIM number, payload; and its path |
@@ -251,7 +251,7 @@ Tables hold fixed records of 4-byte fields, read in place. Links are indices, wi
 | 223, 224 | `ARMATURE_NAMES`, `ARMATURE_BONE_STARTS` | Names and where each armature's bones start |
 | 225, 226 | `BONE_NAMES`, `BONE_INFO` | 48 bytes per bone: parent, flags (1 connected, 2 deform, 4 inherits rotation, scale inheritance << 8), head, tail, roll, envelope distance, head radius, tail radius |
 | 227, 228 | `SKIN_STARTS`, `SKIN_BONES` | For each object, the bone for each of its mesh's vertex groups |
-| 229 | `TEXTURE_ROLES` | What each texture slot feeds, as a name. `base_color`, `metallic`, `roughness`, `normal`, `emission` and `alpha` are shared; any other name is allowed |
+| 229 | `TEXTURE_ROLES` | What each texture slot feeds, as a name. `base_color`, `metallic`, `roughness`, `normal`, `emission`, `alpha` and `occlusion` are shared; any other name is allowed |
 | 230 | `VALUE_STRINGS` | Name table shared by value trees and animation |
 | 231 | `VALUE_NODES` | 16 bytes per node: key string, type, and a and b (the value, or the start and count of an array or of children, always later in the table) |
 | 232 | `VALUE_POOL` | Column holding all arrays; floats as ordered bits |

@@ -22,6 +22,7 @@ from .container.layout import (
     SpaceAxis,
     SplineFlags,
     SplineType,
+    TextureChannel,
     TrackFlags,
     TrackValue,
 )
@@ -34,6 +35,7 @@ ROLE_ROUGHNESS = "roughness"
 ROLE_NORMAL = "normal"
 ROLE_EMISSION = "emission"
 ROLE_ALPHA = "alpha"
+ROLE_OCCLUSION = "occlusion"
 TREE_FIELDS = {
     "Scene": ("properties",),
     "SceneObject": (
@@ -139,7 +141,8 @@ class TextureSlot:
     """One image a material uses, how it samples it, and which UVs it reads.
 
     role says what it feeds: a ROLE_ name for what every renderer shares, or any other
-    name for what only some do.
+    name for what only some do. channel says which part of the image it reads, as when
+    one image packs occlusion, roughness and metallic into red, green and blue.
     """
 
     role: str
@@ -149,6 +152,7 @@ class TextureSlot:
     offset: tuple = (0.0, 0.0)
     rotation: float = 0.0
     scale: tuple = (1.0, 1.0)
+    channel: TextureChannel = TextureChannel.COLOR
 
 
 @dataclass(slots=True)

@@ -7,13 +7,19 @@ from pathlib import Path
 import bpy
 
 from ..format import Image, ImageTile, Material, Sampler, TextureSlot
-from ..format.container.layout import AlphaMode, SamplerFilter, SamplerWrap
+from ..format.container.layout import (
+    AlphaMode,
+    SamplerFilter,
+    SamplerWrap,
+    TextureChannel,
+)
 from ..format.scene import (
     ROLE_ALPHA,
     ROLE_BASE_COLOR,
     ROLE_EMISSION,
     ROLE_METALLIC,
     ROLE_NORMAL,
+    ROLE_OCCLUSION,
     ROLE_ROUGHNESS,
 )
 from . import rna_values
@@ -24,6 +30,18 @@ _IMAGE_NODE = "TEX_IMAGE"
 _NORMAL_MAP_NODE = "NORMAL_MAP"
 _MAPPING_NODE = "MAPPING"
 _UV_MAP_NODE = "UVMAP"
+_SEPARATE_COLOR_NODE = "SEPARATE_COLOR"
+_GROUP_NODE = "GROUP"
+# Where Blender's glTF add-on keeps what a Principled node has no input for.
+_GLTF_OUTPUT_GROUPS = ("glTF Material Output", "glTF Settings")
+_OCCLUSION_INPUT = "Occlusion"
+_CHANNEL_OUTPUTS = {
+    "Red": TextureChannel.RED,
+    "Green": TextureChannel.GREEN,
+    "Blue": TextureChannel.BLUE,
+}
+_ALPHA_OUTPUT = "Alpha"
+_COLOR_OUTPUT = "Color"
 _UDIM_TOKEN = "<UDIM>"
 _MAX_WALK = 8
 _ROLE_INPUTS = {
@@ -35,7 +53,7 @@ _ROLE_INPUTS = {
     ROLE_ALPHA: "Alpha",
 }
 _FIELD_INPUTS = {*_ROLE_INPUTS.values(), "Emission Strength"}
-_DATA_ROLES = (ROLE_METALLIC, ROLE_ROUGHNESS, ROLE_NORMAL, ROLE_ALPHA)
+_DATA_ROLES = (ROLE_METALLIC, ROLE_ROUGHNESS, ROLE_NORMAL, ROLE_ALPHA, ROLE_OCCLUSION)
 _FILTERS = {
     "Linear": SamplerFilter.LINEAR,
     "Closest": SamplerFilter.NEAREST,
@@ -127,6 +145,9 @@ class MaterialCapture:
         for socket in inputs:
             if socket.name not in _FIELD_INPUTS:
                 self._capture_extra_input(result, socket)
+        occlusion = _occlusion_input(material)
+        if occlusion is not None:
+            self._add_slot(result, ROLE_OCCLUSION, occlusion)
         return result
 
     def _capture_extra_input(self, result: Material, socket) -> None:
@@ -143,13 +164,14 @@ class MaterialCapture:
             normal_map = socket.links[0].from_node
             if normal_map.type == _NORMAL_MAP_NODE:
                 result.normal_scale = normal_map.inputs["Strength"].default_value
-        node = _find_image_node(socket)
+        node, channel = _find_image_node(socket)
         if node is None or node.image is None:
             return
         slot = TextureSlot(
             role,
             self._image_index(node.image),
             self._sampler_index(node),
+            channel=channel,
         )
         _read_mapping(node, slot)
         result.slots.append(slot)
@@ -196,19 +218,39 @@ def _principled_defaults() -> dict:
     return defaults
 
 
-def _find_image_node(socket):
-    """Walk up a socket's first links, through color splitters and normal maps."""
+def _occlusion_input(material: bpy.types.Material):
+    """Return the glTF output group's Occlusion input, when something feeds it."""
+    for node in material.node_tree.nodes:
+        tree = getattr(node, "node_tree", None)
+        if node.type == _GROUP_NODE and tree and tree.name in _GLTF_OUTPUT_GROUPS:
+            socket = node.inputs.get(_OCCLUSION_INPUT)
+            if socket is not None and socket.links:
+                return socket
+    return None
+
+
+def _find_image_node(socket) -> tuple:
+    """Walk up a socket's first links, through color splitters and normal maps.
+
+    Return (the image node or None, the channel it is read through).
+    """
+    channel = TextureChannel.COLOR
     for _ in range(_MAX_WALK):
         if not socket.links:
-            return None
-        node = socket.links[0].from_node
+            return None, channel
+        link = socket.links[0]
+        node = link.from_node
         if node.type == _IMAGE_NODE:
-            return node
+            if link.from_socket.name == _ALPHA_OUTPUT:
+                channel = TextureChannel.ALPHA
+            return node, channel
+        if node.type == _SEPARATE_COLOR_NODE and node.mode == "RGB":
+            channel = _CHANNEL_OUTPUTS.get(link.from_socket.name, channel)
         linked = [item for item in node.inputs if item.links]
         if not linked:
-            return None
+            return None, channel
         socket = linked[0]
-    return None
+    return None, channel
 
 
 def _read_mapping(node, slot: TextureSlot) -> None:
@@ -308,7 +350,10 @@ def _link_slot(material, shader, slot, images, samplers) -> None:
             node.image.colorspace_settings.name = "Non-Color"
         except TypeError:
             pass
-    socket = shader.inputs.get(_ROLE_INPUTS.get(slot.role, slot.role))
+    if slot.role == ROLE_OCCLUSION:
+        socket = _gltf_output(material).inputs[_OCCLUSION_INPUT]
+    else:
+        socket = shader.inputs.get(_ROLE_INPUTS.get(slot.role, slot.role))
     if socket is None:
         return
     if slot.role == ROLE_NORMAL:
@@ -316,7 +361,7 @@ def _link_slot(material, shader, slot, images, samplers) -> None:
         normal_map.uv_map = slot.uv_layer
         links.new(normal_map.outputs["Normal"], socket)
         socket = normal_map.inputs["Color"]
-    links.new(node.outputs["Color"], socket)
+    links.new(_channel_output(material, node, slot.channel), socket)
     vector = node.inputs["Vector"]
     if slot.offset != (0.0, 0.0) or slot.rotation or slot.scale != (1.0, 1.0):
         mapping = nodes.new("ShaderNodeMapping")
@@ -329,6 +374,38 @@ def _link_slot(material, shader, slot, images, samplers) -> None:
         uv_map = nodes.new("ShaderNodeUVMap")
         uv_map.uv_map = slot.uv_layer
         links.new(uv_map.outputs["UV"], vector)
+
+
+def _channel_output(material, node, channel: TextureChannel):
+    """Return the image node's output for a channel, splitting colors when needed."""
+    if channel == TextureChannel.COLOR:
+        return node.outputs[_COLOR_OUTPUT]
+    if channel == TextureChannel.ALPHA:
+        return node.outputs[_ALPHA_OUTPUT]
+    splitter = material.node_tree.nodes.new("ShaderNodeSeparateColor")
+    material.node_tree.links.new(node.outputs[_COLOR_OUTPUT], splitter.inputs[0])
+    name = next(key for key, value in _CHANNEL_OUTPUTS.items() if value == channel)
+    return splitter.outputs[name]
+
+
+def _gltf_output(material):
+    """Return the material's glTF output group node, made as Blender's glTF add-on
+    makes it, so that add-on exports what it holds."""
+    nodes = material.node_tree.nodes
+    for node in nodes:
+        tree = getattr(node, "node_tree", None)
+        if node.type == _GROUP_NODE and tree and tree.name in _GLTF_OUTPUT_GROUPS:
+            return node
+    group = bpy.data.node_groups.get(_GLTF_OUTPUT_GROUPS[0])
+    if group is None:
+        group = bpy.data.node_groups.new(_GLTF_OUTPUT_GROUPS[0], "ShaderNodeTree")
+        group.interface.new_socket(
+            _OCCLUSION_INPUT, in_out="INPUT", socket_type="NodeSocketFloat"
+        )
+        group.nodes.new("NodeGroupInput")
+    node = nodes.new("ShaderNodeGroup")
+    node.node_tree = group
+    return node
 
 
 def create_material(source: Material, images: list, samplers: list):

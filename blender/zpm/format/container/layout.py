@@ -16,7 +16,7 @@ SPACE = struct.Struct("<fBBH")
 OBJECT_INFO = struct.Struct("<13I26f2I")
 POSE_CHANNEL = struct.Struct("<I10fI")
 MATERIAL_INFO = struct.Struct("<12f4I")
-TEXTURE_SLOT = struct.Struct("<2I5f")
+TEXTURE_SLOT = struct.Struct("<3I5f")
 VALUE_NODE = struct.Struct("<4I")
 VALUE_OWNER = struct.Struct("<3I")
 CURVE_INFO = struct.Struct("<2I")
@@ -559,6 +559,16 @@ class SamplerWrap(IntEnum):
     EXTEND = 1
     CLIP = 2
     MIRROR = 3
+
+
+class TextureChannel(IntEnum):
+    """Which part of an image a texture slot reads."""
+
+    COLOR = 0
+    RED = 1
+    GREEN = 2
+    BLUE = 3
+    ALPHA = 4
 
 
 class LightType(IntEnum):

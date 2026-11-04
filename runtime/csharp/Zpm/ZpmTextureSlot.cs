@@ -13,6 +13,9 @@ public readonly struct ZpmTextureSlot
     /// <summary>How it samples.</summary>
     public readonly uint sampler;
 
+    /// <summary>Which part of the image it reads.</summary>
+    public readonly ZpmTextureChannel channel;
+
     /// <summary>UV offset.</summary>
     public readonly ZpmVector2 offset;
 

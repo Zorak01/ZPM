@@ -22,6 +22,7 @@ from ..container.sections import Section, SectionReader, write_file
 from ..errors import FormatError
 from ..scene import Camera, Scene
 from .mesh_codec import decode, encode, pack
+from .packed.tables import pack_tables, unpack_tables
 from .scene_animation import encode_animation, read_animation
 from .scene_curves import encode_curves_and_lattices, read_curves, read_lattices
 from .scene_extensions import encode_extensions, read_extensions
@@ -121,7 +122,8 @@ def encode_scene(scene: Scene, *, packed: bool = False) -> bytes:
 
     Meshes encode as encode describes, or as pack describes when packed. A mesh with
     vertices named by number stays as encode leaves it, since packing renumbers them.
-    Packed, animation is one stream too, its float values on their grids.
+    Packed, animation is one stream too, its float values on their grids, and the
+    scene's tables, names and index lists are another.
     """
     scene.validate()
     deduplicated = _without_repeated_meshes(scene)
@@ -147,6 +149,8 @@ def encode_scene(scene: Scene, *, packed: bool = False) -> bytes:
         *encode_values(deduplicated, strings),
     ]
     sections += strings.section()
+    if packed:
+        sections = pack_tables(sections)
     if meshes:
         sections.append(Section(SectionKind.SCENE_MESHES, b"".join(meshes)))
     return write_file(sections)
@@ -175,6 +179,9 @@ def decode_scene(data: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Scene:
     if len(data) < FILE_HEADER.size:
         raise FormatError("File is truncated")
     sections = SectionReader(data)
+    if sections.has(SectionKind.PACKED_TABLES):
+        tables = sections.raw(SectionKind.PACKED_TABLES)
+        sections.restore(unpack_tables(tables, max_bytes))
     if not sections.has(SectionKind.SCENE_MESH_STARTS):
         raise FormatError("File holds no scene")
     strings = read_strings(sections)

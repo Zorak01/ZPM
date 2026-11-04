@@ -509,6 +509,22 @@ two keys before was larger, not smaller.
 **Can improve:** values are near their floor at this grid. Fewer bits needs a coarser grid, which is a choice about
 error, not coding.
 
+### Scene tables in one stream
+
+**Technique:** Saved files hold every scene table in one rANS stream instead of fixed records. A record table goes
+field by field, each value a change from the same field of the record before, so equal scales, empty links and
+neighbouring indices cost almost nothing. Floats stay exact as ordered bits. Names store how much they share with
+the name before, so bone names like `Skeleton_arm_joint_L__4_` cost their tail. The reader rebuilds every table
+byte for byte, so the table readers are unchanged. Hierarchy orders and child lists follow from the parents, so
+packed files leave them out.
+
+**Numbers:** glTF samples imported in Blender and saved. RiggedFigure's tables, 3,724 bytes, take 1,688, and its
+file goes from 8,928 to 6,900 bytes. CesiumMan's go from 4,036 to 1,792. In the textured samples, everything but
+meshes and images falls from about 1,000 bytes to about 500.
+
+**Can improve:** a context per field was larger on these files, since each context's table costs bytes. Scenes
+with thousands of objects may prefer it.
+
 ### Curves and lattices in exact columns
 
 **Technique:** Control points sit in one column per field, shared across splines, so like values compress and any

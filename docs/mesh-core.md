@@ -245,6 +245,7 @@ Tables hold fixed records of 4-byte fields, read in place. Links are indices, wi
 | 264, 265 | `TIME_STARTS`, `TIMES` | Distinct lists of key times |
 | 266–268 | `KEY_VALUES`, `KEY_MODES`, `KEY_HANDLES` | Key columns. Modes hold mode, left handle type << 8, right handle type << 16 |
 | 284 | `PACKED_TRACKS` | Every track of every clip as one rANS stream, in place of sections 263–268. See below |
+| 285 | `PACKED_TABLES` | The scene's record tables, name tables and index lists as one rANS stream. See below |
 | 272–274 | `OBJECT_ORDER`, `OBJECT_CHILD_STARTS`, `OBJECT_CHILDREN` | Objects with parents before children, and each object's children. Absent when nothing has a parent |
 | 275–277 | `BONE_ORDER`, `BONE_CHILD_STARTS`, `BONE_CHILDREN` | The same for bones, by index across all armatures |
 | 269–271 | `EXTENSION_NAMES`, `EXTENSION_INFO`, `EXTENSION_PAYLOADS` | Name, then version, flags (1 = required), start, length, then the bytes |
@@ -267,6 +268,21 @@ time, left value, right time, right value, each added to the ordered bits of its
 On saving, each float track whose values are finite and not all equal moves to a grid: the power of two above
 1 / 2^18 of its range and at most 1 / 2^17, or one twice or half that if every value is already on it. No value moves
 more than 1 / 2^18 of its track's range, beyond Float32's own rounding. Times, modes and handles stay exact.
+
+**Packed tables.** Saved files hold `PACKED_TABLES` in place of the scene's record tables (`OBJECT_INFO`,
+`POSE_CHANNELS`, `MATERIAL_INFO`, `TEXTURE_SLOTS`, `VALUE_NODES`, `VALUE_OWNERS`, `CURVE_INFO`, `SPLINE_INFO`,
+`LATTICE_INFO`, `CLIP_INFO`, `EXTENSION_INFO`, `SAMPLERS`, `IMAGE_INFO`, `IMAGE_TILES`, `LIGHT_INFO`, `BONE_INFO`), its
+name tables (every `*_NAMES` table above, `IMAGE_COLOR_SPACES`, `IMAGE_PATHS`, `TEXTURE_ROLES`, `TEXTURE_UV_NAMES`,
+`VALUE_STRINGS`) and its index lists (`ARMATURE_BONE_STARTS`, `COLLECTION_PARENTS`, `COLLECTION_MEMBER_STARTS`,
+`COLLECTION_MEMBERS`, `SKIN_STARTS`, `SKIN_BONES`, `TIME_STARTS`). A reader rebuilds each byte for byte and reads it
+as above. The stream holds the table count as a choice, then per table its kind as a choice added to the last kind
+(from 0, rising), then the table. Contexts: 0 kind, 1 count, 2 whole fields, 3 float fields, 4 shared bytes,
+5 lengths, 6 name bytes, 7 indices. A record table is its record count as a choice, then field by field, each
+record's field as a number added to the record before's (from 0); float fields as ordered bits. A name table is its
+name count, then per name a choice of how many bytes it shares with the start of the name before, a choice of how
+many follow, and those bytes as symbols. An index list is its count, then each index as a number added to the last.
+Packed files leave out `OBJECT_ORDER`, `OBJECT_CHILD_STARTS`, `OBJECT_CHILDREN`, `BONE_ORDER`, `BONE_CHILD_STARTS`
+and `BONE_CHILDREN`, which follow from the parents. A reader refuses a stream whose tables would pass its byte limit.
 
 Section kinds from `0x8000` up are optional: a reader skips any it does not know. A required extension a reader
 does not know makes it refuse the file.

@@ -56,9 +56,11 @@ from zpm.format import (
     snap_mesh,
 )
 from zpm.format.codec.mesh_codec import pack
+from zpm.format.codec.packed.tables import pack_tables, unpack_tables
 from zpm.format.codec.quantize import decode_normal, encode_normal
 from zpm.format.codec.scene_tables import read_indices
 from zpm.format.container.layout import (
+    DEFAULT_MAX_BYTES,
     DIRECTORY_ENTRY,
     FILE_HEADER,
     NO_INDEX,
@@ -1352,6 +1354,55 @@ def sample_scene() -> Scene:
         ],
         {"author": "test", "tags": ["a", "b"], "inner": {"depth": 1}},
     )
+
+
+class PackedTableTests(unittest.TestCase):
+    def test_tables_come_back_byte_for_byte(self):
+        direct = SectionReader(encode_scene(sample_scene()))
+        sections = [Section(k, direct.raw(k)) for k in SectionKind if direct.has(k)]
+        packed = pack_tables(sections)
+        held = next(s for s in packed if s.kind == SectionKind.PACKED_TABLES)
+        restored = {s.kind: s.data for s in unpack_tables(held.data, DEFAULT_MAX_BYTES)}
+        kept = {section.kind for section in packed}
+        self.assertGreater(len(restored), 10)
+        self.assertIn(SectionKind.OBJECT_ORDER, {s.kind for s in sections})
+        for section in sections:
+            if section.kind in restored:
+                self.assertNotIn(section.kind, kept)
+                self.assertEqual(restored[section.kind], section.data)
+            elif section.kind not in kept:
+                derived = ("_ORDER", "_CHILD_STARTS", "_CHILDREN")
+                self.assertTrue(section.kind.name.endswith(derived))
+
+    def test_a_packed_scene_reads_like_a_direct_one(self):
+        scene = sample_scene()
+        data = encode_scene(scene, packed=True)
+        self.assertFalse(SectionReader(data).has(SectionKind.OBJECT_INFO))
+        self.assertEqual(
+            decode_scene(data).objects, decode_scene(encode_scene(scene)).objects
+        )
+        self.assertEqual(decode_scene(data).armatures, scene.armatures)
+
+    def test_tables_past_the_size_limit_are_refused(self):
+        held = SectionReader(encode_scene(sample_scene(), packed=True)).raw(
+            SectionKind.PACKED_TABLES
+        )
+        with self.assertRaises(FormatError):
+            unpack_tables(held, 64)
+
+    def test_damaged_packed_tables_are_refused_or_read_safely(self):
+        source = encode_scene(sample_scene(), packed=True)
+        region = next(r for r in map_file(source) if r.name == "PACKED_TABLES")
+        generator = random.Random(12)
+        for _ in range(400):
+            data = bytearray(source)
+            for _ in range(generator.randint(1, 3)):
+                at = region.offset + generator.randrange(region.length)
+                data[at] = generator.randrange(256)
+            try:
+                decode_scene(bytes(data))
+            except FormatError:
+                pass
 
 
 class PackedAnimationTests(unittest.TestCase):

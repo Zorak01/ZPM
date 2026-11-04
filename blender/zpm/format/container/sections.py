@@ -115,6 +115,15 @@ class SectionReader:
         if expected != limit:
             raise FormatError("File has bytes no section claims")
 
+    def restore(self, sections: list) -> None:
+        """Add sections a packed stream held. Raises FormatError for one the file
+        already holds."""
+        for section in sections:
+            key = (section.kind, section.layer)
+            if key in self._sections:
+                raise FormatError(f"File holds section {section.kind.name} twice")
+            self._sections[key] = (section.flags, section.data)
+
     def has(self, kind: SectionKind, layer: int = 0) -> bool:
         return (kind, layer) in self._sections
 

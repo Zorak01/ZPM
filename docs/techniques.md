@@ -536,17 +536,23 @@ error, not coding.
 
 **Technique:** Blender makes tangents with MikkTSpace from positions, UVs and normals, which the reader already
 has when tangents come. So the reader makes nearly the same tangents: each face corner gives the way its positions
-run as U rises, laid flat against the normal and weighted by the corner's angle, and corners with one position, UV,
-normal and UV winding add theirs up, as MikkTSpace keeps mirrored UVs apart. Only the difference to the stored tangent is written, and a tangent already seen at the
-vertex costs a choice. The angle comes from a short arcsine series, using only square roots and sums, so every
+run as U rises, laid flat against the normal and weighted by the corner's angle between its edges laid flat too,
+and corners with one position, UV, normal and UV winding add theirs up, as MikkTSpace keeps mirrored UVs apart. Only
+the difference to the stored tangent is written. MikkTSpace gives such a group one tangent, so a corner offers its
+group's tangent first among those seen at its vertex, under its own contexts, which makes a repeat nearly free; the
+second difference may key on the first's size. The angle comes from a short arcsine series, using only square roots and sums, so every
 reader gets the same guess. A small mesh keeps its tangents in the direct sections when those are smaller.
 
 **Numbers:** glTF samples imported in Blender, tangent bytes before and after. CesiumMan 12,605 to 2,212,
 DamagedHelmet 52,174 to 8,680, Duck 11,496 to 2,368. Whole meshes: DamagedHelmet 151,216 to 107,684, CesiumMan
 43,668 to 29,944 with weights. Every tangent comes back exactly as stored.
 
-**Can improve:** about 60 of Duck's 12,636 corners still miss by more than 20 degrees; MikkTSpace's rules for
-degenerate UVs may close them.
+Later the same day, flattening the angle's edges and offering the group's tangent first took the eleven tangent
+streams of the glTF samples from 20,652 to 18,916 bytes, Duck's from 2,368 to 1,956 and its file to 39,692.
+
+**Can improve:** what remains is mostly rounding. On Duck, 82% of differences are 0 or ±1 steps, because the
+reader has 12-bit normals and 16-bit UVs where Blender had floats. Its worst guesses, about 1% of corners, all sit on
+UV triangles too thin for 16-bit UVs to orient; lowering such triangles' weight was larger at every threshold tried.
 
 ### Skin weights as recent rows
 

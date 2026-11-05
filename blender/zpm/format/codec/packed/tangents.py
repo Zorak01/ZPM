@@ -5,8 +5,10 @@
 Tangents come from MikkTSpace, which follows how positions run along U. So each face
 corner gives the direction its triangle's positions move as U rises, laid flat against
 the corner's normal and weighted by the corner's angle; corners at one position with one
-UV and one normal add theirs up. A corner then names a tangent already seen at its
-vertex, or writes whether its sign is the guessed one and two residuals.
+UV, one normal and one UV winding form a group and add theirs up. MikkTSpace gives a
+group one tangent, so a corner names a tangent already seen at its vertex, its group's
+first; or it writes whether its sign is the guessed one and two residuals, the second
+keyed on the first's size when that is smaller.
 """
 
 import math
@@ -16,12 +18,14 @@ from ...storage.rans import SymbolReader, smallest_written
 from ..quantize import decode_normal, encode_normal
 from .corner_values import (
     MAX_SEEN_CONTEXT,
+    PAIR_KINDS,
     ChoiceStep,
     Lookup,
     NumberStep,
     SeenLookup,
     SymbolStep,
     estimated_bytes,
+    pair_context,
     step_counts,
     write_steps,
 )
@@ -31,11 +35,19 @@ from .layout import HISTORY_MAX, Layout, magnitude
 _SIGN_SHIFT = 12
 _DIRECTION_MASK = (1 << _SIGN_SHIFT) - 1
 _FINE_LEVELS = 3
+# The form byte: the fine level in bits 0 and 1, pairing in bit 2.
+_FINE_MASK = 3
+_PAIRED_SHIFT = 2
+_FORM_BITS = 3
 _HISTORY_STEP = 3
 _HISTORY_KINDS = HISTORY_MAX // _HISTORY_STEP + 1
-_SIGN_CONTEXT = MAX_SEEN_CONTEXT + 1
+# Choices take MAX_SEEN_CONTEXT + 1 contexts, then as many again when the group's own
+# tangent is offered first.
+_GROUP_CHOICES = MAX_SEEN_CONTEXT + 1
+_SIGN_CONTEXT = 2 * _GROUP_CHOICES
 _VALUE_FIRST = _SIGN_CONTEXT + 1
-_CONTEXTS = _VALUE_FIRST + 2 * _HISTORY_KINDS
+_FIRST_PAIRED = _VALUE_FIRST + 2 * _HISTORY_KINDS
+_CONTEXTS = _FIRST_PAIRED + PAIR_KINDS
 # Terms of arcsin(h) = h + h^3 / 6 + 3 h^5 / 40, which keeps the angle to sqrt and sums.
 _ARCSIN_CUBE = 1 / 6
 _ARCSIN_FIFTH = 3 / 40
@@ -50,8 +62,8 @@ def encode_tangents(
     position's grid row; normals each corner's 12-bit normal, or is empty; uvs each
     corner's stored UV pair from the tangents' layer.
     """
-    guesses = _guesses(layout, rows, normals, uvs)
-    seen_tangents = SeenLookup(layout, corners, Lookup.VERTEX, _CONTEXTS)
+    guesses, groups = _guesses(layout, rows, normals, uvs)
+    seen_tangents = _SeenTangents(layout, corners, groups)
     history = [0, 0]
     steps = []
     for corner, pair in enumerate(pairs):
@@ -60,6 +72,7 @@ def encode_tangents(
             at = seen.index(pair) + 1 if pair in seen else 0
             steps.append(ChoiceStep(context, at))
             if at:
+                seen_tangents.record(corner, pair)
                 continue
         guess, negative = guesses[corner]
         steps.append(
@@ -67,15 +80,16 @@ def encode_tangents(
         )
         for part, value in enumerate((pair[0], pair[1] & _DIRECTION_MASK)):
             difference = value - guess[part]
-            context = _value_context(part, history)
-            steps.append(NumberStep(context, context, difference))
+            steps.append(NumberStep(*_value_contexts(part, history), difference))
             history[part] = magnitude(difference)
         seen_tangents.record(corner, pair)
     counts = step_counts(steps)
+    forms = [(fine, paired) for paired in (False, True) for fine in range(_FINE_LEVELS)]
     return smallest_written(
-        list(range(_FINE_LEVELS)),
-        lambda fine: estimated_bytes(counts, _CONTEXTS, fine, paired=False),
-        lambda fine: bytes((fine,)) + write_steps(steps, _CONTEXTS, fine, paired=False),
+        forms,
+        lambda form: estimated_bytes(counts, _CONTEXTS, *form),
+        lambda form: bytes((form[0] | form[1] << _PAIRED_SHIFT,))
+        + write_steps(steps, _CONTEXTS, *form),
     )
 
 
@@ -83,11 +97,12 @@ def read_tangents(
     layout: Layout, data: bytes, corners: list, rows: list, normals: list, uvs: list
 ) -> list:
     """Return each corner's tangent pair. Raises FormatError on a bad stream."""
-    if not data or data[0] >= _FINE_LEVELS:
+    if not data or (data[0] & _FINE_MASK) >= _FINE_LEVELS or data[0] >> _FORM_BITS:
         raise FormatError("Packed tangents name no known form")
-    reader = SymbolReader(data[1:], _CONTEXTS, fine=data[0])
-    guesses = _guesses(layout, rows, normals, uvs)
-    seen_tangents = SeenLookup(layout, corners, Lookup.VERTEX, _CONTEXTS)
+    fine, paired = data[0] & _FINE_MASK, bool(data[0] >> _PAIRED_SHIFT)
+    reader = SymbolReader(data[1:], _CONTEXTS, fine=fine)
+    guesses, groups = _guesses(layout, rows, normals, uvs)
+    seen_tangents = _SeenTangents(layout, corners, groups)
     history = [0, 0]
     pairs = []
     for corner in range(len(corners)):
@@ -98,6 +113,7 @@ def read_tangents(
                 raise FormatError("A packed tangent names a missing value")
             if at:
                 pairs.append(seen[at - 1])
+                seen_tangents.record(corner, pairs[-1])
                 continue
         guess, negative = guesses[corner]
         sign = negative ^ reader.read(_SIGN_CONTEXT)
@@ -105,7 +121,8 @@ def read_tangents(
             raise FormatError("A packed tangent has an unknown sign")
         values = []
         for part in range(2):
-            difference = reader.read_number(_value_context(part, history))
+            plain, paired_context = _value_contexts(part, history)
+            difference = reader.read_number(paired_context if paired else plain)
             values.append(guess[part] + difference)
             history[part] = magnitude(difference)
         if not all(0 <= value <= _DIRECTION_MASK for value in values):
@@ -115,12 +132,39 @@ def read_tangents(
     return pairs
 
 
-def _value_context(part: int, history: list) -> int:
-    return _VALUE_FIRST + part * _HISTORY_KINDS + history[part] // _HISTORY_STEP
+def _value_contexts(part: int, history: list) -> tuple:
+    """Return a residual's context written plainly, then written in pairs."""
+    plain = _VALUE_FIRST + part * _HISTORY_KINDS + history[part] // _HISTORY_STEP
+    return plain, pair_context(_FIRST_PAIRED, part, history, plain)
 
 
-def _guesses(layout: Layout, rows: list, normals: list, uvs: list) -> list:
-    """Return each corner's (guessed 12-bit direction, guessed sign bit)."""
+class _SeenTangents:
+    """Tangents seen at each vertex, with the corner's group's own tangent first."""
+
+    def __init__(self, layout: Layout, corners: list, groups: list):
+        self._seen = SeenLookup(layout, corners, Lookup.VERTEX, _CONTEXTS)
+        self._groups = groups
+        self._group_tangent = {}
+
+    def options(self, corner: int) -> tuple:
+        """Return (context, the tangents this corner may name)."""
+        context, seen = self._seen.options(corner)
+        known = self._group_tangent.get(self._groups[corner])
+        if known is None or known not in seen:
+            return context, seen
+        return context + _GROUP_CHOICES, [
+            known,
+            *(item for item in seen if item != known),
+        ]
+
+    def record(self, corner: int, pair: tuple) -> None:
+        """Note the tangent a corner uses."""
+        self._seen.record(corner, pair)
+        self._group_tangent.setdefault(self._groups[corner], pair)
+
+
+def _guesses(layout: Layout, rows: list, normals: list, uvs: list) -> tuple:
+    """Return (each corner's guessed 12-bit direction and sign bit, its group)."""
     welded = layout.welded
     starts = layout.starts
     count = len(welded)
@@ -149,7 +193,7 @@ def _guesses(layout: Layout, rows: list, normals: list, uvs: list) -> list:
     for corner in range(count):
         flat = _flattened(totals[keys[corner]], units[corner])
         guesses.append((encode_normal(*flat), negative[corner]))
-    return guesses
+    return guesses, keys
 
 
 def _unit_normals(layout: Layout, rows: list, normals: list) -> list:
@@ -188,7 +232,8 @@ def _corner_tangent(rows, welded, uvs, normal: tuple, triangle: tuple) -> tuple:
     ]
     flat = _flattened(along, normal)
     length = math.sqrt(flat[0] * flat[0] + flat[1] * flat[1] + flat[2] * flat[2])
-    weight = _corner_angle(first, second)
+    # MikkTSpace weighs a corner by its angle with both edges laid flat on the normal.
+    weight = _corner_angle(_flattened(first, normal), _flattened(second, normal))
     if not length:
         return (0.0, 0.0, 0.0), int(side < 0)
     return tuple(part / length * weight for part in flat), int(side < 0)

@@ -17,7 +17,9 @@ Meshopt gets the same vertices.
 
 Decoding, in microseconds, is `packed_decode.cpp`: native C++ built with `zig c++ -O3 -mavx2`, decoding connectivity,
 vertices, positions, normals and UVs into integer arrays, the median of many runs. It leaves out edges and the other
-sections, and it trusts its input; the Python reader checks everything. Draco is its native decoder called through
+sections, and it trusts its input; the Python reader checks everything. Since 2026-11-04 evening it times the reader
+the add-on uses, which checks every read and goes on to float positions, normals and UVs, so later runs are not like
+for like with the figures above. Draco is its native decoder called through
 Python; meshopt is native. **Packed decodes 2.3x to 8.1x faster than Draco on 24 of 24, and 4.9x to
 40.9x slower than native meshopt on all 24.** Every packed file decodes to the same integers in C++ and Python, by
 checksum.
@@ -212,7 +214,7 @@ Needs Python packages `DracoPy`, `zstandard` and `numpy`, the npm package `mesho
 timing, build `meshopt_native.cpp` as its first lines say, and the packed decoder:
 
 ```sh
-python -m ziglang c++ -O3 -std=c++17 -mavx2 benchmarks/format-compare/packed_decode.cpp -o packed_decode.exe
+python -m ziglang c++ -O3 -std=c++17 -mavx2 -ffp-contract=off benchmarks/format-compare/packed_decode.cpp -o packed_decode.exe
 ```
 
 ```sh

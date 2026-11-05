@@ -55,14 +55,16 @@ improvements are claims to demonstrate with public data, not assumptions about t
 ## Blender
 
 Requires Blender 4.4+ for animation. Verified with **5.2.3**; **4.5.1 LTS** and **5.1.2** passed before scenes were added.
-Build an installable extension ZIP:
+Build the native reader, which makes imports many times faster (`pip install ziglang` first), then an
+installable extension ZIP:
 
 ```sh
+python tools/build_native.py
 blender --factory-startup --command extension build --source-dir blender/zpm --output-dir dist
 ```
 
-In Preferences > Get Extensions > Install from Disk, select `dist/zpm-0.1.0.zip`.
-Enable **ZPM Mesh**. In Object Mode, use File > Import / Export > **ZPM Mesh Core**.
+Without the first step the add-on still works, reading in Python. In Preferences > Get Extensions > Install from
+Disk, select `dist/zpm-0.1.0.zip`. Enable **ZPM**. In Object Mode, use File > Import / Export > **ZPM**.
 
 Exports hold the selected objects, or the whole scene when none is selected, with base meshes in
 local coordinates; modifiers, constraints and drivers are not stored, apart from the armature link. Imports recreate

@@ -732,6 +732,33 @@ Packing alone takes 22% less CPU time on `DamagedHelmet`'s scene than before thi
 embedded textures gained more, from faster JPEG re-coding and pixel checks in numpy: `DamagedHelmet` from 21.0 s to
 8.4 s, `BoomBox` from 16.1 s to 12.1 s, each with the same file.
 
+### A native reader beside the Python one
+
+**Problem:** The packed form decodes in Python in Blender, which took 12.9 s to import a 250,000-face scan.
+
+**Technique:** The geometry streams are read by a C++ library the add-on loads with ctypes, built for Windows,
+Linux and macOS by zig from one source. It reads connectivity, splits, positions, normals, UVs and face edges into
+buffers Python owns, then Python reads tangents, weights and everything else as before. It checks every read and every
+index, refuses what Python refuses, and also refuses what it cannot be sure it reads alike, such as values past 32
+bits or past what 64-bit sums can hold; then Python reads, so results never depend on which reader ran. It
+converts floats in the same order as Python, with fused multiply-add off, so the bits match. A header claiming more
+memory than the reader's limit goes to Python, which stops at the first missing byte instead of reserving it.
+
+**Numbers:** the same arrays as Python on all 24 benchmark meshes and two textured scenes; 2,400 damaged files with
+no crash and no disagreement, 671 of them still read, identically. Reading geometry: `DamagedHelmet` 997 ms to
+19 ms, `xyzrgb_dragon` 5.3 s to 0.10 s. Import through the add-on in Blender 5.2, 2026-11-04, against the same
+morning's figures:
+
+| Mesh | Import, Python | Import, native |
+| --- | ---: | ---: |
+| samurai | 0.2 s | 0.1 s |
+| DamagedHelmet | 2.8 s | 1.0 s |
+| stanford-bunny | 3.7 s | 0.4 s |
+| xyzrgb_dragon | 12.9 s | 2.0 s |
+
+**Can improve:** tangents are still decoded in Python, half of `DamagedHelmet`'s scene import now. The encoder
+also reads connectivity back in Python, which native could do.
+
 ## The file itself
 
 ### Labelled sections

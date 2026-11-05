@@ -13,16 +13,20 @@ order in one pass, needing no tables of neighbours, which keeps decoding fast:
 
 Each predicted value is a rANS number, and each stream picks its own smallest form.
 Everything else a mesh holds stays in its usual sections. All prediction uses integers,
-or IEEE doubles rounding halves to even, so every reader gets the same integers.
+or IEEE doubles rounding halves to even, so every reader gets the same integers. The
+native reader in format/native reads the geometry many times faster when it is built
+for the platform; Python reads whatever it does not.
 """
 
+import math
 from array import array
 from typing import NamedTuple
 
-from ...container.layout import NO_GRID, SectionKind
+from ...container.layout import DEFAULT_MAX_BYTES, NO_GRID, SectionKind
 from ...container.sections import Section, SectionReader, stored_bytes
 from ...errors import FormatError
 from ...mesh import Mesh
+from ...native import MeshCounts, NativeGeometry, PackedStreams, read_packed_geometry
 from ...processing.faces import face_edges, face_lists
 from ...processing.reordering import reorder_by
 from ...processing.snapping import PackingGrid
@@ -37,7 +41,7 @@ from ..quantize import (
 from ..surface import encode_tangents as encode_direct_tangents
 from .layout import Layout
 from .normals import encode_normals, read_normals
-from .positions import encode_positions, grid_rows, read_positions
+from .positions import STEP, encode_positions, grid_rows, read_positions
 from .splits import encode_splits, read_splits
 from .tangents import encode_tangents, read_tangents
 from .uvs import encode_uvs, read_uvs
@@ -128,16 +132,26 @@ def pack_geometry(grid: PackingGrid) -> PackedMesh | None:
 
 
 def read_geometry(
-    sections: SectionReader, info: tuple, uv_names: list
+    sections: SectionReader,
+    info: tuple,
+    uv_names: list,
+    *,
+    use_native: bool = True,
+    max_bytes: int = DEFAULT_MAX_BYTES,
 ) -> PackedGeometry:
     """Return the mesh fields the packed sections hold, for a mesh with this info.
 
-    Raises FormatError for anything malformed; a reader also catches IndexError,
-    KeyError, ValueError and OverflowError, which a damaged stream can raise.
+    Reads natively when it can within max_bytes, else in Python; both return the same.
+    use_native=False always reads in Python. Raises FormatError for anything
+    malformed; a reader also catches IndexError, KeyError, ValueError and
+    OverflowError, which a damaged stream can raise.
     """
     vertices, faces, corner_count, edge_count, _, arity, exponent, _flags = info
     if exponent == NO_GRID:
         raise FormatError("A packed mesh has no grid")
+    native = _read_natively(sections, info, uv_names, max_bytes) if use_native else None
+    if native is not None:
+        return _from_native(sections, native, uv_names, edge_count)
     layout = read_connectivity(
         sections.raw(SectionKind.PACKED_CONNECTIVITY), faces, arity, corner_count
     )
@@ -182,6 +196,80 @@ def read_geometry(
     )
 
 
+def _read_natively(
+    sections: SectionReader, info: tuple, uv_names: list, max_bytes: int
+) -> NativeGeometry | None:
+    """Return the native reader's geometry, or None to read in Python instead."""
+    vertices, faces, corner_count, _, _, arity, exponent, _ = info
+    kinds = (SectionKind.PACKED_CONNECTIVITY, SectionKind.PACKED_SPLITS)
+    layers = range(len(uv_names))
+    if not all(sections.has(kind) for kind in kinds) or not all(
+        sections.has(SectionKind.PACKED_UVS, layer) for layer in layers
+    ):
+        return None
+    positions = sections.raw(SectionKind.PACKED_POSITIONS)
+    if len(positions) <= STEP.size:
+        return None
+    (step,) = STEP.unpack_from(positions)
+    if not (step == 0 or math.isfinite(step) and step > 0):
+        return None
+    normals = b""
+    if sections.has(SectionKind.PACKED_NORMALS):
+        normals = sections.raw(SectionKind.PACKED_NORMALS)
+    streams = PackedStreams(
+        sections.raw(SectionKind.PACKED_CONNECTIVITY),
+        sections.raw(SectionKind.PACKED_SPLITS),
+        positions[STEP.size :],
+        normals,
+        [sections.raw(SectionKind.PACKED_UVS, layer) for layer in layers],
+    )
+    counts = MeshCounts(vertices, faces, corner_count, arity)
+    return read_packed_geometry(counts, step or 2.0**exponent, streams, max_bytes)
+
+
+def _from_native(
+    sections: SectionReader, native: NativeGeometry, uv_names: list, edge_count: int
+) -> PackedGeometry:
+    starts = native.face_starts
+    corners = list(native.corners)
+    edges = list(native.edges) + _loose_edges(sections)
+    if len(edges) != edge_count * 2:
+        raise FormatError("Packed edges do not match their count")
+    tangent_layers = {}
+    tangent_layers_held = [
+        layer
+        for layer in range(len(uv_names))
+        if sections.has(SectionKind.PACKED_TANGENTS, layer)
+    ]
+    if tangent_layers_held:
+        layout = Layout(
+            list(native.welded), list(starts), [], native.position_count, []
+        )
+        rows = _pairs(native.rows, 3)
+        normals = _pairs(native.normal_pairs, 2)
+        for layer in tangent_layers_held:
+            data = sections.raw(SectionKind.PACKED_TANGENTS, layer)
+            uvs = _pairs(native.uv_pairs[layer], 2)
+            pairs = read_tangents(layout, data, corners, rows, normals, uvs)
+            tangent_layers[uv_names[layer]] = array(
+                "f", [part for pair in pairs for part in decode_tangent(*pair)]
+            )
+    return PackedGeometry(
+        native.positions,
+        [b - a for a, b in zip(starts, starts[1:], strict=False)],
+        corners,
+        edges,
+        native.normals,
+        dict(zip(uv_names, native.uvs, strict=True)),
+        tangent_layers,
+    )
+
+
+def _pairs(values: array, width: int) -> list:
+    """Return flat values as tuples of width each."""
+    return list(zip(*(values[part::width] for part in range(width)), strict=True))
+
+
 def _normal_pairs(ordered: Mesh, grid: PackingGrid) -> list:
     """Return each corner's stored normal, or nothing when no normals are stored."""
     if not ordered.corner_normals or grid.normals_from_faces:
@@ -210,14 +298,18 @@ def _edges(
     for a, b in zip(starts, starts[1:], strict=False):
         for key in face_edges(corners[a:b]):
             reached.setdefault(key, len(reached))
-    loose = []
-    if sections.has(SectionKind.PACKED_LOOSE_EDGES):
-        kind = SectionKind.PACKED_LOOSE_EDGES
-        loose = sections.column(kind, sections.count_of(kind))
-    edges = [vertex for key in reached for vertex in key] + list(loose)
+    edges = [vertex for key in reached for vertex in key] + _loose_edges(sections)
     if len(edges) != edge_count * 2:
         raise FormatError("Packed edges do not match their count")
     return edges
+
+
+def _loose_edges(sections: SectionReader) -> list:
+    """Return both vertices of each edge on no face, as the file lists them."""
+    kind = SectionKind.PACKED_LOOSE_EDGES
+    if not sections.has(kind):
+        return []
+    return list(sections.column(kind, sections.count_of(kind)))
 
 
 def _uses_only_face_edges(mesh: Mesh) -> bool:

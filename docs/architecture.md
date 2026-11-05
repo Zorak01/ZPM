@@ -17,11 +17,13 @@ reader, and nothing depends on benchmarks.
 | `blender/zpm/format/codec/packed/` | The packed form saving writes: the walk, splits, positions, normals, UVs, tangents, weights, animation tracks and scene tables, one module each, and what normals and UVs share |
 | `blender/zpm/format/scene.py` | Scene data: objects, materials, images, lights, armatures, curves, lattices, cameras, animation, and the file as a whole |
 | `blender/zpm/format/processing/` | Whole-mesh changes and checks: snapping, including the packing grid, reordering, comparison, face facts; and JPEGs re-coded with their own Huffman tables |
+| `blender/zpm/format/native/` | The native reader of packed geometry: its C++ source, the loader, and libraries in `bin/<platform>/` |
 | `runtime/csharp/Zpm/` | Runtime reader: by index, no allocation |
 | `tools/zpm_map.py` | Prints a file's byte map |
+| `tools/build_native.py` | Builds the native reader for Windows, Linux and macOS, x64 and ARM, with zig |
 | `benchmarks/mesh-core/` | Frozen earlier codec, kept as the comparison |
 | `benchmarks/mesh-read/` | Measures the runtime reader next to that codec |
-| `benchmarks/format-compare/` | Measures ZPM against Draco and meshoptimizer; `packed_decode.cpp` is a second, native reader of the packed form, checked against Python by checksum |
+| `benchmarks/format-compare/` | Measures ZPM against Draco and meshoptimizer; `packed_decode.cpp` times the native reader and checks it against Python by checksum |
 
 `zpm.format` is the portable entry point and never imports `bpy`. It runs in ordinary Python.
 
@@ -30,8 +32,15 @@ only its operators and File menus.
 
 There is one writer, in Python. The C# reader reads the direct form and is checked against
 it on every benchmark run, through every read path, on every fixture. Saved files use the
-packed form, which the C# reader does not read; the native packed reader in benchmarks
-proves it instead, and it trusts its input.
+packed form, which the C# reader does not read.
+
+Packed geometry has two readers, Python and native C++, for one reason: Python is the
+reference, and native reads 20 to 53 times faster, which is the difference between an
+import in seconds and one that waits. Python stays the reference. The native reader
+returns exactly what Python returns or refuses, and then Python reads, so no result
+depends on which ran. It is used only when a library is built for the platform and the
+mesh fits the caller's byte limit; tests compare the two on every mesh kind and on
+damaged files, and the benchmark compares them by checksum.
 
 ## Compatibility
 

@@ -53,11 +53,13 @@ from zpm.format import (
     encode_scene,
     load,
     map_file,
+    native,
     same_geometry,
     save,
     snap_mesh,
 )
 from zpm.format.codec.mesh_codec import pack
+from zpm.format.codec.packed import read_geometry
 from zpm.format.codec.packed.tables import pack_tables, unpack_tables
 from zpm.format.codec.quantize import decode_normal, encode_normal
 from zpm.format.codec.scene_tables import read_indices
@@ -65,6 +67,7 @@ from zpm.format.container.layout import (
     DEFAULT_MAX_BYTES,
     DIRECTORY_ENTRY,
     FILE_HEADER,
+    MESH_INFO,
     NO_INDEX,
     OPTIONAL_KIND_START,
     AlphaMode,
@@ -97,6 +100,7 @@ from zpm.format.processing.faces import face_lists
 from zpm.format.processing.jpeg_tables import optimize_tables
 from zpm.format.processing.reordering import reorder_mesh
 from zpm.format.processing.snapping import snap_for_packing, snap_track
+from zpm.format.storage.names import read_names
 
 
 def triangle() -> Mesh:
@@ -1445,6 +1449,67 @@ class JpegTableTests(unittest.TestCase):
             damaged = bytearray(source)
             damaged[generator.randrange(len(damaged))] = generator.randrange(256)
             optimize_tables(bytes(damaged))
+
+
+def _geometry(data: bytes, use_native: bool):
+    """Return what read_geometry reads from a packed mesh, or why it refused."""
+    try:
+        sections = SectionReader(data)
+        info = MESH_INFO.unpack(sections.raw(SectionKind.MESH_INFO))
+        names = []
+        if sections.has(SectionKind.UV_NAMES):
+            names = read_names(sections.raw(SectionKind.UV_NAMES))
+        geometry = read_geometry(sections, info, names, use_native=use_native)
+    except (FormatError, IndexError, KeyError, ValueError, OverflowError):
+        return "refused"
+    return [
+        {name: list(values) for name, values in field.items()}
+        if isinstance(field, dict)
+        else list(field)
+        for field in geometry
+    ]
+
+
+@unittest.skipUnless(native.is_available(), "No native reader is built here")
+class NativeReaderTests(unittest.TestCase):
+    def test_native_and_python_read_alike(self):
+        loose = grid_mesh(4)
+        count = loose.vertex_count
+        loose.positions.extend((9.0, 9.0, 9.0, 8.0, 8.0, 8.0))
+        loose.edges.extend((count, count + 1))
+        for mesh in (
+            triangle(),
+            grid_mesh(12),
+            quad_and_triangle_mesh(),
+            strip_mesh(),
+            split_vertex_mesh(),
+            surface_mesh(),
+            skinned_mesh(),
+            real_fixture(),
+            loose,
+        ):
+            data = pack(mesh)
+            self.assertEqual(_geometry(data, True), _geometry(data, False))
+            self.assertNotEqual(_geometry(data, True), "refused")
+
+    def test_damaged_streams_read_alike_or_are_refused(self):
+        generator = random.Random(17)
+        for mesh in (surface_mesh(), skinned_mesh()):
+            source = pack(mesh)
+            regions = [r for r in map_file(source) if r.name.startswith("PACKED")]
+            for _ in range(150):
+                data = bytearray(source)
+                region = generator.choice(regions)
+                for _ in range(generator.randint(1, 4)):
+                    at = region.offset + generator.randrange(region.length)
+                    data[at] = generator.randrange(256)
+                damaged = bytes(data)
+                self.assertEqual(_geometry(damaged, True), _geometry(damaged, False))
+
+    def test_a_header_claiming_too_much_is_left_to_python(self):
+        counts = native.MeshCounts(1, 1, 1 << 28, 3)
+        streams = native.PackedStreams(b"\0", b"\0", b"\0", b"", [])
+        self.assertIsNone(native.read_packed_geometry(counts, 1.0, streams, 1 << 20))
 
 
 class PackedTableTests(unittest.TestCase):

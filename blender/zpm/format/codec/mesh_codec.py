@@ -249,7 +249,9 @@ def decode(data: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Mesh:
                 if sections.has(SectionKind.UV_NAMES)
                 else []
             )
-            geometry = read_geometry(sections, MESH_INFO.unpack(info), names)
+            geometry = read_geometry(
+                sections, MESH_INFO.unpack(info), names, max_bytes=max_bytes
+            )
         except (IndexError, KeyError, ValueError, OverflowError) as error:
             raise FormatError("A packed mesh is malformed") from error
         positions = geometry.positions

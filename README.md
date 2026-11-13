@@ -1,6 +1,6 @@
 # ZPM
 
-A 3D file format for meshes, materials, rigs, and animation. Includes a Blender extension, Python API, and runtime readers.
+Zipped Portable Mesh (ZPM) is a 3D file format for meshes, materials, rigs, and animation. Includes a Blender extension, Python API, and runtime readers.
 
 Early development. The file layout can change between builds.
 

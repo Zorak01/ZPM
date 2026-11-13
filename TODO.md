@@ -21,6 +21,7 @@
 ## Before 0.1.0
 
 - [ ] Review and freeze the file contract, including compatibility rules.
-- [ ] Choose the final name and icon.
+- [x] Name: Zipped Portable Mesh (ZPM).
+- [ ] Choose the final icon.
 - [ ] Run the release checks and inspect the extension ZIP, wheel, and checksums.
 - [ ] Publish the first release. Version 0.1.0 is still unreleased.

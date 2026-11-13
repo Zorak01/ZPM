@@ -4,12 +4,12 @@
 
 
 def register():
-    from . import operators
+    from .addon import operators
 
     operators.register()
 
 
 def unregister():
-    from . import operators
+    from .addon import operators
 
     operators.unregister()

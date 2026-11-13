@@ -1,8 +1,8 @@
 schema_version = "1.0.0"
 id = "zpm"
 version = "0.1.0"
-name = "ZPM Mesh"
-tagline = "Import and export exact mesh geometry using ZPM"
+name = "ZPM"
+tagline = "Import and export scenes: meshes, materials, rigs, animation"
 maintainer = "Zorak"
 type = "add-on"
 tags = ["Import-Export"]
@@ -10,7 +10,7 @@ blender_version_min = "4.2.0"
 license = ["SPDX:GPL-3.0-or-later"]
 
 [permissions]
-files = "Import and export ZPM mesh files at user-selected paths"
+files = "Import and export ZPM files at user-selected paths"
 
 [build]
 paths_exclude_pattern = ["__pycache__/", "*.pyc"]

@@ -51,7 +51,19 @@ jobs:
           dotnet-version: '9.0.306'
       - run: python benchmarks/mesh-core/run.py --verify-only
   blender:
-    name: Blender 4.5.1 LTS
+    name: Blender ${{ matrix.version }}${{ matrix.suffix }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: '4.5.1'
+            series: '4.5'
+            suffix: ' LTS'
+            artifact: zpm-blender
+          - version: '5.2.3'
+            series: '5.2'
+            suffix: ' LTS'
+            artifact: zpm-blender-5.2
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -67,19 +79,19 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
-          base=https://download.blender.org/release/Blender4.5
-          archive=blender-4.5.1-linux-x64.tar.xz
+          base=https://download.blender.org/release/Blender${{ matrix.series }}
+          archive=blender-${{ matrix.version }}-linux-x64.tar.xz
           curl --fail --location --retry 3 "$base/$archive" -o "$archive"
-          curl --fail --location --retry 3 "$base/blender-4.5.1.sha256" -o checksums.txt
+          curl --fail --location --retry 3 "$base/blender-${{ matrix.version }}.sha256" -o checksums.txt
           grep " $archive$" checksums.txt | sha256sum --check --strict
           tar -xf "$archive"
-          echo "$RUNNER_TEMP/blender-4.5.1-linux-x64" >> "$GITHUB_PATH"
+          echo "$RUNNER_TEMP/blender-${{ matrix.version }}-linux-x64" >> "$GITHUB_PATH"
       - run: blender --background --factory-startup --python-exit-code 1 --python tests/blender_roundtrip.py
       - run: blender --factory-startup --command extension validate blender/zpm
       - run: mkdir -p dist
       - run: blender --factory-startup --command extension build --source-dir blender/zpm --output-dir dist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: zpm-blender
+          name: ${{ matrix.artifact }}
           path: dist/*.zip
           if-no-files-found: error

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "zpm-mesh"
 version = "0.1.0"
-description = "Exact mesh-core codec and Blender import/export extension"
+description = "Zipped Portable Mesh format and Blender import/export extension"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "GPL-3.0-or-later"

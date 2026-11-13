@@ -36,6 +36,8 @@ blender --factory-startup --command extension build --source-dir blender/zpm --o
 
 In Blender, open Preferences > Get Extensions > Install from Disk and select `dist/zpm-0.1.0.zip`. Enable ZPM. Import and export are under the File menu in Object Mode.
 
+Point-cloud and hair round trips are tested on Blender 5.2.3. Older Blender versions without the required Python APIs report these imports as unsupported.
+
 The extension works without the native reader, using Python instead. Export includes selected objects, or the whole scene if nothing is selected. Modifiers, constraints, and drivers are not stored, except for the armature link. Keep the source `.blend` file.
 
 **Embed Textures** stores images inside the file. JPEG tables may be recoded, and PNGs may be stored as lossless WebP when smaller.

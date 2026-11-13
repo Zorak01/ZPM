@@ -12,7 +12,7 @@ from pathlib import Path
 
 import bpy
 
-from ..format import Extension, Mesh
+from ..format import Extension, FormatError, Mesh
 from . import mesh_adapter, rna_values
 
 SOURCE_TYPE_PROPERTY = "source_object_type"
@@ -121,6 +121,11 @@ def _set_positions_and_attributes(data, mesh: Mesh) -> None:
 
 def _create_point_cloud(mesh: Mesh, name: str):
     data = bpy.data.pointclouds.new(name)
+    if not hasattr(data, "resize"):
+        bpy.data.pointclouds.remove(data)
+        raise FormatError(
+            "This Blender version cannot import point clouds. Use Blender 5.2 or newer."
+        )
     data.resize(mesh.vertex_count)
     _set_positions_and_attributes(data, mesh)
     return data
@@ -128,6 +133,11 @@ def _create_point_cloud(mesh: Mesh, name: str):
 
 def _create_hair(mesh: Mesh, name: str):
     data = bpy.data.hair_curves.new(name)
+    if not hasattr(data, "add_curves"):
+        bpy.data.hair_curves.remove(data)
+        raise FormatError(
+            "This Blender version cannot import hair curves. Use Blender 5.2 or newer."
+        )
     data.add_curves(mesh.properties[_CURVE_SIZES_PROPERTY])
     _set_positions_and_attributes(data, mesh)
     for attribute_name, stored in mesh.properties[_CURVE_ATTRIBUTES_PROPERTY].items():

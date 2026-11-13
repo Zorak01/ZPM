@@ -16,7 +16,7 @@ from bpy_extras import anim_utils
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "blender"))
 
 import zpm
-from zpm.addon import image_packing, mesh_adapter
+from zpm.addon import image_packing, mesh_adapter, point_data_adapter
 from zpm.format import (
     FormatError,
     Material,
@@ -684,6 +684,34 @@ def check_points_hair_volumes_and_topology(directory):
     """Point clouds, hair, volumes and changing topology are stored."""
     bpy.ops.object.select_all(action="DESELECT")
     cloud_data = bpy.data.pointclouds.new("Cloud")
+    if not hasattr(cloud_data, "resize"):
+        bpy.data.pointclouds.remove(cloud_data)
+        points = Mesh(array("f", [0.0, 0.0, 0.0]), array("I"), array("I"), array("I"))
+        before = len(bpy.data.pointclouds)
+        try:
+            point_data_adapter._create_point_cloud(points, "unsupported")
+        except FormatError as error:
+            assert "cannot import point clouds" in str(error)
+        else:
+            raise AssertionError(
+                "An unsupported point-cloud import must report an error"
+            )
+        assert len(bpy.data.pointclouds) == before
+        before = len(bpy.data.hair_curves)
+        hair = bpy.data.hair_curves.new("capability")
+        supports_hair = hasattr(hair, "add_curves")
+        bpy.data.hair_curves.remove(hair)
+        if not supports_hair:
+            try:
+                point_data_adapter._create_hair(points, "unsupported")
+            except FormatError as error:
+                assert "cannot import hair curves" in str(error)
+            else:
+                raise AssertionError("An unsupported hair import must report an error")
+            assert len(bpy.data.hair_curves) == before
+        print("PASS: unsupported point-data imports report errors without leaving data")
+        print("SKIP: point-data round trip requires newer Blender Python APIs")
+        return
     cloud_data.resize(4)
     cloud_data.points[1].co = (1, 2, 3)
     cloud_data.points[1].radius = 0.5

@@ -16,7 +16,7 @@
 - [ ] Build native libraries in CI and include them in extension packages for each supported platform.
 - [ ] Run the native-reader parity tests in CI with a compiled library.
 - [ ] Add end-to-end Blender import/export timings and peak-memory measurements.
-- [ ] Recheck Blender round trips after the latest scene and tangent changes.
+- [x] Recheck Blender 4.5 compatibility and Blender 5.2 scene round trips after the latest changes.
 
 ## Before 0.1.0
 
